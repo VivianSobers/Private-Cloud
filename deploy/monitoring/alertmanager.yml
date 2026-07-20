@@ -39,12 +39,21 @@ receivers:
   - name: ntfy-default
     webhook_configs:
       # ntfy is on the `edge` network; alertmanager joins it for exactly this.
-      # NOTE: the topic must exist and alertmanager must be allowed to publish
-      # to it — see docs/phase-0-checklist.md for the `ntfy access` commands.
+      # ntfy runs deny-all, so every publish is authenticated with a token
+      # minted for the `alertmanager` user (checklist step 8). The token lives
+      # in a gitignored file mounted by compose, not in this committed config.
       - url: http://ntfy:8080/private-cloud
         send_resolved: true
+        http_config:
+          authorization:
+            type: Bearer
+            credentials_file: /etc/alertmanager/ntfy.token
 
   - name: ntfy-critical
     webhook_configs:
       - url: http://ntfy:8080/private-cloud-critical
         send_resolved: true
+        http_config:
+          authorization:
+            type: Bearer
+            credentials_file: /etc/alertmanager/ntfy.token

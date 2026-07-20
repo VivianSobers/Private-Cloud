@@ -40,7 +40,7 @@ set -a; source "$BACKUP_ENV"; set +a
 : "${RESTIC_PASSWORD_FILE:?RESTIC_PASSWORD_FILE not set in $BACKUP_ENV}"
 [[ -r "$RESTIC_PASSWORD_FILE" ]] || die "cannot read RESTIC_PASSWORD_FILE=$RESTIC_PASSWORD_FILE"
 
-NTFY_URL="${NTFY_URL:-}"          # e.g. http://127.0.0.1:8080/backups
+NTFY_URL="${NTFY_URL:-}"          # e.g. http://<tailscale-ip>:8080/private-cloud-critical
 NTFY_TOKEN="${NTFY_TOKEN:-}"
 
 # Retention: generous, because restic dedups aggressively and metadata is tiny.

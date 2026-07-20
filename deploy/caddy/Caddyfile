@@ -94,6 +94,13 @@
 }
 
 # Plain HTTP redirects to HTTPS. Even on the tailnet, keep one scheme.
+# /healthz is the one exception: the Docker healthcheck probes it locally,
+# and following a redirect to the internal-CA HTTPS listener would fail there.
 :80 {
-	redir https://{host}{uri} permanent
+	handle /healthz {
+		respond "ok" 200
+	}
+	handle {
+		redir https://{host}{uri} permanent
+	}
 }

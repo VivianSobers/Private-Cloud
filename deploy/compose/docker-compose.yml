@@ -13,13 +13,14 @@
 #   * Pinned image tags. See docs/phase-0-checklist.md for pinning to digests,
 #     which is what actually makes a build reproducible.
 #
-# TWO DELIBERATE EXCEPTIONS to "no container gets docker.sock":
-#   cadvisor and postgres_exporter... no — only cadvisor. It reads the Docker
-#   socket read-only because per-container metrics are impossible without it.
-#   A read-only docker.sock is still a privilege escalation path (it can read
-#   env vars of other containers). Accepted here because cadvisor is a
-#   well-known image on a single-operator box; revisit if you ever add
-#   untrusted workloads.
+# TWO DELIBERATE EXCEPTIONS to full isolation:
+#   * cadvisor runs privileged with a read-only docker.sock, because
+#     per-container metrics are impossible without it. A read-only docker.sock
+#     is still a privilege escalation path (it can read env vars of other
+#     containers). Accepted here because cadvisor is a well-known image on a
+#     single-operator box; revisit if you ever add untrusted workloads.
+#   * smartctl_exporter runs privileged as root, because SMART needs raw
+#     device access — and it is the earliest warning a mirror member is dying.
 
 name: privatecloud
 
@@ -49,7 +50,8 @@ volumes:
   grafana_data:
   prometheus_data:
   alertmanager_data:
-  ntfy_data:
+  ntfy_data:          # auth db — the part worth keeping
+  ntfy_cache:         # message/attachment cache — expendable
   caddy_data:
   caddy_config:
 
@@ -138,7 +140,9 @@ services:
     cap_add: [NET_BIND_SERVICE]
     security_opt: [no-new-privileges:true]
     healthcheck:
-      test: ["CMD", "caddy", "validate", "--config", "/etc/caddy/Caddyfile"]
+      # Hits the /healthz route on the plain-HTTP listener: proves the server
+      # is actually serving, not merely that the config parses.
+      test: ["CMD", "wget", "-q", "--spider", "http://localhost/healthz"]
       interval: 60s
       timeout: 10s
       retries: 3
@@ -163,7 +167,10 @@ services:
       # 90 days of history at this scrape volume is a few hundred MB.
       - --storage.tsdb.retention.time=90d
       - --storage.tsdb.retention.size=8GB
-      - --web.enable-lifecycle          # POST /-/reload instead of restarting
+      # POST /-/reload instead of restarting. Unauthenticated, and reachable
+      # from the tailnet via Caddy's /prometheus route — acceptable on a
+      # single-user tailnet; remove this flag if that ever changes.
+      - --web.enable-lifecycle
     user: "65534:65534"                 # nobody
     read_only: true
     security_opt: [no-new-privileges:true]
@@ -178,6 +185,10 @@ services:
     networks: [monitoring, edge]
     volumes:
       - ../monitoring/alertmanager.yml:/etc/alertmanager/alertmanager.yml:ro
+      # ntfy publish token, referenced by credentials_file in alertmanager.yml.
+      # Created as a placeholder in checklist step 5 and filled with a real
+      # token in step 8 (it can only be minted once ntfy is running).
+      - ../secrets/ntfy-alertmanager.token:/etc/alertmanager/ntfy.token:ro
       - alertmanager_data:/alertmanager
     command:
       - --config.file=/etc/alertmanager/alertmanager.yml
@@ -223,6 +234,12 @@ services:
     pid: host
     volumes:
       - /:/host:ro,rslave
+      # The systemd collector talks to systemd over D-Bus; /host doesn't cover
+      # the sockets it dials. Without these two mounts the collector fails
+      # silently and node_systemd_unit_state never exists — which would gut
+      # the BackupTimerNotRunning alert. Verified in checklist step 7.
+      - /run/systemd:/run/systemd:ro
+      - /var/run/dbus/system_bus_socket:/var/run/dbus/system_bus_socket:ro
     command:
       - --path.rootfs=/host
       - --collector.systemd
@@ -296,6 +313,12 @@ services:
     <<: *default-restart
     logging: *default-logging
     networks: [edge]
+    # Published directly on the Tailscale IP (in addition to the Caddy route)
+    # so that restic-backup.sh — which runs on the HOST, outside Docker's
+    # networks — can deliver failure notifications without fighting Caddy's
+    # internal-CA TLS. Still tailnet-only, still deny-all auth.
+    ports:
+      - "${TAILSCALE_IP}:8080:8080"
     command: serve
     environment:
       NTFY_BASE_URL: https://${TS_HOSTNAME:-cloud}.${TS_TAILNET:-example.ts.net}/ntfy
@@ -310,7 +333,7 @@ services:
       NTFY_AUTH_DEFAULT_ACCESS: "deny-all"
     volumes:
       - ntfy_data:/var/lib/ntfy
-      - ntfy_data:/var/cache/ntfy
+      - ntfy_cache:/var/cache/ntfy
     user: "1000:1000"
     security_opt: [no-new-privileges:true]
     cap_drop: [ALL]

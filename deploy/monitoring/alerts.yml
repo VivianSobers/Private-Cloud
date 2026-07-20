@@ -80,6 +80,11 @@ groups:
           summary: "SMART reports {{ $labels.device }} as FAILING"
           description: "Replace this disk now. Run `zpool status tank` and `smartctl -a {{ $labels.device }}`. Do not wait for it to die."
 
+      # ATA/SATA drives only: NVMe devices do not expose these attributes, so
+      # this rule silently matches nothing on an NVMe mirror — NvmeMediaErrors
+      # below is the NVMe equivalent. Whichever kind you run, confirm in
+      # Prometheus that the relevant series actually exists (checklist step 7);
+      # an alert on a metric that never exists looks identical to good health.
       - alert: SmartReallocatedSectorsGrowing
         expr: increase(smartctl_device_attribute{attribute_name="Reallocated_Sector_Ct",attribute_value_type="raw"}[24h]) > 0
         for: 1h
@@ -88,6 +93,15 @@ groups:
         annotations:
           summary: "{{ $labels.device }} reallocated new sectors in the last 24h"
           description: "A drive that starts reallocating usually continues. Order a replacement."
+
+      - alert: NvmeMediaErrors
+        expr: increase(smartctl_device_media_errors[24h]) > 0
+        for: 1h
+        labels:
+          severity: warning
+        annotations:
+          summary: "{{ $labels.device }} logged new NVMe media errors in the last 24h"
+          description: "The NVMe analogue of reallocated sectors. Order a replacement."
 
       - alert: DiskTemperatureHigh
         expr: smartctl_device_temperature{temperature_type="current"} > 55

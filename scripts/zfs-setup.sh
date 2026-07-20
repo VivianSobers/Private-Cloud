@@ -218,8 +218,9 @@ if [[ $DRY_RUN -eq 0 ]]; then
   if [[ -f /etc/cron.d/zfsutils-linux ]]; then
     log "distro scrub cron present at /etc/cron.d/zfsutils-linux"
   else
-    warn "no distro scrub cron found — add one:"
-    warn "  echo '0 3 8-14 * 0 root zpool scrub $POOL' > /etc/cron.d/zfs-scrub"
+    warn "no distro scrub cron found — add one (second Sunday of the month;"
+    warn "the date guard is needed because cron ORs day-of-month with day-of-week):"
+    warn "  echo '0 3 8-14 * * root [ \"\$(date +\\%w)\" -eq 0 ] && zpool scrub $POOL' > /etc/cron.d/zfs-scrub"
   fi
 fi
 

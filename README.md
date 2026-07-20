@@ -100,9 +100,10 @@ is not this one is what survives fire, theft, and both disks failing.
 durability and bounded recovery time instead — the correct tradeoff at this
 scale. Chasing HA across two home machines buys complexity, not uptime.
 
-**cadvisor is the one privileged container**, with a read-only `docker.sock`.
-Per-container metrics are impossible otherwise. It's a documented, deliberate
-exception to the isolation rules, not an oversight.
+**Two containers run privileged**: cadvisor (read-only `docker.sock` —
+per-container metrics are impossible otherwise) and smartctl_exporter (raw
+device access — SMART is the earliest warning a mirror member is dying). Both
+are documented, deliberate exceptions to the isolation rules, not oversights.
 
 ---
 

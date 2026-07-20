@@ -49,6 +49,9 @@ DISK2 = /dev/disk/by-id/________________________________
 - [ ] Test the lock/unlock cycle **now**, while nothing depends on it:
       `sudo zfs unload-key -a && sudo zfs load-key -a && sudo zfs mount -a`
 - [ ] `sudo mkdir -p /tank/postgres/data` (Postgres needs a non-empty-root subdir)
+- [ ] `sudo chown 999:999 /tank/postgres/data` — the container runs as uid 999
+      and, being non-root, cannot chown a root-owned directory; without this,
+      initdb fails with "permission denied" on first start
 
 ## 3. Snapshots
 
@@ -76,7 +79,17 @@ Full detail in [tailscale-setup.md](tailscale-setup.md).
 - [ ] `chmod 600 deploy/compose/.env`
 - [ ] Fill in `TAILSCALE_IP`, `TS_HOSTNAME`, `TS_TAILNET`
 - [ ] Generate real passwords: `openssl rand -base64 32` (once per secret, no reuse)
-- [ ] `git status` — **`.env` must not appear.** If it does, stop and fix `.gitignore`.
+- [ ] Create the alertmanager→ntfy token file as an empty placeholder — compose
+      bind-mounts it, and a missing file would become a directory. The real
+      token can only be minted once ntfy is running (step 8):
+
+```bash
+touch deploy/secrets/ntfy-alertmanager.token
+chmod 600 deploy/secrets/ntfy-alertmanager.token
+```
+
+- [ ] `git status` — **`.env` must not appear, nor `ntfy-alertmanager.token`.**
+      If either does, stop and fix `.gitignore`.
 
 ## 6. Docker stack
 
@@ -99,6 +112,15 @@ Full detail in [tailscale-setup.md](tailscale-setup.md).
   - [ ] 9628 PostgreSQL
   - [ ] 20204 SMART disk health
 - [ ] Confirm panels show **real data**, not "No data" — that's the actual test
+- [ ] **Verify the systemd metrics exist** — in `https://cloud/prometheus`,
+      query `node_systemd_unit_state{name="restic-backup.timer"}`. It must
+      return series (once the timer is installed in step 9; any unit name works
+      as a smoke test now). If it returns nothing, the systemd collector can't
+      reach D-Bus and the `BackupTimerNotRunning` alert is silently dead.
+- [ ] **Verify the disk-health metrics exist** — query
+      `smartctl_device_attribute{attribute_name="Reallocated_Sector_Ct"}` (SATA)
+      or `smartctl_device_media_errors` (NVMe). Whichever matches your drives
+      must return series, or the disk-failure alerts are watching nothing.
 - [ ] Export edited dashboards to JSON and commit them
 
 ## 8. ntfy
@@ -109,10 +131,21 @@ Full detail in [tailscale-setup.md](tailscale-setup.md).
 docker exec -it privatecloud-ntfy ntfy user add --role=admin admin
 docker exec -it privatecloud-ntfy ntfy user add alertmanager
 docker exec -it privatecloud-ntfy ntfy access alertmanager 'private-cloud*' write
+docker exec -it privatecloud-ntfy ntfy token add alertmanager
+docker exec -it privatecloud-ntfy ntfy user add backup
+docker exec -it privatecloud-ntfy ntfy access backup 'private-cloud*' write
 docker exec -it privatecloud-ntfy ntfy token add backup
 ```
 
-- [ ] Record the generated token in `.env` (`NTFY_TOKEN`) and in `backup.env`
+- [ ] Put the **alertmanager** token into the placeholder file from step 5,
+      then restart alertmanager so it picks it up:
+
+```bash
+$EDITOR deploy/secrets/ntfy-alertmanager.token   # paste tk_... , nothing else
+docker compose restart alertmanager
+```
+
+- [ ] Record the **backup** token in `backup.env` (`NTFY_TOKEN`)
 - [ ] Install the ntfy app on your phone; subscribe to `private-cloud` and `private-cloud-critical`
 - [ ] **Send a test alert and confirm it arrives on your phone:**
 
@@ -147,6 +180,21 @@ docker compose start postgres    # resolved notification follows
 - [ ] `sudo BACKUP_ENV=/etc/private-cloud/backup.env ./scripts/restic-backup.sh init`
 - [ ] Run one manually: `sudo ./scripts/restic-backup.sh backup`
 - [ ] Confirm the success notification reached your phone
+- [ ] **Break a backup on purpose and confirm the FAILURE notification arrives:**
+
+```bash
+# Point the script at a repo that doesn't exist; it must fail AND page you.
+# (A copy of the env file is edited because the script sources backup.env,
+# which would override a plain RESTIC_REPOSITORY= on the command line.)
+sudo cp /etc/private-cloud/backup.env /tmp/backup-broken.env
+sudo sed -i 's|^RESTIC_REPOSITORY=.*|RESTIC_REPOSITORY=/nonexistent|' /tmp/backup-broken.env
+sudo BACKUP_ENV=/tmp/backup-broken.env ./scripts/restic-backup.sh backup; echo "exit: $?"
+sudo rm /tmp/backup-broken.env
+```
+
+> A backup system whose failure path has never fired is indistinguishable
+> from one that fails silently. The success notification tests half the
+> plumbing; this tests the half you actually bought ntfy for.
 - [ ] Install the timers:
 
 ```bash
@@ -185,7 +233,11 @@ Phase 0 is done when every one of these is true:
 - [ ] Tailscale connected; stack reachable from phone and laptop; **nothing on `0.0.0.0`**
 - [ ] `docker compose ps` → all healthy
 - [ ] Grafana dashboards showing live data
+- [ ] `node_systemd_unit_state` and the SMART/NVMe health series **exist in
+      Prometheus** — the alerts that guard backups and disks are watching
+      real metrics, not absent ones
 - [ ] A test alert **received on your phone**
+- [ ] A deliberately broken backup run **paged your phone with a failure**
 - [ ] `restore-test.sh` passed
 - [ ] ZFS passphrase and restic password exist **on paper, off this machine**
 

@@ -5,6 +5,7 @@
 !deploy/secrets/.env.example
 deploy/secrets/*.key
 deploy/secrets/*.age
+deploy/secrets/*.token
 *.pem
 *.p12
 id_rsa*
@@ -13,12 +14,6 @@ id_ed25519*
 # ---- restic / backup material ----
 restic-password*
 .restic-repo-cache/
-
-# ---- local ZFS scratch / mount paths ----
-/tank/
-/mnt/
-/srv/backup/
-*.zfs-snapshot
 
 # ---- runtime state that must never enter git ----
 deploy/compose/data/
