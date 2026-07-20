@@ -63,6 +63,7 @@ sudo ./scripts/restore-test.sh        # the step that makes it real
 │   ├── sanoid/sanoid.conf            snapshot retention policy
 │   ├── systemd/                      backup timers
 │   └── secrets/.env.example          template; real .env is gitignored
+├── server/                           Go API (Phase 1) — see server/README.md
 ├── scripts/
 │   ├── zfs-setup.sh                  pool + datasets (destructive; --dry-run first)
 │   ├── sanoid-setup.sh               snapshots
@@ -113,8 +114,8 @@ are documented, deliberate exceptions to the isolation rules, not oversights.
 
 | Phase | Scope | Status |
 |---|---|---|
-| **0** | Storage, network, monitoring, backups, runbooks | **in progress** |
-| 1 | MVP: auth (passkeys), upload/download, web UI, WebDAV | not started |
+| 0 | Storage, network, monitoring, backups, runbooks | **complete** |
+| **1** | MVP: auth (passkeys), upload/download, web UI, WebDAV | **in progress** — slice 1 of 7 |
 | 2 | CAS storage engine, versioning, dedup, share links, search | not started |
 | 3 | Sync engine: change journal, Go client, conflict resolution | not started |
 | 4 | ML: OCR, semantic search, tagging; OIDC; hardening | not started |

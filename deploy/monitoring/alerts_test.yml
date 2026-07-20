@@ -33,11 +33,13 @@ tests:
         eval_time: 37h               # age 133200 > 129600, held > 30m → firing
         exp_alerts:
           - exp_labels: { severity: critical }
-            # humanizeDuration is deterministic at a fixed eval_time; the value
-            # is 60s under 37h because of the 30m `for` sampling offset.
+            # Annotations are rendered at eval_time itself, NOT at the moment
+            # the `for` duration was satisfied — so $value here is exactly 37h
+            # (133200s), not 37h minus an interval. 1d 13h 0m 0s is the
+            # humanizeDuration rendering of that.
             exp_annotations:
               summary: "No successful backup in over 36 hours"
-              description: "Last success was 1d 12h 59m 0s ago. The nightly timer or the offsite target is broken. Check: journalctl -u restic-backup.service"
+              description: "Last success was 1d 13h 0m 0s ago. The nightly timer or the offsite target is broken. Check: journalctl -u restic-backup.service"
 
   - name: BackupMetricsMissing fires when the timestamp is absent
     interval: 1m

@@ -263,6 +263,61 @@ groups:
           description: "The zpool textfile collector has never reported. Install privatecloud-zpool-metrics.timer — see docs/custom-metrics.md."
 
   # ==========================================================================
+  - name: api
+    rules:
+      # The `up` metric for the API job. TargetDown in the availability group
+      # already covers scrape failure generically; this one names the service
+      # so the notification is actionable without opening Prometheus.
+      - alert: ApiDown
+        expr: up{job="privatecloud-api"} == 0
+        for: 3m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Private cloud API is not responding to scrapes"
+          description: "Check: docker compose logs api --tail 100"
+
+      # Sustained 5xx means the API is broken, not that one request failed.
+      # Rate over 10m with a 5% floor avoids paging on a single error during
+      # otherwise idle periods, where 1 error in 2 requests would be 50%.
+      - alert: ApiHighErrorRate
+        expr: |
+          sum(rate(privatecloud_http_requests_total{status="5xx"}[10m]))
+            / clamp_min(sum(rate(privatecloud_http_requests_total[10m])), 0.01) > 0.05
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Over 5% of API requests are failing with 5xx"
+          description: "{{ $value | humanizePercentage }} of requests over the last 10 minutes. Check the API logs for panics."
+
+      # p95 latency on metadata endpoints. File transfer routes will need their
+      # own threshold once slice 3 lands — a 2s p95 is fine for a 4GB download
+      # and terrible for a directory listing.
+      - alert: ApiSlowRequests
+        expr: |
+          histogram_quantile(0.95,
+            sum by (le, route) (rate(privatecloud_http_request_duration_seconds_bucket[10m]))
+          ) > 2
+        for: 15m
+        labels:
+          severity: warning
+        annotations:
+          summary: "API p95 latency on {{ $labels.route }} is above 2s"
+
+      # The pgx pool has a hard ceiling (PC_DB_MAX_CONNS). Sitting near it means
+      # requests are queueing for a connection, which shows up to users as
+      # everything being slow at once.
+      - alert: ApiDatabasePoolSaturated
+        expr: privatecloud_db_pool_acquired_connections > 8
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: "API database connection pool is nearly exhausted"
+          description: "{{ $value }} of 10 connections in use. Look for slow queries or a leaked transaction."
+
+  # ==========================================================================
   # Recording rules: derived series the alerts and dashboards read. Kept in
   # their own group so they evaluate as a unit.
   - name: derived

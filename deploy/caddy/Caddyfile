@@ -43,6 +43,26 @@
 		-Server
 	}
 
+	# ---- API (Phase 1) -----------------------------------------------------
+	# Note there is no handle_path here: the API expects to receive the full
+	# /api/... path, because its routes are declared as "GET /api/v1/...".
+	# Stripping the prefix would 404 everything.
+	handle /api/* {
+		reverse_proxy api:8080 {
+			# An inbound X-Request-Id reaches the API unaltered — reverse_proxy
+			# forwards request headers by default, so no header_up is needed
+			# (adding one earns a "this is unnecessary" warning from Caddy).
+			# The API generates an ID when the header is absent.
+			#
+			# Uploads in slice 4 are large and slow; don't let the proxy cut
+			# them off mid-transfer.
+			transport http {
+				read_timeout 1h
+				write_timeout 1h
+			}
+		}
+	}
+
 	# ---- Grafana -----------------------------------------------------------
 	# GF_SERVER_SERVE_FROM_SUB_PATH=true in compose makes Grafana generate
 	# correct asset URLs under /grafana. Without it you get a blank page and

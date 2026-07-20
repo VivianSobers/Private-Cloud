@@ -120,6 +120,51 @@ services:
       - track_io_timing=on
 
   # ==========================================================================
+  # API — the private cloud application (Phase 1).
+  # ==========================================================================
+  api:
+    build:
+      context: ../../server
+      dockerfile: Dockerfile
+      args:
+        VERSION: ${API_VERSION:-dev}
+        COMMIT: ${API_COMMIT:-none}
+    image: privatecloud-api:${API_VERSION:-dev}
+    container_name: privatecloud-api
+    <<: *default-restart
+    logging: *default-logging
+    # data      -> reach Postgres
+    # edge      -> be reached by Caddy
+    # monitoring-> be scraped by Prometheus
+    networks: [data, edge, monitoring]
+    # No ports. The API is reachable only through Caddy, which is itself bound
+    # to the Tailscale IP. Publishing a port here would bypass that.
+    environment:
+      PC_ENV: ${PC_ENV:-prod}
+      PC_HTTP_ADDR: ":8080"
+      PC_LOG_LEVEL: ${PC_LOG_LEVEL:-info}
+      PC_LOG_FORMAT: ${PC_LOG_FORMAT:-json}
+      # Assembled from the same credentials Postgres itself uses, so there is
+      # one source of truth for the password.
+      PC_DATABASE_URL: "postgres://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-privatecloud}?sslmode=disable"
+      PC_MIGRATE_ON_START: "true"
+    # distroless/static:nonroot — uid 65532, no shell, no package manager.
+    read_only: true
+    security_opt: [no-new-privileges:true]
+    cap_drop: [ALL]
+    healthcheck:
+      # The image has no shell and no wget, so the binary health-checks itself.
+      # This is why cmd/api supports a `healthcheck` subcommand.
+      test: ["CMD", "/api", "healthcheck"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  # ==========================================================================
   # Caddy — TLS termination and the only ingress.
   # ==========================================================================
   caddy:
@@ -149,7 +194,7 @@ services:
       interval: 60s
       timeout: 10s
       retries: 3
-    depends_on: [grafana, ntfy]
+    depends_on: [grafana, ntfy, api]
 
   # ==========================================================================
   # Monitoring

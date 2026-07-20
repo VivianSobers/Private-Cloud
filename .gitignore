@@ -21,6 +21,11 @@ deploy/monitoring/grafana/data/
 deploy/caddy/data/
 deploy/caddy/config/
 
+# ---- Go build artifacts (Phase 1) ----
+server/bin/
+server/coverage.out
+server/coverage.html
+
 # ---- editor / OS ----
 .DS_Store
 Thumbs.db
