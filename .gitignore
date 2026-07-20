@@ -1,0 +1,36 @@
+# ---- secrets ----
+.env
+*.env
+!.env.example
+!deploy/secrets/.env.example
+deploy/secrets/*.key
+deploy/secrets/*.age
+*.pem
+*.p12
+id_rsa*
+id_ed25519*
+
+# ---- restic / backup material ----
+restic-password*
+.restic-repo-cache/
+
+# ---- local ZFS scratch / mount paths ----
+/tank/
+/mnt/
+/srv/backup/
+*.zfs-snapshot
+
+# ---- runtime state that must never enter git ----
+deploy/compose/data/
+deploy/monitoring/grafana/data/
+deploy/caddy/data/
+deploy/caddy/config/
+
+# ---- editor / OS ----
+.DS_Store
+Thumbs.db
+desktop.ini
+.vscode/
+.idea/
+*.swp
+*~

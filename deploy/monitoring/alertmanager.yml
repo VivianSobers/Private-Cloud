@@ -1,0 +1,50 @@
+# Alertmanager — routes Prometheus alerts to ntfy, which pushes to your phone.
+#
+# ntfy natively understands Alertmanager's webhook payload when you POST to
+# /<topic>?tpl=yes with its Alertmanager template, but the simplest robust
+# setup is a plain webhook to the ntfy topic and letting ntfy format it.
+
+global:
+  resolve_timeout: 5m
+
+route:
+  receiver: ntfy-default
+  # Group alerts so a host going down sends one notification, not twelve.
+  group_by: [alertname, severity]
+  group_wait: 30s          # brief pause to collect related alerts
+  group_interval: 5m       # how often to send updates about a firing group
+  repeat_interval: 12h     # nag cadence for something still broken
+
+  routes:
+    # Critical alerts get their own topic and bypass phone quiet hours via
+    # ntfy's urgent priority (set in the receiver below).
+    - matchers:
+        - severity = "critical"
+      receiver: ntfy-critical
+      group_wait: 10s
+      repeat_interval: 4h
+
+    - matchers:
+        - severity = "info"
+      receiver: ntfy-default
+      repeat_interval: 24h
+
+# Don't page about a full disk on a host that is already reported down.
+inhibit_rules:
+  - source_matchers: [severity = "critical"]
+    target_matchers: [severity = "warning"]
+    equal: [alertname, instance]
+
+receivers:
+  - name: ntfy-default
+    webhook_configs:
+      # ntfy is on the `edge` network; alertmanager joins it for exactly this.
+      # NOTE: the topic must exist and alertmanager must be allowed to publish
+      # to it — see docs/phase-0-checklist.md for the `ntfy access` commands.
+      - url: http://ntfy:8080/private-cloud
+        send_resolved: true
+
+  - name: ntfy-critical
+    webhook_configs:
+      - url: http://ntfy:8080/private-cloud-critical
+        send_resolved: true

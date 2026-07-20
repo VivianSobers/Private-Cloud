@@ -1,0 +1,28 @@
+# Grafana datasource provisioning.
+#
+# Provisioned datasources are managed by this file, not the UI — edits made in
+# the browser are reverted on restart. That is intentional: the repo is the
+# source of truth, so a rebuilt server comes back identical.
+
+apiVersion: 1
+
+datasources:
+  - name: Prometheus
+    type: prometheus
+    access: proxy
+    uid: prometheus          # dashboards reference this uid; keep it stable
+    url: http://prometheus:9090
+    isDefault: true
+    jsonData:
+      timeInterval: 30s      # must match prometheus global scrape_interval
+      httpMethod: POST
+    editable: false
+
+  # Loki lands in Phase 2. Left here commented so the shape is obvious when
+  # you get there rather than something you have to look up again.
+  # - name: Loki
+  #   type: loki
+  #   access: proxy
+  #   uid: loki
+  #   url: http://loki:3100
+  #   editable: false

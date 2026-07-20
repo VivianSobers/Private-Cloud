@@ -1,0 +1,23 @@
+# Grafana dashboard provisioning.
+#
+# Anything dropped as JSON into deploy/monitoring/grafana/dashboards/ is loaded
+# automatically. Grab community dashboards by ID from grafana.com/dashboards,
+# export the JSON, and commit it — see docs/phase-0-checklist.md for the four
+# worth importing first (Node Exporter Full is 1860).
+
+apiVersion: 1
+
+providers:
+  - name: private-cloud
+    orgId: 1
+    folder: Private Cloud
+    type: file
+    disableDeletion: false
+    # Pick up edits without restarting the container.
+    updateIntervalSeconds: 30
+    # allowUiUpdates=true lets you tweak a panel in the browser to explore.
+    # Remember to export and commit anything you want to survive a rebuild.
+    allowUiUpdates: true
+    options:
+      path: /var/lib/grafana/dashboards
+      foldersFromFilesStructure: false

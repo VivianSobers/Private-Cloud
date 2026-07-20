@@ -1,0 +1,34 @@
+[Unit]
+Description=Private cloud nightly restic backup
+Documentation=file:///opt/private-cloud/docs/runbook-restore.md
+# Don't start the backup before the pool is unlocked and mounted, or restic
+# will happily back up an empty mountpoint and "succeed".
+After=zfs-mount.service docker.service network-online.target
+Wants=network-online.target
+RequiresMountsFor=/tank/configs /tank/postgres
+
+[Service]
+Type=oneshot
+User=root
+Environment=BACKUP_ENV=/etc/private-cloud/backup.env
+ExecStart=/opt/private-cloud/scripts/restic-backup.sh backup
+
+# A backup that hangs forever is a backup that never runs again.
+TimeoutStartSec=6h
+
+# Be a good neighbour: backups must never starve the app of IO.
+Nice=10
+IOSchedulingClass=idle
+CPUSchedulingPolicy=batch
+
+# Modest hardening. Not sandboxed hard, because it legitimately needs zfs,
+# docker.sock and the network.
+NoNewPrivileges=true
+ProtectHome=read-only
+PrivateTmp=true
+
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target

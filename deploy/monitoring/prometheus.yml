@@ -1,0 +1,59 @@
+# Prometheus scrape config — Phase 0.
+#
+# Targets are Docker service names, resolved by Docker's embedded DNS on the
+# `monitoring` network. No service discovery needed at this scale; a static
+# list you can read in one screen beats file_sd you have to debug.
+
+global:
+  scrape_interval: 30s
+  # 30s is deliberate: 15s doubles storage for metrics that change slowly on a
+  # single-node home server. Drop to 15s only for something you're debugging.
+  evaluation_interval: 30s
+  external_labels:
+    host: private-cloud
+    env: home
+
+rule_files:
+  - /etc/prometheus/alerts.yml
+
+alerting:
+  alertmanagers:
+    - static_configs:
+        - targets: ["alertmanager:9093"]
+
+scrape_configs:
+  # Prometheus scraping itself — catches "my monitoring is broken" before it
+  # silently stops telling you about everything else.
+  - job_name: prometheus
+    static_configs:
+      - targets: ["localhost:9090"]
+
+  # Host: CPU, RAM, disk, filesystem, systemd units, and crucially the ZFS
+  # collector (ARC hit rate, pool IO).
+  - job_name: node
+    static_configs:
+      - targets: ["node_exporter:9100"]
+
+  # Per-container CPU/memory/network/IO.
+  - job_name: cadvisor
+    static_configs:
+      - targets: ["cadvisor:8080"]
+    metric_relabel_configs:
+      # cadvisor emits an enormous number of near-useless series. Keep the ones
+      # dashboards actually use; this cuts TSDB growth by roughly an order of
+      # magnitude.
+      - source_labels: [__name__]
+        regex: "container_(cpu_usage_seconds_total|memory_working_set_bytes|memory_usage_bytes|fs_usage_bytes|fs_limit_bytes|network_receive_bytes_total|network_transmit_bytes_total|last_seen|spec_memory_limit_bytes)"
+        action: keep
+
+  # Disk health. This is the exporter that warns you a mirror member is dying
+  # while ZFS can still heal from the other one.
+  - job_name: smartctl
+    scrape_interval: 120s     # SMART reads are slow and can wake idle disks
+    static_configs:
+      - targets: ["smartctl_exporter:9633"]
+
+  # Postgres: connections, transaction rate, replication lag, bloat signals.
+  - job_name: postgres
+    static_configs:
+      - targets: ["postgres_exporter:9187"]

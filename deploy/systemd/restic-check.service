@@ -1,0 +1,18 @@
+[Unit]
+Description=Private cloud restic repository integrity check
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=root
+Environment=BACKUP_ENV=/etc/private-cloud/backup.env
+ExecStart=/opt/private-cloud/scripts/restic-backup.sh check
+TimeoutStartSec=4h
+Nice=15
+IOSchedulingClass=idle
+NoNewPrivileges=true
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target

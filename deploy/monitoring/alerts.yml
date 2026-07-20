@@ -1,0 +1,155 @@
+# Alert rules — Phase 0.
+#
+# Philosophy: every alert here should be something you would want to be woken
+# up for, or at least something you must act on within a day. Alerts that fire
+# routinely and get ignored are worse than no alerts, because they teach you to
+# ignore the channel that will one day carry the real one.
+
+groups:
+  # ==========================================================================
+  - name: availability
+    rules:
+      - alert: TargetDown
+        expr: up == 0
+        for: 5m
+        labels:
+          severity: critical
+        annotations:
+          summary: "{{ $labels.job }} target is down"
+          description: "Prometheus has failed to scrape {{ $labels.job }} ({{ $labels.instance }}) for 5 minutes."
+
+      - alert: PostgresDown
+        expr: pg_up == 0
+        for: 2m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Postgres is not responding"
+          description: "Every later phase depends on this. Check: docker compose logs postgres"
+
+  # ==========================================================================
+  - name: storage
+    rules:
+      # Fires early enough that you can act. ZFS performance degrades badly
+      # above ~80% capacity because the allocator switches strategies, so 80%
+      # is a real operational threshold, not an arbitrary round number.
+      - alert: ZFSPoolNearlyFull
+        expr: |
+          100 * (1 - node_filesystem_avail_bytes{fstype="zfs"}
+                     / node_filesystem_size_bytes{fstype="zfs"}) > 80
+        for: 30m
+        labels:
+          severity: warning
+        annotations:
+          summary: "ZFS filesystem {{ $labels.mountpoint }} is over 80% full"
+          description: "ZFS write performance degrades sharply past 80%. Current usage {{ $value | printf \"%.1f\" }}%. Consider pruning snapshots (zfs list -t snapshot -o name,used -s used) or planning disk replacement."
+
+      - alert: ZFSPoolCriticallyFull
+        expr: |
+          100 * (1 - node_filesystem_avail_bytes{fstype="zfs"}
+                     / node_filesystem_size_bytes{fstype="zfs"}) > 92
+        for: 10m
+        labels:
+          severity: critical
+        annotations:
+          summary: "ZFS filesystem {{ $labels.mountpoint }} is over 92% full"
+          description: "A full copy-on-write filesystem cannot even delete files efficiently. Act now."
+
+      - alert: RootFilesystemFull
+        expr: |
+          100 * (1 - node_filesystem_avail_bytes{mountpoint="/host",fstype!~"tmpfs|zfs"}
+                     / node_filesystem_size_bytes{mountpoint="/host",fstype!~"tmpfs|zfs"}) > 85
+        for: 15m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Root filesystem is over 85% full"
+          description: "Usually Docker images/logs. Try: docker system prune -a --filter until=168h"
+
+  # ==========================================================================
+  - name: disk-health
+    rules:
+      # SMART is the earliest warning available that a mirror member is failing.
+      # Act on it while ZFS still has a healthy second copy to resilver from.
+      - alert: SmartDeviceUnhealthy
+        expr: smartctl_device_smart_status == 0
+        for: 10m
+        labels:
+          severity: critical
+        annotations:
+          summary: "SMART reports {{ $labels.device }} as FAILING"
+          description: "Replace this disk now. Run `zpool status tank` and `smartctl -a {{ $labels.device }}`. Do not wait for it to die."
+
+      - alert: SmartReallocatedSectorsGrowing
+        expr: increase(smartctl_device_attribute{attribute_name="Reallocated_Sector_Ct",attribute_value_type="raw"}[24h]) > 0
+        for: 1h
+        labels:
+          severity: warning
+        annotations:
+          summary: "{{ $labels.device }} reallocated new sectors in the last 24h"
+          description: "A drive that starts reallocating usually continues. Order a replacement."
+
+      - alert: DiskTemperatureHigh
+        expr: smartctl_device_temperature{temperature_type="current"} > 55
+        for: 30m
+        labels:
+          severity: warning
+        annotations:
+          summary: "{{ $labels.device }} running at {{ $value }}°C"
+          description: "Sustained high temperature shortens drive life. Check case airflow."
+
+  # ==========================================================================
+  - name: host
+    rules:
+      - alert: HostOutOfMemory
+        expr: |
+          node_memory_MemAvailable_bytes / node_memory_MemTotal_bytes * 100 < 8
+        for: 15m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Less than 8% memory available"
+          description: "On this box the usual suspect is ZFS ARC. Check `arc_summary` and the zfs_arc_max cap in /etc/modprobe.d/zfs.conf."
+
+      - alert: HostHighLoad
+        expr: node_load15 / count(count(node_cpu_seconds_total) by (cpu)) > 2
+        for: 30m
+        labels:
+          severity: warning
+        annotations:
+          summary: "15-minute load average is more than 2x core count"
+
+      - alert: SystemdUnitFailed
+        expr: node_systemd_unit_state{state="failed"} == 1
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: "systemd unit {{ $labels.name }} has failed"
+          description: "Includes the backup timer. Check: systemctl status {{ $labels.name }}"
+
+      - alert: HostRebooted
+        expr: time() - node_boot_time_seconds < 600
+        labels:
+          severity: info
+        annotations:
+          summary: "Host rebooted recently"
+          description: "REMINDER: an encrypted ZFS pool does not auto-unlock. Run `zfs load-key -a && zfs mount -a`, then `cd deploy/compose && docker compose up -d`."
+
+  # ==========================================================================
+  - name: backup
+    rules:
+      # NOTE: this rule only works once you export backup metrics. Phase 0 gets
+      # failure notifications directly from restic-backup.sh via ntfy, which is
+      # sufficient. The gap it leaves is real and worth naming: ntfy tells you
+      # when a backup FAILS, but not when one silently stops running at all.
+      # Closing that gap properly means a textfile collector — see
+      # docs/phase-0-checklist.md, "hardening follow-ups".
+      - alert: BackupTimerNotRunning
+        expr: node_systemd_unit_state{name="restic-backup.timer",state="active"} == 0
+        for: 1h
+        labels:
+          severity: critical
+        annotations:
+          summary: "The nightly backup timer is not active"
+          description: "No backups are being taken. systemctl status restic-backup.timer"

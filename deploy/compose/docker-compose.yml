@@ -1,0 +1,321 @@
+# Private cloud — Phase 0 infrastructure stack.
+#
+#   cd deploy/compose && docker compose up -d
+#
+# Everything here is infrastructure. No application code runs yet.
+#
+# SECURITY MODEL (see docs/runbook-disaster-recovery.md for the full threat model):
+#   * Three isolated networks. A container can only talk to what it shares a
+#     network with. Postgres is on `data` only and is unreachable from the edge.
+#   * No published ports on 0.0.0.0. Everything binds to ${TAILSCALE_IP}, so the
+#     stack is reachable from your tailnet and invisible to the LAN and internet.
+#   * Non-root, read_only rootfs, cap_drop ALL wherever the image tolerates it.
+#   * Pinned image tags. See docs/phase-0-checklist.md for pinning to digests,
+#     which is what actually makes a build reproducible.
+#
+# TWO DELIBERATE EXCEPTIONS to "no container gets docker.sock":
+#   cadvisor and postgres_exporter... no — only cadvisor. It reads the Docker
+#   socket read-only because per-container metrics are impossible without it.
+#   A read-only docker.sock is still a privilege escalation path (it can read
+#   env vars of other containers). Accepted here because cadvisor is a
+#   well-known image on a single-operator box; revisit if you ever add
+#   untrusted workloads.
+
+name: privatecloud
+
+x-logging: &default-logging
+  driver: json-file
+  options:
+    max-size: "10m"
+    max-file: "3"
+
+x-restart: &default-restart
+  restart: unless-stopped
+
+networks:
+  # Caddy <-> anything user-facing. The only network with published ports.
+  edge:
+    driver: bridge
+  # Postgres and its clients. internal:true means no route to the internet at
+  # all — a compromised exporter cannot phone home from here.
+  data:
+    driver: bridge
+    internal: true
+  # Prometheus scrape targets + Grafana.
+  monitoring:
+    driver: bridge
+
+volumes:
+  grafana_data:
+  prometheus_data:
+  alertmanager_data:
+  ntfy_data:
+  caddy_data:
+  caddy_config:
+
+services:
+  # ==========================================================================
+  # Postgres — metadata store for every later phase.
+  # ==========================================================================
+  postgres:
+    image: postgres:17.5-alpine
+    container_name: privatecloud-postgres
+    <<: *default-restart
+    logging: *default-logging
+    networks: [data]
+    # Bind-mounted onto the ZFS dataset tuned with recordsize=16K.
+    # PGDATA points at a subdirectory because Postgres refuses to initialize
+    # into a directory that isn't empty, and a ZFS mountpoint root often has
+    # a lost+found-alike or the .zfs control dir in the way.
+    volumes:
+      - /tank/postgres/data:/var/lib/postgresql/data
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:?set POSTGRES_USER in .env}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}
+      POSTGRES_DB: ${POSTGRES_DB:-privatecloud}
+      PGDATA: /var/lib/postgresql/data/pgdata
+      # Checksums catch corruption at the DB layer even though ZFS also does.
+      # Belt and braces; must be set at initdb time and cannot be added later
+      # without a dump/restore.
+      POSTGRES_INITDB_ARGS: "--data-checksums"
+    user: "999:999"          # postgres user in the alpine image
+    read_only: true
+    tmpfs:
+      - /tmp:mode=1777,size=64m
+      - /run/postgresql:mode=0700,uid=999,gid=999,size=64m
+    security_opt: [no-new-privileges:true]
+    cap_drop: [ALL]
+    cap_add: [CHOWN, DAC_OVERRIDE, FOWNER, SETGID, SETUID]
+    shm_size: 256mb          # too small a /dev/shm breaks parallel query plans
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+    # 16GB box shared with ZFS ARC (capped at 6GB). Leave Postgres room but
+    # don't let it think it owns the machine.
+    command:
+      - postgres
+      - -c
+      - shared_buffers=1GB
+      - -c
+      - effective_cache_size=3GB
+      - -c
+      - work_mem=32MB
+      - -c
+      - maintenance_work_mem=256MB
+      - -c
+      - max_connections=100
+      - -c
+      - random_page_cost=1.1          # SSD/ARC-backed; default 4.0 assumes spinning rust
+      - -c
+      - shared_preload_libraries=pg_stat_statements
+      - -c
+      - track_io_timing=on
+
+  # ==========================================================================
+  # Caddy — TLS termination and the only ingress.
+  # ==========================================================================
+  caddy:
+    image: caddy:2.8.4-alpine
+    container_name: privatecloud-caddy
+    <<: *default-restart
+    logging: *default-logging
+    networks: [edge, monitoring]
+    # Bound to the Tailscale interface ONLY. If TAILSCALE_IP is unset this
+    # fails loudly rather than silently binding 0.0.0.0 and exposing Grafana.
+    ports:
+      - "${TAILSCALE_IP:?set TAILSCALE_IP in .env — see docs/tailscale-setup.md}:80:80"
+      - "${TAILSCALE_IP}:443:443"
+    volumes:
+      - ../caddy/Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data          # holds issued certs — persist or you re-issue
+      - caddy_config:/config
+    environment:
+      TS_HOSTNAME: ${TS_HOSTNAME:-cloud}
+    cap_drop: [ALL]
+    cap_add: [NET_BIND_SERVICE]
+    security_opt: [no-new-privileges:true]
+    healthcheck:
+      test: ["CMD", "caddy", "validate", "--config", "/etc/caddy/Caddyfile"]
+      interval: 60s
+      timeout: 10s
+      retries: 3
+    depends_on: [grafana, ntfy]
+
+  # ==========================================================================
+  # Monitoring
+  # ==========================================================================
+  prometheus:
+    image: prom/prometheus:v3.1.0
+    container_name: privatecloud-prometheus
+    <<: *default-restart
+    logging: *default-logging
+    networks: [monitoring]
+    volumes:
+      - ../monitoring/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - ../monitoring/alerts.yml:/etc/prometheus/alerts.yml:ro
+      - prometheus_data:/prometheus
+    command:
+      - --config.file=/etc/prometheus/prometheus.yml
+      - --storage.tsdb.path=/prometheus
+      # 90 days of history at this scrape volume is a few hundred MB.
+      - --storage.tsdb.retention.time=90d
+      - --storage.tsdb.retention.size=8GB
+      - --web.enable-lifecycle          # POST /-/reload instead of restarting
+    user: "65534:65534"                 # nobody
+    read_only: true
+    security_opt: [no-new-privileges:true]
+    cap_drop: [ALL]
+
+  alertmanager:
+    image: prom/alertmanager:v0.28.0
+    container_name: privatecloud-alertmanager
+    <<: *default-restart
+    logging: *default-logging
+    # Needs `edge` to reach ntfy for push notifications.
+    networks: [monitoring, edge]
+    volumes:
+      - ../monitoring/alertmanager.yml:/etc/alertmanager/alertmanager.yml:ro
+      - alertmanager_data:/alertmanager
+    command:
+      - --config.file=/etc/alertmanager/alertmanager.yml
+      - --storage.path=/alertmanager
+    user: "65534:65534"
+    read_only: true
+    security_opt: [no-new-privileges:true]
+    cap_drop: [ALL]
+
+  grafana:
+    image: grafana/grafana:11.5.1
+    container_name: privatecloud-grafana
+    <<: *default-restart
+    logging: *default-logging
+    networks: [monitoring]
+    volumes:
+      - grafana_data:/var/lib/grafana
+      - ../monitoring/grafana/provisioning:/etc/grafana/provisioning:ro
+      - ../monitoring/grafana/dashboards:/var/lib/grafana/dashboards:ro
+    environment:
+      GF_SECURITY_ADMIN_USER: ${GRAFANA_ADMIN_USER:-admin}
+      GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_ADMIN_PASSWORD:?set GRAFANA_ADMIN_PASSWORD in .env}
+      # Grafana sits behind Caddy at /grafana on the tailnet-only plane.
+      GF_SERVER_ROOT_URL: https://${TS_HOSTNAME:-cloud}.${TS_TAILNET:-example.ts.net}/grafana
+      GF_SERVER_SERVE_FROM_SUB_PATH: "true"
+      GF_USERS_ALLOW_SIGN_UP: "false"
+      GF_ANALYTICS_REPORTING_ENABLED: "false"
+      GF_ANALYTICS_CHECK_FOR_UPDATES: "false"
+      GF_INSTALL_PLUGINS: ""
+    user: "472:472"
+    security_opt: [no-new-privileges:true]
+    cap_drop: [ALL]
+
+  # --- exporters ------------------------------------------------------------
+  node_exporter:
+    image: prom/node-exporter:v1.8.2
+    container_name: privatecloud-node-exporter
+    <<: *default-restart
+    logging: *default-logging
+    networks: [monitoring]
+    # Host namespaces are the point of this exporter: it reports on the host,
+    # not on its own container.
+    pid: host
+    volumes:
+      - /:/host:ro,rslave
+    command:
+      - --path.rootfs=/host
+      - --collector.systemd
+      - --collector.processes
+      # ZFS collector is what surfaces ARC hit rate and pool IO.
+      - --collector.zfs
+      - --no-collector.wifi
+      - --no-collector.hwmon
+    read_only: true
+    security_opt: [no-new-privileges:true]
+    cap_drop: [ALL]
+
+  cadvisor:
+    image: gcr.io/cadvisor/cadvisor:v0.49.1
+    container_name: privatecloud-cadvisor
+    <<: *default-restart
+    logging: *default-logging
+    networks: [monitoring]
+    privileged: true          # required to read cgroup + container stats
+    devices:
+      - /dev/kmsg:/dev/kmsg
+    volumes:
+      - /:/rootfs:ro
+      - /var/run:/var/run:ro
+      - /sys:/sys:ro
+      - /var/lib/docker/:/var/lib/docker:ro
+      # DOCUMENTED EXCEPTION: read-only docker.sock. See header comment.
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+    command:
+      - --housekeeping_interval=30s
+      - --docker_only=true
+      - --store_container_labels=false
+
+  smartctl_exporter:
+    image: prometheuscommunity/smartctl-exporter:v0.13.0
+    container_name: privatecloud-smartctl-exporter
+    <<: *default-restart
+    logging: *default-logging
+    networks: [monitoring]
+    # SMART requires raw device access. This is the earliest warning you get
+    # that a mirror member is dying — worth the privilege.
+    privileged: true
+    user: root
+    volumes:
+      - /dev:/dev:ro
+    security_opt: [no-new-privileges:true]
+
+  postgres_exporter:
+    image: prometheuscommunity/postgres-exporter:v0.16.0
+    container_name: privatecloud-postgres-exporter
+    <<: *default-restart
+    logging: *default-logging
+    # Straddles both: reaches Postgres on `data`, scraped from `monitoring`.
+    networks: [data, monitoring]
+    environment:
+      DATA_SOURCE_NAME: "postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-privatecloud}?sslmode=disable"
+    user: "65534:65534"
+    read_only: true
+    security_opt: [no-new-privileges:true]
+    cap_drop: [ALL]
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  # ==========================================================================
+  # ntfy — push alerts to your phone.
+  # ==========================================================================
+  ntfy:
+    image: binwiederhier/ntfy:v2.11.0
+    container_name: privatecloud-ntfy
+    <<: *default-restart
+    logging: *default-logging
+    networks: [edge]
+    command: serve
+    environment:
+      NTFY_BASE_URL: https://${TS_HOSTNAME:-cloud}.${TS_TAILNET:-example.ts.net}/ntfy
+      NTFY_LISTEN_HTTP: ":8080"
+      NTFY_BEHIND_PROXY: "true"
+      NTFY_CACHE_FILE: /var/cache/ntfy/cache.db
+      NTFY_CACHE_DURATION: "72h"
+      NTFY_ATTACHMENT_CACHE_DIR: /var/cache/ntfy/attachments
+      # deny-all: only authenticated clients may publish or subscribe. Without
+      # this, anyone who reaches the service can read your alert topics.
+      NTFY_AUTH_FILE: /var/lib/ntfy/user.db
+      NTFY_AUTH_DEFAULT_ACCESS: "deny-all"
+    volumes:
+      - ntfy_data:/var/lib/ntfy
+      - ntfy_data:/var/cache/ntfy
+    user: "1000:1000"
+    security_opt: [no-new-privileges:true]
+    cap_drop: [ALL]
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q --spider http://localhost:8080/v1/health || exit 1"]
+      interval: 60s
+      timeout: 10s
+      retries: 3

@@ -1,0 +1,12 @@
+Drop exported Grafana dashboard JSON files here; they are auto-loaded into the
+"Private Cloud" folder by ../provisioning/dashboards/dashboards.yml.
+
+Recommended starting set (import by ID from grafana.com, then export to JSON
+and commit the file so a rebuilt server comes back with the same dashboards):
+
+  1860   Node Exporter Full          — host CPU/RAM/disk/network
+  193    Docker + cAdvisor           — per-container resource use
+  9628   PostgreSQL Database         — connections, transactions, cache hits
+  20204  SMART disk health           — drive temperature, reallocated sectors
+
+When importing, select the "Prometheus" datasource (uid: prometheus).

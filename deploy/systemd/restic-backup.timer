@@ -1,0 +1,18 @@
+[Unit]
+Description=Run private cloud restic backup nightly
+Documentation=file:///opt/private-cloud/docs/runbook-restore.md
+
+[Timer]
+# 03:20 local time. The odd minute avoids colliding with every other cron job
+# on the internet that fires exactly on the hour.
+OnCalendar=*-*-* 03:20:00
+# If the machine was off at 03:20, run once it comes back rather than skipping
+# a night silently.
+Persistent=true
+# Spread start by up to 10 min so a flaky offsite target isn't hammered at the
+# same instant every night.
+RandomizedDelaySec=600
+Unit=restic-backup.service
+
+[Install]
+WantedBy=timers.target

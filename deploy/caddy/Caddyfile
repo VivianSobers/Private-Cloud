@@ -1,0 +1,99 @@
+# Caddyfile — Phase 0.
+#
+# Private plane only. Nothing here is reachable from the internet: the compose
+# file binds Caddy's ports to the Tailscale interface address, so this site is
+# served exclusively to devices on your tailnet.
+#
+# The public plane (share links, public WebDAV) arrives in Phase 2 as a
+# SEPARATE site block with its own rate limits. Do not add public routes here.
+
+{
+	# No ACME account needed — see the tls directive below.
+	admin off
+	# Structured logs so Loki can parse them when it lands in Phase 2.
+	log {
+		output stderr
+		format json
+		level INFO
+	}
+	servers {
+		# Trust the proxy chain only from Docker-internal addresses.
+		trusted_proxies static private_ranges
+	}
+}
+
+# {$TS_HOSTNAME} comes from the compose environment (e.g. "cloud").
+# On a tailnet with MagicDNS + HTTPS enabled the real name is
+# cloud.<your-tailnet>.ts.net — set TS_TAILNET in .env and use that here.
+:443 {
+	# TLS: `internal` makes Caddy issue a cert from its own local CA. Browsers
+	# will warn until you trust that CA (docs/tailscale-setup.md explains how,
+	# and how to swap this for a real Let's Encrypt cert via `tailscale cert`
+	# once MagicDNS HTTPS is enabled — the better long-term answer).
+	tls internal
+
+	encode zstd gzip
+
+	# Baseline hardening headers. Cheap, and they apply to everything below.
+	header {
+		Strict-Transport-Security "max-age=31536000; includeSubDomains"
+		X-Content-Type-Options "nosniff"
+		X-Frame-Options "SAMEORIGIN"
+		Referrer-Policy "strict-origin-when-cross-origin"
+		-Server
+	}
+
+	# ---- Grafana -----------------------------------------------------------
+	# GF_SERVER_SERVE_FROM_SUB_PATH=true in compose makes Grafana generate
+	# correct asset URLs under /grafana. Without it you get a blank page and
+	# 404s on every .js file.
+	handle_path /grafana* {
+		reverse_proxy grafana:3000
+	}
+
+	# ---- ntfy --------------------------------------------------------------
+	# ntfy needs long-lived connections for its subscribe stream; the default
+	# proxy timeouts would cut push delivery every 30s.
+	handle_path /ntfy* {
+		reverse_proxy ntfy:8080 {
+			transport http {
+				versions 1.1
+				read_timeout 24h
+				write_timeout 24h
+			}
+			header_up X-Forwarded-Proto {scheme}
+		}
+	}
+
+	# ---- Prometheus / Alertmanager ----------------------------------------
+	# Raw Prometheus UI is useful for debugging alert expressions. It has no
+	# authentication of its own — it is protected solely by being on the
+	# tailnet. Comment these out if you'd rather only reach them via SSH tunnel.
+	handle_path /prometheus* {
+		reverse_proxy prometheus:9090
+	}
+
+	handle_path /alertmanager* {
+		reverse_proxy alertmanager:9093
+	}
+
+	# ---- default -----------------------------------------------------------
+	# A landing page, so hitting the bare host tells you the stack is alive
+	# instead of returning a bare 404 you have to interpret.
+	handle {
+		respond `<!doctype html><meta charset=utf-8>
+<title>private cloud</title>
+<style>body{font:16px/1.6 system-ui;margin:4rem auto;max-width:32rem;padding:0 1rem}a{display:block;padding:.5rem 0}</style>
+<h1>private cloud — phase 0</h1>
+<p>Infrastructure is up. No application yet.</p>
+<a href="/grafana">Grafana</a>
+<a href="/ntfy">ntfy</a>
+<a href="/prometheus">Prometheus</a>
+<a href="/alertmanager">Alertmanager</a>` 200
+	}
+}
+
+# Plain HTTP redirects to HTTPS. Even on the tailnet, keep one scheme.
+:80 {
+	redir https://{host}{uri} permanent
+}
