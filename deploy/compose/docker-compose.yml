@@ -148,6 +148,15 @@ services:
       # one source of truth for the password.
       PC_DATABASE_URL: "postgres://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-privatecloud}?sslmode=disable"
       PC_MIGRATE_ON_START: "true"
+      # Passkeys are bound to this exact domain. Changing it invalidates every
+      # enrolled key, so compose fails loudly rather than starting with a
+      # placeholder that would silently produce unusable credentials.
+      PC_WEBAUTHN_RPID: ${PC_WEBAUTHN_RPID:?set PC_WEBAUTHN_RPID in .env (bare domain, no scheme or port)}
+      PC_WEBAUTHN_RP_NAME: ${PC_WEBAUTHN_RP_NAME:-Private Cloud}
+      PC_WEBAUTHN_ORIGINS: ${PC_WEBAUTHN_ORIGINS:?set PC_WEBAUTHN_ORIGINS in .env (full origin, with https://)}
+      PC_SESSION_TTL: ${PC_SESSION_TTL:-720h}
+      PC_COOKIE_NAME: ${PC_COOKIE_NAME:-pc_session}
+      PC_COOKIE_SECURE: ${PC_COOKIE_SECURE:-true}
     # distroless/static:nonroot — uid 65532, no shell, no package manager.
     read_only: true
     security_opt: [no-new-privileges:true]

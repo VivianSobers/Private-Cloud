@@ -12,14 +12,16 @@ import (
 	"github.com/guru-bharadwaj20/private-cloud/server/internal/metrics"
 )
 
-// newTestServer builds a Server with no database. Handlers that touch the DB
-// (/readyz) are covered by integration tests against a real Postgres; these
-// tests cover routing, middleware and response shape, which need no database.
+// newTestServer builds a Server with no database and no auth service.
+//
+// Handlers that touch either (/readyz, everything under /api/v1/auth) need a
+// real Postgres and are covered by integration tests; these tests cover
+// routing, middleware and response shape, which need neither.
 func newTestServer(t *testing.T) http.Handler {
 	t.Helper()
 	log := slog.New(slog.NewTextHandler(io.Discard, nil))
 	m := metrics.New("test", "abc123", func() float64 { return 0 })
-	return NewServer(log, nil, m, "test", "abc123").Handler()
+	return NewServer(log, nil, m, nil, Options{Version: "test", Commit: "abc123"}).Handler()
 }
 
 func TestHealthzIsOKWithoutDatabase(t *testing.T) {
@@ -191,7 +193,7 @@ func TestUnmatchedRoutesShareOneLabel(t *testing.T) {
 func TestPanicIsRecovered(t *testing.T) {
 	log := slog.New(slog.NewTextHandler(io.Discard, nil))
 	m := metrics.New("test", "abc", func() float64 { return 0 })
-	s := NewServer(log, nil, m, "test", "abc")
+	s := NewServer(log, nil, m, nil, Options{Version: "test", Commit: "abc"})
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /boom", func(http.ResponseWriter, *http.Request) {

@@ -24,16 +24,72 @@ between the network and the auth code in slice 2.
 
 ## Endpoints
 
-| Route | Purpose |
-|---|---|
-| `GET /healthz` | Liveness. **Never touches the database.** |
-| `GET /readyz` | Readiness. Pings the database. |
-| `GET /metrics` | Prometheus exposition |
-| `GET /api/v1/version` | Build metadata |
+| Route | Auth | Purpose |
+|---|---|---|
+| `GET /healthz` | — | Liveness. **Never touches the database.** |
+| `GET /readyz` | — | Readiness. Pings the database. |
+| `GET /metrics` | — | Prometheus exposition |
+| `GET /api/v1/version` | — | Build metadata |
+| `GET /api/v1/auth/status` | — | Is bootstrap needed? |
+| `POST /api/v1/auth/register/{begin,finish}` | mixed | Enrol a passkey |
+| `POST /api/v1/auth/login/{begin,finish}` | — | Sign in |
+| `POST /api/v1/auth/recovery/redeem` | — | Redeem a recovery code |
+| `POST /api/v1/auth/logout` | — | Revoke current session |
+| `GET /api/v1/auth/me` | session | Current user |
+| `GET|DELETE /api/v1/auth/credentials[/{id}]` | session | Manage passkeys |
+| `GET|DELETE /api/v1/auth/sessions[/{id}]` | session | Manage devices |
+| `POST /api/v1/auth/recovery/regenerate` | session | New recovery codes |
 
 `/healthz` and `/readyz` are split on purpose. Docker restarts a container whose
 healthcheck fails; if liveness depended on Postgres, a brief database blip would
 restart the API, turning a recoverable hiccup into a crash loop.
+
+## Auth model
+
+Passkeys (WebAuthn) only — there is no password anywhere in the system.
+
+**Because there is no password, lockout is the real risk.** Lose the
+authenticator and you lose your own file server. Three independent escapes:
+
+1. **Register several passkeys** (laptop, phone, hardware key). The API refuses
+   to delete your last one.
+2. **Recovery codes** — 10 per user, 100 bits each, argon2id-hashed, shown
+   exactly once. Redeeming one yields a session that can do *nothing* except
+   enrol a new passkey and expires in 15 minutes.
+3. **`cloudctl user reset-auth`** on the server itself. Requires shell access,
+   which already implies database and file access, so it weakens nothing.
+
+Sessions are server-side rows, not JWTs — revocation has to be immediate, and a
+JWT stays valid until it expires no matter how urgently you want it dead.
+
+Account creation is deliberately **not** a public endpoint. The first passkey to
+arrive when the users table is empty becomes the admin; everyone after that is
+created with `cloudctl user create`, which prints recovery codes they use to
+sign in once and then enrol a passkey.
+
+### The one setting that will bite you
+
+`PC_WEBAUTHN_RPID` is the bare domain passkeys bind to — **no scheme, no port,
+no path**. Config validation rejects those, because a wrong RPID fails in the
+browser with an error that tells you nothing.
+
+**Changing RPID invalidates every enrolled passkey.** Settle on the final
+hostname (the MagicDNS name) before enrolling keys you care about.
+
+## cloudctl
+
+```bash
+cloudctl user list                       # includes a (!) on users with 0 passkeys
+cloudctl user create <name> [--admin]    # prints recovery codes
+cloudctl user reset-auth <name>          # the lockout escape hatch
+cloudctl user disable|enable <name>
+cloudctl recovery regenerate <name>
+cloudctl cleanup
+```
+
+`reset-auth` clears passkeys, revokes live sessions, and issues new recovery
+codes together — clearing credentials while leaving sessions running would be a
+half-measure.
 
 ## Development
 
@@ -47,7 +103,7 @@ make docker   # build the container image
 No Go installed? Everything works in a container:
 
 ```bash
-docker run --rm -v "$PWD:/src" -w /src golang:1.23-alpine \
+docker run --rm -v "$PWD:/src" -w /src golang:1.25-alpine \
   sh -c "go vet ./... && go test ./..."
 ```
 

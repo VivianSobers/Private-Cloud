@@ -30,6 +30,26 @@ type Config struct {
 	LogLevel  string
 	LogFormat string // "json" or "text"
 
+	// --- WebAuthn ---
+	//
+	// RPID is the "relying party ID": the domain passkeys are bound to. It must
+	// be the registrable domain the browser sees, WITHOUT scheme or port
+	// ("cloud.tail1234.ts.net"). Getting this wrong is the single most common
+	// WebAuthn misconfiguration, and it fails at credential-creation time with
+	// an opaque browser error rather than anything useful server-side.
+	//
+	// Changing RPID later INVALIDATES every existing passkey — they are bound
+	// to the origin they were created against. Decide the hostname before
+	// enrolling keys you care about.
+	WebAuthnRPID    string
+	WebAuthnRPName  string
+	WebAuthnOrigins []string
+
+	// --- sessions ---
+	SessionTTL   time.Duration
+	CookieName   string
+	CookieSecure bool
+
 	// MigrateOnStart runs pending migrations during startup. Convenient for a
 	// single-node deployment; would be wrong with multiple replicas racing to
 	// migrate, which is why it is a flag rather than unconditional.
@@ -49,6 +69,16 @@ func Load() (*Config, error) {
 
 		LogLevel:  env("PC_LOG_LEVEL", "info"),
 		LogFormat: env("PC_LOG_FORMAT", "json"),
+
+		WebAuthnRPID:    env("PC_WEBAUTHN_RPID", "localhost"),
+		WebAuthnRPName:  env("PC_WEBAUTHN_RP_NAME", "Private Cloud"),
+		WebAuthnOrigins: envList("PC_WEBAUTHN_ORIGINS", []string{"http://localhost:8080"}),
+
+		SessionTTL: envDuration("PC_SESSION_TTL", 30*24*time.Hour),
+		CookieName: env("PC_COOKIE_NAME", "pc_session"),
+		// Secure cookies by default; only a dev run over plain HTTP should
+		// ever turn this off, and it must be an explicit act.
+		CookieSecure: envBool("PC_COOKIE_SECURE", true),
 
 		MigrateOnStart: envBool("PC_MIGRATE_ON_START", true),
 	}
@@ -85,6 +115,28 @@ func (c *Config) validate() error {
 	}
 	if c.DBMinConns > c.DBMaxConns {
 		return fmt.Errorf("PC_DB_MIN_CONNS (%d) exceeds PC_DB_MAX_CONNS (%d)", c.DBMinConns, c.DBMaxConns)
+	}
+
+	// A scheme or port in RPID is the classic WebAuthn misconfiguration, and
+	// the browser-side failure it produces is famously unhelpful. Reject it
+	// here, where the message can actually say what is wrong.
+	if strings.Contains(c.WebAuthnRPID, "://") || strings.Contains(c.WebAuthnRPID, ":") ||
+		strings.Contains(c.WebAuthnRPID, "/") {
+		return fmt.Errorf("PC_WEBAUTHN_RPID must be a bare domain with no scheme, port or path (got %q)", c.WebAuthnRPID)
+	}
+	if len(c.WebAuthnOrigins) == 0 {
+		return fmt.Errorf("PC_WEBAUTHN_ORIGINS must list at least one origin")
+	}
+	// Origins are the mirror image: they MUST carry a scheme.
+	for _, o := range c.WebAuthnOrigins {
+		if !strings.HasPrefix(o, "http://") && !strings.HasPrefix(o, "https://") {
+			return fmt.Errorf("PC_WEBAUTHN_ORIGINS entries must include a scheme (got %q)", o)
+		}
+	}
+
+	// Refuse the combination that silently ships session cookies in the clear.
+	if c.Env == "prod" && !c.CookieSecure {
+		return fmt.Errorf("PC_COOKIE_SECURE=false is not allowed when PC_ENV=prod")
 	}
 	return nil
 }
@@ -151,6 +203,25 @@ func envBool(key string, def bool) bool {
 		return def
 	}
 	return b
+}
+
+// envList parses a comma-separated list, trimming whitespace and dropping
+// empties so a trailing comma doesn't become an empty origin.
+func envList(key string, def []string) []string {
+	v, ok := os.LookupEnv(key)
+	if !ok || strings.TrimSpace(v) == "" {
+		return def
+	}
+	var out []string
+	for _, part := range strings.Split(v, ",") {
+		if p := strings.TrimSpace(part); p != "" {
+			out = append(out, p)
+		}
+	}
+	if len(out) == 0 {
+		return def
+	}
+	return out
 }
 
 func envDuration(key string, def time.Duration) time.Duration {

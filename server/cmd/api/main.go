@@ -16,6 +16,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/guru-bharadwaj20/private-cloud/server/internal/auth"
 	"github.com/guru-bharadwaj20/private-cloud/server/internal/config"
 	"github.com/guru-bharadwaj20/private-cloud/server/internal/db"
 	"github.com/guru-bharadwaj20/private-cloud/server/internal/httpapi"
@@ -115,9 +116,34 @@ func run() error {
 		log.Warn("could not read schema version for metrics", "error", err)
 	}
 
+	authSvc, err := auth.NewService(
+		auth.NewStore(database.Pool),
+		auth.Config{
+			RPDisplayName: cfg.WebAuthnRPName,
+			RPID:          cfg.WebAuthnRPID,
+			RPOrigins:     cfg.WebAuthnOrigins,
+			SessionTTL:    cfg.SessionTTL,
+		},
+		log,
+	)
+	if err != nil {
+		return fmt.Errorf("auth: %w", err)
+	}
+	log.Info("webauthn configured", "rpid", cfg.WebAuthnRPID, "origins", cfg.WebAuthnOrigins)
+
+	// Expired sessions and abandoned ceremonies would otherwise accumulate
+	// forever. Cheap enough to run in-process rather than adding a job queue
+	// for a single periodic DELETE.
+	go runCleanup(ctx, authSvc, log)
+
 	srv := &http.Server{
-		Addr:    cfg.HTTPAddr,
-		Handler: httpapi.NewServer(log, database, m, version, commit).Handler(),
+		Addr: cfg.HTTPAddr,
+		Handler: httpapi.NewServer(log, database, m, authSvc, httpapi.Options{
+			Version:      version,
+			Commit:       commit,
+			CookieName:   cfg.CookieName,
+			CookieSecure: cfg.CookieSecure,
+		}).Handler(),
 
 		// Timeouts are not optional on a server that will accept uploads from
 		// the internet-adjacent world. Without them a handful of slow-loris
@@ -167,6 +193,29 @@ func run() error {
 
 	log.Info("shutdown complete")
 	return nil
+}
+
+// runCleanup periodically sweeps expired sessions and ceremonies until the
+// process shuts down.
+func runCleanup(ctx context.Context, svc *auth.Service, log *slog.Logger) {
+	ticker := time.NewTicker(time.Hour)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			sessions, ceremonies, err := svc.Store().Cleanup(ctx)
+			if err != nil {
+				log.Warn("auth cleanup failed", "error", err)
+				continue
+			}
+			if sessions > 0 || ceremonies > 0 {
+				log.Info("auth cleanup", "sessions", sessions, "ceremonies", ceremonies)
+			}
+		}
+	}
 }
 
 func newLogger(cfg *config.Config) *slog.Logger {

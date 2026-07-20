@@ -15,6 +15,7 @@ import (
 
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 
+	"github.com/guru-bharadwaj20/private-cloud/server/internal/auth"
 	"github.com/guru-bharadwaj20/private-cloud/server/internal/db"
 	"github.com/guru-bharadwaj20/private-cloud/server/internal/metrics"
 )
@@ -23,19 +24,41 @@ type Server struct {
 	log     *slog.Logger
 	db      *db.DB
 	metrics *metrics.Metrics
+	auth    *auth.Service
 	version string
 	commit  string
 	started time.Time
+
+	cookieName   string
+	cookieSecure bool
+
+	// Guards the auth endpoints against online guessing. 20/min with a burst
+	// of 10 is invisible to a human signing in and useless to a script.
+	authLimiter *rateLimiter
 }
 
-func NewServer(log *slog.Logger, database *db.DB, m *metrics.Metrics, version, commit string) *Server {
+type Options struct {
+	Version      string
+	Commit       string
+	CookieName   string
+	CookieSecure bool
+}
+
+func NewServer(log *slog.Logger, database *db.DB, m *metrics.Metrics, authSvc *auth.Service, opts Options) *Server {
+	if opts.CookieName == "" {
+		opts.CookieName = "pc_session"
+	}
 	return &Server{
-		log:     log,
-		db:      database,
-		metrics: m,
-		version: version,
-		commit:  commit,
-		started: time.Now(),
+		log:          log,
+		db:           database,
+		metrics:      m,
+		auth:         authSvc,
+		version:      opts.Version,
+		commit:       opts.Commit,
+		started:      time.Now(),
+		cookieName:   opts.CookieName,
+		cookieSecure: opts.CookieSecure,
+		authLimiter:  newRateLimiter(20, 10),
 	}
 }
 
@@ -64,9 +87,34 @@ func (s *Server) Handler() http.Handler {
 		},
 	))
 
-	// The versioned API surface. Slice 1 ships only the identity of the
-	// service; nodes, uploads and auth arrive in slices 2 and 3.
+	// The versioned API surface. Files and uploads arrive in slice 3.
 	mux.HandleFunc("GET /api/v1/version", s.handleVersion)
+
+	// --- auth: unauthenticated, rate limited --------------------------------
+	// rateLimited wraps each individually rather than the group, because these
+	// live on the same mux as everything else and a path-prefix check would
+	// have to be kept in sync by hand.
+	rl := func(h http.HandlerFunc) http.HandlerFunc {
+		return func(w http.ResponseWriter, r *http.Request) {
+			s.withRateLimit(h).ServeHTTP(w, r)
+		}
+	}
+
+	mux.HandleFunc("GET /api/v1/auth/status", s.handleAuthStatus)
+	mux.HandleFunc("POST /api/v1/auth/register/begin", rl(s.handleRegisterBegin))
+	mux.HandleFunc("POST /api/v1/auth/register/finish", rl(s.handleRegisterFinish))
+	mux.HandleFunc("POST /api/v1/auth/login/begin", rl(s.handleLoginBegin))
+	mux.HandleFunc("POST /api/v1/auth/login/finish", rl(s.handleLoginFinish))
+	mux.HandleFunc("POST /api/v1/auth/recovery/redeem", rl(s.handleRecoveryRedeem))
+	mux.HandleFunc("POST /api/v1/auth/logout", s.handleLogout)
+
+	// --- auth: authenticated -------------------------------------------------
+	mux.HandleFunc("GET /api/v1/auth/me", s.requireAuth(s.handleMe))
+	mux.HandleFunc("GET /api/v1/auth/credentials", s.requireAuth(s.handleListCredentials))
+	mux.HandleFunc("DELETE /api/v1/auth/credentials/{id}", s.requireAuth(s.handleDeleteCredential))
+	mux.HandleFunc("GET /api/v1/auth/sessions", s.requireAuth(s.handleListSessions))
+	mux.HandleFunc("DELETE /api/v1/auth/sessions/{id}", s.requireAuth(s.handleRevokeSession))
+	mux.HandleFunc("POST /api/v1/auth/recovery/regenerate", s.requireAuth(s.handleRegenerateRecoveryCodes))
 
 	// Anything else under /api/ gets a JSON 404 rather than net/http's plain
 	// text, so clients can parse every error the same way.

@@ -86,6 +86,73 @@ func TestRedactedHidesPassword(t *testing.T) {
 	}
 }
 
+// RPID with a scheme or port is the classic WebAuthn misconfiguration, and the
+// browser-side error it produces is famously unhelpful. Fail at startup instead.
+func TestLoadRejectsMalformedRPID(t *testing.T) {
+	t.Setenv("PC_DATABASE_URL", "postgres://u:p@localhost:5432/pc")
+
+	for _, bad := range []string{
+		"https://cloud.example.ts.net",
+		"cloud.example.ts.net:443",
+		"cloud.example.ts.net/app",
+	} {
+		t.Run(bad, func(t *testing.T) {
+			t.Setenv("PC_WEBAUTHN_RPID", bad)
+			if _, err := Load(); err == nil {
+				t.Errorf("expected an error for RPID %q, got nil", bad)
+			}
+		})
+	}
+}
+
+func TestLoadAcceptsBareRPID(t *testing.T) {
+	t.Setenv("PC_DATABASE_URL", "postgres://u:p@localhost:5432/pc")
+	t.Setenv("PC_WEBAUTHN_RPID", "cloud.example.ts.net")
+
+	if _, err := Load(); err != nil {
+		t.Fatalf("a bare domain RPID should be accepted: %v", err)
+	}
+}
+
+// Origins are the mirror image of RPID: they must carry a scheme.
+func TestLoadRejectsSchemelessOrigin(t *testing.T) {
+	t.Setenv("PC_DATABASE_URL", "postgres://u:p@localhost:5432/pc")
+	t.Setenv("PC_WEBAUTHN_ORIGINS", "cloud.example.ts.net")
+
+	if _, err := Load(); err == nil {
+		t.Fatal("expected an error for an origin without a scheme")
+	}
+}
+
+func TestLoadParsesOriginList(t *testing.T) {
+	t.Setenv("PC_DATABASE_URL", "postgres://u:p@localhost:5432/pc")
+	// Trailing comma and stray spaces are the realistic hand-edited .env.
+	t.Setenv("PC_WEBAUTHN_ORIGINS", "https://a.ts.net, https://b.ts.net,")
+
+	c, err := Load()
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if len(c.WebAuthnOrigins) != 2 {
+		t.Fatalf("got %d origins, want 2: %v", len(c.WebAuthnOrigins), c.WebAuthnOrigins)
+	}
+	if c.WebAuthnOrigins[1] != "https://b.ts.net" {
+		t.Errorf("origin not trimmed: %q", c.WebAuthnOrigins[1])
+	}
+}
+
+// Shipping session cookies in the clear in production must be impossible to do
+// by accident.
+func TestLoadRejectsInsecureCookiesInProd(t *testing.T) {
+	t.Setenv("PC_DATABASE_URL", "postgres://u:p@localhost:5432/pc")
+	t.Setenv("PC_ENV", "prod")
+	t.Setenv("PC_COOKIE_SECURE", "false")
+
+	if _, err := Load(); err == nil {
+		t.Fatal("expected an error for PC_COOKIE_SECURE=false with PC_ENV=prod")
+	}
+}
+
 func TestRedactURLWithoutPassword(t *testing.T) {
 	// A URL with no password must pass through unchanged rather than being
 	// mangled into something misleading.
