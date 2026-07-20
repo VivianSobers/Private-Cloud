@@ -1,7 +1,7 @@
 # Phase 0 — Checklist
 
 Work top to bottom. Later steps assume earlier ones. All commands run **on the
-Ubuntu server**; the repo was authored on a separate machine.
+Ubuntu server**.
 
 **Exit criterion:** ZFS pool healthy · Tailscale connected · Docker stack up ·
 Grafana dashboards showing data · ntfy test alert received · restore test
@@ -9,9 +9,29 @@ executed successfully.
 
 ---
 
+## Hardware profile: dev vs production
+
+This checklist supports two profiles. The architecture is identical; only the
+disk topology and a few memory numbers differ.
+
+| | **Production** (target) | **Dev / experimentation** (this box) |
+|---|---|---|
+| Data disks | 2 × 4 TB → ZFS **mirror** | 1 disk → **single-disk** pool (`--single`) |
+| Redundancy | survives one disk failure | **none** — pool is disposable; restic is the safety net |
+| RAM | ~16 GB | ~7 GB |
+| Postgres tuning | production profile in `.env` | low-memory defaults (no `.env` overrides) |
+| ARC | auto ~4 GiB | auto ~1.7 GiB |
+
+Where a step differs, the **(dev)** and **(prod)** variants are called out. A
+single-disk dev pool upgrades to a mirror later with `zpool attach` and no
+rebuild, so nothing here is throwaway work.
+
+---
+
 ## 0. Before you touch anything
 
-- [ ] Ubuntu 24.04 LTS installed on a **system disk separate from the two 4 TB data disks**
+- [ ] Ubuntu 24.04 LTS installed on a **system disk separate from the data disk(s)**
+      — **(prod)** the two 4 TB disks; **(dev)** whichever single disk you're testing on
 - [ ] `sudo` works; system fully updated (`sudo apt update && sudo apt upgrade -y`)
 - [ ] Repo cloned to `/opt/private-cloud` (paths in the systemd units assume this)
 - [ ] `chmod +x scripts/*.sh`
@@ -21,26 +41,37 @@ executed successfully.
 
 ## 1. Identify the disks — do this carefully
 
-- [ ] `lsblk -o NAME,SIZE,MODEL,SERIAL` — confirm both 4 TB disks
+- [ ] `lsblk -o NAME,SIZE,MODEL,SERIAL` — **(prod)** confirm both 4 TB disks;
+      **(dev)** confirm the single test disk
 - [ ] `ls -l /dev/disk/by-id/` — note the **stable** paths for each
-- [ ] Write the two `/dev/disk/by-id/...` paths down here:
+- [ ] Write the `/dev/disk/by-id/...` path(s) down here:
 
 ```
 DISK1 = /dev/disk/by-id/________________________________
-DISK2 = /dev/disk/by-id/________________________________
+DISK2 = /dev/disk/by-id/________________________________   # prod only
 ```
 
 - [ ] Triple-check these are the empty data disks, not the system disk
 - [ ] Confirm they hold nothing you want: `sudo blkid /dev/disk/by-id/...`
+
+> **(dev, this box):** the 500 GB drive is `/dev/sda` and currently has two
+> partitions (`sda1`, `sda2`). Inspect them with `sudo blkid /dev/sda*` and
+> `lsblk -f /dev/sda` **before** wiping. If they hold anything you want, stop.
+> Otherwise clear the signatures so the setup guard lets you proceed:
+> `sudo wipefs -a /dev/sda1 /dev/sda2 /dev/sda`.
 
 > `zfs-setup.sh` refuses to run on a disk with an existing filesystem
 > signature. That guard is a backstop, not a substitute for checking.
 
 ## 2. ZFS pool
 
-- [ ] Dry run first: `sudo ./scripts/zfs-setup.sh --dry-run "$DISK1" "$DISK2"`
-- [ ] Read every command it prints. Understand each one.
-- [ ] Real run: `sudo ./scripts/zfs-setup.sh "$DISK1" "$DISK2"`
+- [ ] Dry run first — read every command it prints and understand each one:
+  - **(prod)** `sudo ./scripts/zfs-setup.sh --dry-run "$DISK1" "$DISK2"`
+  - **(dev)** `sudo ./scripts/zfs-setup.sh --single --dry-run "$DISK1"`
+- [ ] Real run:
+  - **(prod)** `sudo ./scripts/zfs-setup.sh "$DISK1" "$DISK2"`
+  - **(dev)** `sudo ./scripts/zfs-setup.sh --single "$DISK1"` — note the loud
+    "NO redundancy" warning; that is expected and correct for a test pool
 - [ ] Choose a **strong** passphrase when prompted
 - [ ] **Record the passphrase in your password manager**
 - [ ] **Print the passphrase and put it somewhere physical.** No recovery exists.
@@ -79,6 +110,10 @@ Full detail in [tailscale-setup.md](tailscale-setup.md).
 - [ ] `chmod 600 deploy/compose/.env`
 - [ ] Fill in `TAILSCALE_IP`, `TS_HOSTNAME`, `TS_TAILNET`
 - [ ] Generate real passwords: `openssl rand -base64 32` (once per secret, no reuse)
+- [ ] **Postgres memory profile:** **(dev)** leave the `PG_*` vars unset — the
+      compose defaults are already the low-memory profile for this box.
+      **(prod)** uncomment the PRODUCTION `PG_*` block in `.env`. Details in
+      [.env.example](../deploy/secrets/.env.example).
 - [ ] Create the alertmanager→ntfy token file as an empty placeholder — compose
       bind-mounts it, and a missing file would become a directory. The real
       token can only be minted once ntfy is running (step 8):
@@ -228,7 +263,8 @@ systemctl list-timers 'restic*'
 
 Phase 0 is done when every one of these is true:
 
-- [ ] `zpool status tank` → `ONLINE`, zero errors
+- [ ] `zpool status tank` → `ONLINE`, zero errors (**dev:** a single `disk`
+      vdev, not a `mirror` — expected; **prod:** a `mirror-0` with two members)
 - [ ] Snapshots accumulating on schedule; `tank/staging` excluded
 - [ ] Tailscale connected; stack reachable from phone and laptop; **nothing on `0.0.0.0`**
 - [ ] `docker compose ps` → all healthy
