@@ -95,22 +95,25 @@ services:
       timeout: 5s
       retries: 5
       start_period: 30s
-    # 16GB box shared with ZFS ARC (capped at 6GB). Leave Postgres room but
-    # don't let it think it owns the machine.
+    # Memory tuning is per-box and comes from .env. Defaults are the LOW-MEMORY
+    # DEV profile (~7GB RAM shared with a desktop + ZFS ARC); the production
+    # profile for a 16GB box is documented in deploy/secrets/.env.example.
+    # random_page_cost defaults to 4.0 because the dev pool is on a spinning
+    # disk; an SSD/ARC-backed production pool wants 1.1.
     command:
       - postgres
       - -c
-      - shared_buffers=1GB
+      - shared_buffers=${PG_SHARED_BUFFERS:-512MB}
       - -c
-      - effective_cache_size=3GB
+      - effective_cache_size=${PG_EFFECTIVE_CACHE_SIZE:-1536MB}
       - -c
-      - work_mem=32MB
+      - work_mem=${PG_WORK_MEM:-16MB}
       - -c
-      - maintenance_work_mem=256MB
+      - maintenance_work_mem=${PG_MAINTENANCE_WORK_MEM:-128MB}
       - -c
-      - max_connections=100
+      - max_connections=${PG_MAX_CONNECTIONS:-50}
       - -c
-      - random_page_cost=1.1          # SSD/ARC-backed; default 4.0 assumes spinning rust
+      - random_page_cost=${PG_RANDOM_PAGE_COST:-4.0}
       - -c
       - shared_preload_libraries=pg_stat_statements
       - -c
