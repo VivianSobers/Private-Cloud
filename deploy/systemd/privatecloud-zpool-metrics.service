@@ -1,0 +1,23 @@
+[Unit]
+Description=Private cloud ZFS pool health textfile metrics
+Documentation=file:///opt/private-cloud/docs/custom-metrics.md
+# The pool must be imported/mounted before we can read its status.
+After=zfs-mount.service
+Wants=zfs-mount.service
+
+[Service]
+Type=oneshot
+User=root
+Environment=TEXTFILE_DIR=/var/lib/node_exporter/textfile
+ExecStart=/opt/private-cloud/scripts/zpool-metrics.sh
+
+# Read-only pool status; be invisible to the rest of the box.
+Nice=19
+IOSchedulingClass=idle
+NoNewPrivileges=true
+ProtectHome=true
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target

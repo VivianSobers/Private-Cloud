@@ -1,0 +1,13 @@
+[Unit]
+Description=Refresh ZFS pool health metrics every 5 minutes
+
+[Timer]
+# First run shortly after boot, then every 5 minutes. The metric carries its
+# own last-update timestamp, so ZpoolMetricsStale fires if this ever stops.
+OnBootSec=2min
+OnUnitActiveSec=5min
+AccuracySec=30s
+Unit=privatecloud-zpool-metrics.service
+
+[Install]
+WantedBy=timers.target

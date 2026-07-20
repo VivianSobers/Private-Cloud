@@ -249,6 +249,13 @@ services:
       - --collector.processes
       # ZFS collector is what surfaces ARC hit rate and pool IO.
       - --collector.zfs
+      # Textfile collector: reads *.prom files written by scripts on the host
+      # (backup freshness + zpool health). The dir is under the /host bind, so
+      # no extra mount is needed — just point at it through /host. The host dir
+      # (/var/lib/node_exporter/textfile) must exist before this starts; see
+      # docs/custom-metrics.md.
+      - --collector.textfile
+      - --collector.textfile.directory=/host/var/lib/node_exporter/textfile
       - --no-collector.wifi
       - --no-collector.hwmon
     read_only: true

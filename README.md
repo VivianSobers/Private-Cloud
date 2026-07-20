@@ -66,11 +66,13 @@ sudo ./scripts/restore-test.sh        # the step that makes it real
 ├── scripts/
 │   ├── zfs-setup.sh                  pool + datasets (destructive; --dry-run first)
 │   ├── sanoid-setup.sh               snapshots
-│   ├── restic-backup.sh              nightly offsite backup
+│   ├── restic-backup.sh              nightly offsite backup + freshness metric
+│   ├── zpool-metrics.sh              pool-health textfile collector (systemd timer)
 │   └── restore-test.sh               proves backups restore
 └── docs/
     ├── phase-0-checklist.md          ← start here
     ├── tailscale-setup.md
+    ├── custom-metrics.md             backup/pool metrics + failure-sim validation
     ├── runbook-restore.md            something is lost
     └── runbook-disaster-recovery.md  everything is lost
 ```

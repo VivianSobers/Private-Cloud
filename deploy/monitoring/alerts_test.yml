@@ -1,0 +1,139 @@
+# Unit tests for alerts.yml — run with:
+#   promtool test rules deploy/monitoring/alerts_test.yml
+#
+# These pin the behaviour of the operational-hardening alerts (backup freshness
+# and zpool health) so a future edit that silently breaks them fails CI instead
+# of failing at 3 a.m. Times are relative to Unix epoch 0, which is how promtool
+# evaluates time().
+
+rule_files:
+  - alerts.yml
+
+evaluation_interval: 1m
+
+tests:
+  # ---- backup freshness ---------------------------------------------------
+  - name: backup age derives and BackupTooOld fires past 36h
+    interval: 1m
+    input_series:
+      # A success stuck at t=0; age grows with wall-clock time.
+      - series: 'privatecloud_backup_last_success_timestamp'
+        values: '0+0x2400'          # 0 for 2400 minutes (40h)
+    promql_expr_test:
+      - expr: privatecloud_backup_age_seconds
+        eval_time: 37h
+        exp_samples:
+          - labels: 'privatecloud_backup_age_seconds'
+            value: 133200            # 37h in seconds
+    alert_rule_test:
+      - alertname: BackupTooOld
+        eval_time: 35h               # age 126000 < 129600 → not yet
+        exp_alerts: []
+      - alertname: BackupTooOld
+        eval_time: 37h               # age 133200 > 129600, held > 30m → firing
+        exp_alerts:
+          - exp_labels: { severity: critical }
+            # humanizeDuration is deterministic at a fixed eval_time; the value
+            # is 60s under 37h because of the 30m `for` sampling offset.
+            exp_annotations:
+              summary: "No successful backup in over 36 hours"
+              description: "Last success was 1d 12h 59m 0s ago. The nightly timer or the offsite target is broken. Check: journalctl -u restic-backup.service"
+
+  - name: BackupMetricsMissing fires when the timestamp is absent
+    interval: 1m
+    input_series:
+      - series: 'up{job="node"}'     # some unrelated series so the DB isn't empty
+        values: '1x600'
+    alert_rule_test:
+      - alertname: BackupMetricsMissing
+        eval_time: 7h
+        exp_alerts:
+          - exp_labels: { severity: warning }
+            exp_annotations:
+              summary: "Backup freshness metric is absent"
+              description: "No backup has ever reported success, or the textfile collector is not wired up. Verify /var/lib/node_exporter/textfile and that restic-backup.sh has run. See docs/custom-metrics.md."
+
+  - name: BackupLastRunFailed fires when failure is newer than success
+    interval: 1m
+    input_series:
+      - series: 'privatecloud_backup_last_success_timestamp'
+        values: '100x30'
+      - series: 'privatecloud_backup_last_failure_timestamp'
+        values: '200x30'
+    alert_rule_test:
+      - alertname: BackupLastRunFailed
+        eval_time: 10m
+        exp_alerts:
+          - exp_labels: { severity: warning }
+            exp_annotations:
+              summary: "The most recent backup run failed"
+              description: "A failure timestamp is newer than the last success. Check: journalctl -u restic-backup.service"
+
+  # ---- zpool health -------------------------------------------------------
+  - name: ZpoolDegraded fires on the DEGRADED state series
+    interval: 1m
+    input_series:
+      - series: 'privatecloud_zpool_health{pool="tank",state="DEGRADED"}'
+        values: '1x30'
+      - series: 'privatecloud_zpool_health{pool="tank",state="ONLINE"}'
+        values: '0x30'
+    alert_rule_test:
+      - alertname: ZpoolDegraded
+        eval_time: 10m
+        exp_alerts:
+          - exp_labels: { severity: warning, pool: tank, state: DEGRADED }
+            exp_annotations:
+              summary: "ZFS pool tank is DEGRADED"
+              description: "A vdev member has faulted; the pool still serves but has lost redundancy. Run `zpool status tank` and replace the disk — see docs/runbook-restore.md §5."
+
+  - name: ZpoolUnavailable fires on FAULTED
+    interval: 1m
+    input_series:
+      - series: 'privatecloud_zpool_health{pool="tank",state="FAULTED"}'
+        values: '1x30'
+    alert_rule_test:
+      - alertname: ZpoolUnavailable
+        eval_time: 5m
+        exp_alerts:
+          - exp_labels: { severity: critical, pool: tank, state: FAULTED }
+            exp_annotations:
+              summary: "ZFS pool tank is FAULTED"
+              description: "The pool is not healthy and data may be inaccessible. Stop-everything event. `zpool status -v tank`; on a single-disk dev pool this means restore from restic (runbook §6)."
+
+  - name: ZpoolScrubFailed and ZpoolScrubTooOld
+    interval: 1m
+    input_series:
+      - series: 'privatecloud_zpool_last_scrub_success{pool="tank"}'
+        values: '0x30'
+      - series: 'privatecloud_zpool_scrub_age_seconds{pool="tank"}'
+        values: '4000000x120'        # > 3024000
+    alert_rule_test:
+      - alertname: ZpoolScrubFailed
+        eval_time: 10m
+        exp_alerts:
+          - exp_labels: { severity: critical, pool: tank }
+            exp_annotations:
+              summary: "Last scrub of tank found unrepairable errors"
+              description: "`zpool status -v tank` lists the affected files. Restore them from backup — a scrub finding permanent errors means both copies were lost (or, on a single-disk pool, the only copy)."
+      - alertname: ZpoolScrubTooOld
+        eval_time: 65m
+        exp_alerts:
+          - exp_labels: { severity: warning, pool: tank }
+            exp_annotations:
+              summary: "ZFS pool tank has not been scrubbed in over 35 days"
+              description: "Scrubs find bit rot while the mirror can still heal it. Check the scrub cron and run `zpool scrub tank`."
+
+  - name: ZpoolMetricsStale fires when the collector stops
+    interval: 1m
+    input_series:
+      # Last update frozen at t=0; by 20m it is 1200s stale (> 900).
+      - series: 'privatecloud_zpool_metrics_last_update_timestamp'
+        values: '0x60'
+    alert_rule_test:
+      - alertname: ZpoolMetricsStale
+        eval_time: 25m               # stale since 15m; held > 5m by here → firing
+        exp_alerts:
+          - exp_labels: { severity: warning }
+            exp_annotations:
+              summary: "ZFS pool health collector has stopped updating"
+              description: "privatecloud-zpool-metrics.timer may have failed. Check: systemctl status privatecloud-zpool-metrics.timer"

@@ -153,12 +153,6 @@ groups:
   # ==========================================================================
   - name: backup
     rules:
-      # NOTE: this rule only works once you export backup metrics. Phase 0 gets
-      # failure notifications directly from restic-backup.sh via ntfy, which is
-      # sufficient. The gap it leaves is real and worth naming: ntfy tells you
-      # when a backup FAILS, but not when one silently stops running at all.
-      # Closing that gap properly means a textfile collector — see
-      # docs/phase-0-checklist.md, "hardening follow-ups".
       - alert: BackupTimerNotRunning
         expr: node_systemd_unit_state{name="restic-backup.timer",state="active"} == 0
         for: 1h
@@ -167,3 +161,114 @@ groups:
         annotations:
           summary: "The nightly backup timer is not active"
           description: "No backups are being taken. systemctl status restic-backup.timer"
+
+      # Freshness. restic-backup.sh writes privatecloud_backup_last_success_timestamp
+      # to the node_exporter textfile dir after every run; the age is derived
+      # live by the recording rule in the 'derived' group below. This is the
+      # rule that catches a backup that silently STOPPED, which failure-only
+      # ntfy notifications cannot. Threshold: 36h = the 24h RPO + one missed
+      # night of grace (RandomizedDelaySec + a retry window). Tune here.
+      - alert: BackupTooOld
+        expr: privatecloud_backup_age_seconds > 129600
+        for: 30m
+        labels:
+          severity: critical
+        annotations:
+          summary: "No successful backup in over 36 hours"
+          description: "Last success was {{ $value | humanizeDuration }} ago. The nightly timer or the offsite target is broken. Check: journalctl -u restic-backup.service"
+
+      # A never-succeeded backup (or a textfile collector that isn't wired up)
+      # produces no timestamp at all, so BackupTooOld can't fire — absent()
+      # covers that blind spot.
+      - alert: BackupMetricsMissing
+        expr: absent(privatecloud_backup_last_success_timestamp)
+        for: 6h
+        labels:
+          severity: warning
+        annotations:
+          summary: "Backup freshness metric is absent"
+          description: "No backup has ever reported success, or the textfile collector is not wired up. Verify /var/lib/node_exporter/textfile and that restic-backup.sh has run. See docs/custom-metrics.md."
+
+      # The most recent run failed (a failure newer than the last success).
+      # ntfy already paged; this is the dashboard-visible corroboration and it
+      # keeps firing until a run succeeds, unlike the one-shot push.
+      - alert: BackupLastRunFailed
+        expr: privatecloud_backup_last_failure_timestamp > privatecloud_backup_last_success_timestamp
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "The most recent backup run failed"
+          description: "A failure timestamp is newer than the last success. Check: journalctl -u restic-backup.service"
+
+  # ==========================================================================
+  - name: zpool-health
+    rules:
+      # node_exporter's ZFS collector reports ARC/IO but not `zpool status`.
+      # These fire on the textfile metrics from scripts/zpool-metrics.sh.
+      - alert: ZpoolDegraded
+        expr: privatecloud_zpool_health{state="DEGRADED"} == 1
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "ZFS pool {{ $labels.pool }} is DEGRADED"
+          description: "A vdev member has faulted; the pool still serves but has lost redundancy. Run `zpool status {{ $labels.pool }}` and replace the disk — see docs/runbook-restore.md §5."
+
+      - alert: ZpoolUnavailable
+        expr: privatecloud_zpool_health{state=~"FAULTED|UNAVAIL|REMOVED|SUSPENDED"} == 1
+        for: 1m
+        labels:
+          severity: critical
+        annotations:
+          summary: "ZFS pool {{ $labels.pool }} is {{ $labels.state }}"
+          description: "The pool is not healthy and data may be inaccessible. Stop-everything event. `zpool status -v {{ $labels.pool }}`; on a single-disk dev pool this means restore from restic (runbook §6)."
+
+      - alert: ZpoolScrubTooOld
+        # ~5 weeks. Scrub cadence is monthly (second Sunday), so this allows a
+        # missed cycle before paging.
+        expr: privatecloud_zpool_scrub_age_seconds > 3024000
+        for: 1h
+        labels:
+          severity: warning
+        annotations:
+          summary: "ZFS pool {{ $labels.pool }} has not been scrubbed in over 35 days"
+          description: "Scrubs find bit rot while the mirror can still heal it. Check the scrub cron and run `zpool scrub {{ $labels.pool }}`."
+
+      - alert: ZpoolScrubFailed
+        expr: privatecloud_zpool_last_scrub_success == 0
+        for: 5m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Last scrub of {{ $labels.pool }} found unrepairable errors"
+          description: "`zpool status -v {{ $labels.pool }}` lists the affected files. Restore them from backup — a scrub finding permanent errors means both copies were lost (or, on a single-disk pool, the only copy)."
+
+      - alert: ZpoolMetricsStale
+        expr: time() - privatecloud_zpool_metrics_last_update_timestamp > 900
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "ZFS pool health collector has stopped updating"
+          description: "privatecloud-zpool-metrics.timer may have failed. Check: systemctl status privatecloud-zpool-metrics.timer"
+
+      - alert: ZpoolMetricsMissing
+        expr: absent(privatecloud_zpool_metrics_last_update_timestamp)
+        for: 15m
+        labels:
+          severity: warning
+        annotations:
+          summary: "ZFS pool health metrics are absent"
+          description: "The zpool textfile collector has never reported. Install privatecloud-zpool-metrics.timer — see docs/custom-metrics.md."
+
+  # ==========================================================================
+  # Recording rules: derived series the alerts and dashboards read. Kept in
+  # their own group so they evaluate as a unit.
+  - name: derived
+    rules:
+      # Live age of the last successful backup. Derived here rather than written
+      # by the backup script, because a textfile value would freeze at ~0 the
+      # moment it was written and never grow.
+      - record: privatecloud_backup_age_seconds
+        expr: time() - privatecloud_backup_last_success_timestamp

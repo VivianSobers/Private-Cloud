@@ -128,6 +128,15 @@ chmod 600 deploy/secrets/ntfy-alertmanager.token
 
 ## 6. Docker stack
 
+- [ ] Create the node_exporter textfile-collector directory **before** starting
+      the stack (custom backup/pool metrics land here — see
+      [custom-metrics.md](custom-metrics.md)):
+
+```bash
+sudo mkdir -p /var/lib/node_exporter/textfile
+sudo chmod 0755 /var/lib/node_exporter/textfile
+```
+
 - [ ] `cd deploy/compose && docker compose config` — validates, no unset-variable errors
 - [ ] `docker compose up -d`
 - [ ] `docker compose ps` — all services `Up`; postgres `healthy`
@@ -156,6 +165,10 @@ chmod 600 deploy/secrets/ntfy-alertmanager.token
       `smartctl_device_attribute{attribute_name="Reallocated_Sector_Ct"}` (SATA)
       or `smartctl_device_media_errors` (NVMe). Whichever matches your drives
       must return series, or the disk-failure alerts are watching nothing.
+- [ ] **Verify the ZFS pool-health metric exists** — after the collector timer
+      is installed (step 9), query `privatecloud_zpool_health{state="ONLINE"}`.
+      It must return `1` for your pool. If absent, the textfile collector isn't
+      wired — see [custom-metrics.md](custom-metrics.md).
 - [ ] Export edited dashboards to JSON and commit them
 
 ## 8. ntfy
@@ -230,13 +243,20 @@ sudo rm /tmp/backup-broken.env
 > A backup system whose failure path has never fired is indistinguishable
 > from one that fails silently. The success notification tests half the
 > plumbing; this tests the half you actually bought ntfy for.
-- [ ] Install the timers:
+- [ ] Install the timers (this also installs the zpool-metrics collector unit):
 
 ```bash
 sudo cp deploy/systemd/*.service deploy/systemd/*.timer /etc/systemd/system/
 sudo systemctl daemon-reload
-sudo systemctl enable --now restic-backup.timer restic-check.timer
-systemctl list-timers 'restic*'
+sudo systemctl enable --now restic-backup.timer restic-check.timer privatecloud-zpool-metrics.timer
+systemctl list-timers 'restic*' 'privatecloud-*'
+```
+
+- [ ] Confirm the pool-health collector ran and wrote metrics:
+
+```bash
+sudo systemctl start privatecloud-zpool-metrics.service   # run once now
+cat /var/lib/node_exporter/textfile/privatecloud_zpool.prom | grep -E 'health.*ONLINE|scrub_age'
 ```
 
 ## 10. Prove the restore works
@@ -272,8 +292,13 @@ Phase 0 is done when every one of these is true:
 - [ ] `node_systemd_unit_state` and the SMART/NVMe health series **exist in
       Prometheus** — the alerts that guard backups and disks are watching
       real metrics, not absent ones
+- [ ] `privatecloud_zpool_health` and `privatecloud_backup_age_seconds` **exist
+      in Prometheus** — the pool-health and backup-freshness alerts have live
+      metrics to fire on (see [custom-metrics.md](custom-metrics.md))
 - [ ] A test alert **received on your phone**
 - [ ] A deliberately broken backup run **paged your phone with a failure**
+- [ ] Each simulated failure in [custom-metrics.md](custom-metrics.md#validation--simulate-each-failure-and-watch-the-full-chain)
+      (stale backup, degraded pool, failed scrub) **fired and then resolved**
 - [ ] `restore-test.sh` passed
 - [ ] ZFS passphrase and restic password exist **on paper, off this machine**
 
@@ -283,18 +308,19 @@ Phase 0 is done when every one of these is true:
 
 Worth doing, not worth blocking Phase 1 on.
 
+- [x] **Backup-freshness metric.** ✅ Done — `restic-backup.sh` now exports
+      `privatecloud_backup_last_success_timestamp`; `BackupTooOld` /
+      `BackupMetricsMissing` / `BackupLastRunFailed` alert on it. See
+      [custom-metrics.md](custom-metrics.md).
+- [x] **Pool health metric.** ✅ Done — `scripts/zpool-metrics.sh` +
+      `privatecloud-zpool-metrics.timer` export `privatecloud_zpool_health` and
+      scrub freshness; `ZpoolDegraded` / `ZpoolUnavailable` / `ZpoolScrubTooOld`
+      / `ZpoolScrubFailed` alert on them.
 - [ ] **Pin images to digests.** Tags are mutable; `postgres:17.5-alpine` can
       change under you. `docker inspect --format='{{index .RepoDigests 0}}' postgres:17.5-alpine`
       then use `image: postgres@sha256:...`. Add Renovate to bump them.
 - [ ] **Real TLS certs** via `tailscale cert`, replacing `tls internal` — see
       [tailscale-setup.md](tailscale-setup.md#4-enable-magicdns-and-https).
-- [ ] **Backup-freshness metric.** `restic-backup.sh` alerts on failure but not
-      on *never ran*. A node_exporter textfile collector writing a
-      `backup_last_success_timestamp` closes the gap; the alert rule stub is in
-      [alerts.yml](../deploy/monitoring/alerts.yml).
-- [ ] **Pool health metric.** node_exporter's ZFS collector doesn't expose
-      `zpool status`. A textfile collector running `zpool list -H -o health`
-      lets you alert on `DEGRADED` rather than finding out during a scrub.
 - [ ] **UPS + NUT** for clean shutdown on power loss.
 - [ ] **Unattended security upgrades:** `sudo apt install unattended-upgrades`.
 - [ ] **pgBackRest** for point-in-time recovery (Phase 1 — do it before there's

@@ -25,9 +25,22 @@ POOL="${POOL:-tank}"
 SNAP_TAG="restic-$(date +%Y%m%d%H%M%S)"
 HOSTNAME_TAG="$(hostname -s)"
 
+# node_exporter textfile collector directory. The backup writes freshness
+# metrics here after every run so Prometheus can alert when backups go stale.
+TEXTFILE_DIR="${TEXTFILE_DIR:-/var/lib/node_exporter/textfile}"
+BACKUP_PROM="$TEXTFILE_DIR/privatecloud_backup.prom"
+# die() records a failure metric only while a backup is actually running, so a
+# config-time death or a `check` failure doesn't masquerade as a failed backup.
+RECORD_FAILURE_METRIC=0
+
 log()  { printf '[%s] %s\n' "$(date -Is)" "$*"; }
 warn() { printf '[%s] [warn] %s\n' "$(date -Is)" "$*" >&2; }
-die()  { printf '[%s] [fail] %s\n' "$(date -Is)" "$*" >&2; notify_failure "$*"; exit 1; }
+die()  {
+  printf '[%s] [fail] %s\n' "$(date -Is)" "$*" >&2
+  notify_failure "$*"
+  [[ $RECORD_FAILURE_METRIC -eq 1 ]] && write_backup_metric failure
+  exit 1
+}
 
 # --------------------------------------------------------------------------
 # config
@@ -61,6 +74,45 @@ notify() {
     warn "ntfy notification failed (backup result above still stands)"
 }
 notify_failure() { notify "Backup FAILED on $HOSTNAME_TAG" "$1" urgent "rotating_light"; }
+
+# --------------------------------------------------------------------------
+# freshness metric (node_exporter textfile collector)
+# --------------------------------------------------------------------------
+# Writes the last success/failure timestamps so Prometheus can alert when
+# backups silently stop. The AGE is deliberately NOT written here — a value
+# frozen at write time would always read ~0; Prometheus derives
+# privatecloud_backup_age_seconds live via a recording rule (see alerts.yml).
+write_backup_metric() {
+  local result="$1" now; now="$(date +%s)"
+  mkdir -p "$TEXTFILE_DIR" 2>/dev/null || { warn "cannot write $TEXTFILE_DIR; skipping freshness metric"; return 0; }
+
+  # Preserve whichever timestamp this run isn't updating.
+  local last_success=0 last_failure=0
+  if [[ -r "$BACKUP_PROM" ]]; then
+    last_success="$(sed -n 's/^privatecloud_backup_last_success_timestamp \([0-9][0-9]*\)$/\1/p' "$BACKUP_PROM" | tail -1)"
+    last_failure="$(sed -n 's/^privatecloud_backup_last_failure_timestamp \([0-9][0-9]*\)$/\1/p' "$BACKUP_PROM" | tail -1)"
+  fi
+  [[ "$last_success" =~ ^[0-9]+$ ]] || last_success=0
+  [[ "$last_failure" =~ ^[0-9]+$ ]] || last_failure=0
+
+  local run_success=0
+  if [[ "$result" == success ]]; then last_success=$now; run_success=1; else last_failure=$now; fi
+
+  local tmp; tmp="$(mktemp "${BACKUP_PROM}.XXXXXX")" || { warn "mktemp failed; skipping freshness metric"; return 0; }
+  {
+    echo "# HELP privatecloud_backup_last_success_timestamp Unix time of the last successful restic backup."
+    echo "# TYPE privatecloud_backup_last_success_timestamp gauge"
+    echo "privatecloud_backup_last_success_timestamp $last_success"
+    echo "# HELP privatecloud_backup_last_failure_timestamp Unix time of the last failed restic backup."
+    echo "# TYPE privatecloud_backup_last_failure_timestamp gauge"
+    echo "privatecloud_backup_last_failure_timestamp $last_failure"
+    echo "# HELP privatecloud_backup_last_run_success 1 if the most recent backup run succeeded, 0 if it failed."
+    echo "# TYPE privatecloud_backup_last_run_success gauge"
+    echo "privatecloud_backup_last_run_success $run_success"
+  } > "$tmp"
+  chmod 0644 "$tmp"
+  mv -f "$tmp" "$BACKUP_PROM"
+}
 
 # --------------------------------------------------------------------------
 # snapshot helpers
@@ -100,6 +152,7 @@ cmd_init() {
 
 cmd_backup() {
   local started; started=$(date +%s)
+  RECORD_FAILURE_METRIC=1        # from here on, any die() records a failed backup
   log "backup starting -> $RESTIC_REPOSITORY"
 
   restic cat config >/dev/null 2>&1 || die "repo not initialized or unreachable; run: $0 init"
@@ -153,6 +206,8 @@ cmd_backup() {
   local elapsed=$(( $(date +%s) - started ))
   local stats; stats="$(restic stats --mode raw-data 2>/dev/null | tail -3 | tr '\n' ' ')"
   log "backup OK in ${elapsed}s. $stats"
+  write_backup_metric success
+  RECORD_FAILURE_METRIC=0        # success recorded; nothing after this is a backup failure
   notify "Backup OK on $HOSTNAME_TAG" "Completed in ${elapsed}s. $stats" low "white_check_mark"
 }
 
