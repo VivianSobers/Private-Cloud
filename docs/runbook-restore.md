@@ -147,6 +147,11 @@ If it doesn't come up, fall back to 4a.
 
 ## 5. Replace a failed mirror disk
 
+> **This section assumes a production mirror.** A single-disk **dev** pool has
+> no redundancy: a dead disk means the pool is gone, so skip to
+> [§6 Restore from restic](#6-restore-from-restic-pool-is-gone). This is the
+> whole reason a dev pool holds nothing you can't afford to restore.
+
 You'll learn about this from the `SmartDeviceUnhealthy` alert, ideally before
 the disk actually dies.
 

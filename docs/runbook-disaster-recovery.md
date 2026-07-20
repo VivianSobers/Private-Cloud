@@ -82,6 +82,8 @@ ls -l /dev/disk/by-id/                   # get stable paths
 
 sudo ./scripts/zfs-setup.sh --dry-run /dev/disk/by-id/NEW1 /dev/disk/by-id/NEW2
 sudo ./scripts/zfs-setup.sh             /dev/disk/by-id/NEW1 /dev/disk/by-id/NEW2
+# On a single-disk dev box, rebuild the same way you built it:
+#   sudo ./scripts/zfs-setup.sh --single /dev/disk/by-id/NEW1
 ```
 
 You may reuse the old passphrase or choose a new one — the new pool has no
