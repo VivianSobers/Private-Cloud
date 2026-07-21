@@ -52,13 +52,33 @@ func GenerateRecoveryCodes(n int) ([]string, error) {
 }
 
 // HashRecoveryCode produces a PHC-format argon2id hash for storage.
+//
+// The code is normalised first, so verification can be forgiving about how a
+// human retypes it off paper. Do NOT use this for machine-generated secrets:
+// normalisation uppercases and strips characters, which for a case-sensitive
+// secret would silently throw away most of its entropy. Those use HashSecret.
 func HashRecoveryCode(code string) (string, error) {
+	return HashSecret(NormalizeRecoveryCode(code))
+}
+
+// VerifyRecoveryCode reports whether code matches the stored hash.
+func VerifyRecoveryCode(code, encoded string) bool {
+	return VerifySecret(NormalizeRecoveryCode(code), encoded)
+}
+
+// HashSecret produces a PHC-format argon2id hash of an exact string.
+//
+// Nothing is normalised: the input is hashed byte for byte. This is what
+// machine-generated credentials want, where every character carries entropy
+// and "helpfully" folding case would divide the keyspace by a large power of
+// two without anyone noticing.
+func HashSecret(secret string) (string, error) {
 	salt := make([]byte, argonSaltLen)
 	if _, err := rand.Read(salt); err != nil {
 		return "", fmt.Errorf("generate salt: %w", err)
 	}
 
-	key := argon2.IDKey([]byte(NormalizeRecoveryCode(code)), salt, argonTime, argonMemory, argonThreads, argonKeyLen)
+	key := argon2.IDKey([]byte(secret), salt, argonTime, argonMemory, argonThreads, argonKeyLen)
 
 	// Standard PHC string, so the parameters travel with the hash and can be
 	// raised later without invalidating existing codes.
@@ -69,12 +89,12 @@ func HashRecoveryCode(code string) (string, error) {
 	), nil
 }
 
-// VerifyRecoveryCode reports whether code matches the stored hash.
+// VerifySecret reports whether secret matches the stored hash, exactly.
 //
 // Comparison is constant-time. It parses the parameters out of the stored hash
-// rather than assuming the current constants, so codes hashed under older
+// rather than assuming the current constants, so secrets hashed under older
 // parameters keep working.
-func VerifyRecoveryCode(code, encoded string) bool {
+func VerifySecret(secret, encoded string) bool {
 	parts := strings.Split(encoded, "$")
 	if len(parts) != 6 || parts[1] != "argon2id" {
 		return false
@@ -101,7 +121,7 @@ func VerifyRecoveryCode(code, encoded string) bool {
 		return false
 	}
 
-	got := argon2.IDKey([]byte(NormalizeRecoveryCode(code)), salt, time, memory, threads, uint32(len(want)))
+	got := argon2.IDKey([]byte(secret), salt, time, memory, threads, uint32(len(want)))
 	return subtle.ConstantTimeCompare(got, want) == 1
 }
 

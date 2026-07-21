@@ -54,6 +54,7 @@ volumes:
   ntfy_cache:         # message/attachment cache — expendable
   caddy_data:
   caddy_config:
+  web_dist:          # built SPA, produced by the `web` service
 
 services:
   # ==========================================================================
@@ -191,6 +192,29 @@ services:
         condition: service_healthy
 
   # ==========================================================================
+  # Web UI — build-only. Compiles the SPA into the web_dist volume and exits.
+  # ==========================================================================
+  # Not a long-running service: there is no Node process in production. The
+  # container runs once, copies the built bundle into a volume, and stops.
+  # `docker compose up` reports it as exited, which is the intended state.
+  #
+  # Rebuild after changing anything under web/:
+  #   docker compose up --build web
+  web:
+    build:
+      context: ../../web
+      dockerfile: Dockerfile
+    image: privatecloud-web:${API_VERSION:-dev}
+    container_name: privatecloud-web
+    restart: "no"
+    logging: *default-logging
+    volumes:
+      - web_dist:/out
+    # Overwrite rather than merge: a stale asset from a previous build left in
+    # the volume would be served forever, since nothing else ever removes it.
+    command: sh -c "rm -rf /out/* && cp -r /dist/. /out/"
+
+  # ==========================================================================
   # Caddy — TLS termination and the only ingress.
   # ==========================================================================
   caddy:
@@ -208,6 +232,10 @@ services:
       - ../caddy/Caddyfile:/etc/caddy/Caddyfile:ro
       - caddy_data:/data          # holds issued certs — persist or you re-issue
       - caddy_config:/config
+      # The built SPA. Produced by the `web` service below, which is a
+      # build-only container: it compiles the bundle into this volume and
+      # exits. Caddy serves it; nothing needs a running Node process.
+      - web_dist:/srv/web:ro
     environment:
       TS_HOSTNAME: ${TS_HOSTNAME:-cloud}
     cap_drop: [ALL]

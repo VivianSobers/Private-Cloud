@@ -36,13 +36,14 @@ import (
 //	PC_TEST_DATABASE_URL=postgres://... go test ./internal/httpapi/...
 
 type apiFixture struct {
-	t       *testing.T
-	ctx     context.Context
-	handler http.Handler
-	pool    *pgxpool.Pool
-	cookie  *http.Cookie
-	admin   *http.Cookie
-	userID  uuid.UUID
+	t        *testing.T
+	ctx      context.Context
+	handler  http.Handler
+	pool     *pgxpool.Pool
+	cookie   *http.Cookie
+	admin    *http.Cookie
+	userID   uuid.UUID
+	username string
 }
 
 func newAPIFixture(t *testing.T) *apiFixture {
@@ -86,12 +87,12 @@ func newAPIFixture(t *testing.T) *apiFixture {
 	})
 
 	f := &apiFixture{t: t, ctx: ctx, handler: srv.Handler(), pool: database.Pool}
-	f.userID, f.cookie = newSession(t, ctx, authStore, authSvc, false)
-	_, f.admin = newSession(t, ctx, authStore, authSvc, true)
+	f.userID, f.username, f.cookie = newSession(t, ctx, authStore, authSvc, false)
+	_, _, f.admin = newSession(t, ctx, authStore, authSvc, true)
 	return f
 }
 
-func newSession(t *testing.T, ctx context.Context, store *auth.Store, svc *auth.Service, admin bool) (uuid.UUID, *http.Cookie) {
+func newSession(t *testing.T, ctx context.Context, store *auth.Store, svc *auth.Service, admin bool) (uuid.UUID, string, *http.Cookie) {
 	t.Helper()
 	name := "api-" + uuid.NewString()[:8]
 	user, err := store.CreateUser(ctx, uuid.New(), name, name, admin)
@@ -102,7 +103,7 @@ func newSession(t *testing.T, ctx context.Context, store *auth.Store, svc *auth.
 	if err != nil {
 		t.Fatalf("create session: %v", err)
 	}
-	return user.ID, &http.Cookie{Name: "pc_session", Value: token}
+	return user.ID, user.Username, &http.Cookie{Name: "pc_session", Value: token}
 }
 
 func (f *apiFixture) do(method, path string, body io.Reader, cookie *http.Cookie) *httptest.ResponseRecorder {

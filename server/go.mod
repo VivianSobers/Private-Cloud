@@ -15,6 +15,7 @@ require (
 	github.com/pressly/goose/v3 v3.24.1
 	github.com/prometheus/client_golang v1.20.5
 	golang.org/x/crypto v0.54.0
+	golang.org/x/net v0.57.0
 )
 
 require (

@@ -28,6 +28,13 @@ func CurrentUser(ctx context.Context) *auth.User {
 	return u
 }
 
+// withUser attaches an authenticated user to a context. Used by the WebDAV
+// endpoint, which authenticates with Basic auth rather than a session and so
+// has no auth.Session to carry alongside.
+func withUser(ctx context.Context, u *auth.User) context.Context {
+	return context.WithValue(ctx, userCtxKey, u)
+}
+
 func currentSession(ctx context.Context) *auth.Session {
 	s, _ := ctx.Value(sessionCtxKey).(*auth.Session)
 	return s
@@ -474,6 +481,74 @@ func (s *Server) handleRegenerateRecoveryCodes(w http.ResponseWriter, r *http.Re
 		"recovery_codes": codes,
 		"notice":         "Previous codes are now invalid. Store these; they are shown once.",
 	})
+}
+
+// --- app passwords ----------------------------------------------------------
+
+func (s *Server) handleListAppPasswords(w http.ResponseWriter, r *http.Request) {
+	list, err := s.auth.Store().ListAppPasswords(r.Context(), CurrentUser(r.Context()).ID)
+	if err != nil {
+		s.serverError(w, r, "list app passwords", err)
+		return
+	}
+	out := make([]map[string]any, 0, len(list))
+	for _, a := range list {
+		out = append(out, map[string]any{
+			"id": a.ID, "name": a.Name,
+			"created_at": a.CreatedAt, "last_used_at": a.LastUsedAt, "expires_at": a.ExpiresAt,
+		})
+	}
+	writeJSON(w, r, http.StatusOK, map[string]any{"app_passwords": out})
+}
+
+type createAppPasswordRequest struct {
+	Name string `json:"name"`
+	// TTLHours of 0 means it never expires.
+	TTLHours int `json:"ttl_hours"`
+}
+
+func (s *Server) handleCreateAppPassword(w http.ResponseWriter, r *http.Request) {
+	var req createAppPasswordRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil || req.Name == "" {
+		writeError(w, r, http.StatusBadRequest, "invalid_request", "a name is required")
+		return
+	}
+
+	// A recovery session cannot reach this handler at all: this path is absent
+	// from isRecoveryAllowedPath, so requireAuth rejects it first. That matters
+	// — minting a long-lived credential from a printed code would defeat the
+	// 15-minute limit entirely.
+	user := CurrentUser(r.Context())
+	ap, plaintext, err := s.auth.Store().CreateAppPassword(
+		r.Context(), user.ID, req.Name, time.Duration(req.TTLHours)*time.Hour)
+	if err != nil {
+		s.serverError(w, r, "create app password", err)
+		return
+	}
+
+	s.log.Warn("app password created", "user", user.Username, "name", req.Name)
+	writeJSON(w, r, http.StatusCreated, map[string]any{
+		"app_password": map[string]any{
+			"id": ap.ID, "name": ap.Name, "created_at": ap.CreatedAt, "expires_at": ap.ExpiresAt,
+		},
+		// Shown exactly once, like recovery codes. Only the argon2id hash is
+		// stored, so there is no way to display it again.
+		"password": plaintext,
+		"notice":   "Copy this now — it is shown once and cannot be retrieved. Mount /dav with your username and this password.",
+	})
+}
+
+func (s *Server) handleRevokeAppPassword(w http.ResponseWriter, r *http.Request) {
+	id, err := uuid.Parse(r.PathValue("id"))
+	if err != nil {
+		writeError(w, r, http.StatusBadRequest, "invalid_id", "not a valid app password id")
+		return
+	}
+	if err := s.auth.Store().RevokeAppPassword(r.Context(), CurrentUser(r.Context()).ID, id); err != nil {
+		writeError(w, r, http.StatusNotFound, "not_found", "app password not found")
+		return
+	}
+	writeJSON(w, r, http.StatusOK, map[string]any{"status": "revoked"})
 }
 
 // --- helpers ----------------------------------------------------------------

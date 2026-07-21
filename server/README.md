@@ -1,13 +1,17 @@
 # private-cloud API
 
-Go backend for the private cloud. **Phase 1, slices 1–4 complete.**
+Go backend for the private cloud. **Phase 1, slices 1–6 complete.**
 
 What exists: configuration, database pool, embedded migrations, health probes,
 Prometheus metrics, structured logging, graceful shutdown, passkey auth, the
 file tree — folders, downloads with Range support, trash, quotas, garbage
-collection and fsck — and resumable uploads over tus. What doesn't: web UI,
-WebDAV, search — slices 5 through 7. See
+collection and fsck — resumable uploads over tus, a React web UI, and WebDAV.
+What doesn't: search — slice 7. See
 [../docs/phase-1-design.md](../docs/phase-1-design.md).
+
+The web UI lives in [../web/](../web/) and is served by Caddy from the same
+origin as this API — not for convenience, but because WebAuthn binds passkeys
+to an origin.
 
 ## Layout
 
@@ -20,6 +24,7 @@ internal/db/migrations/
 internal/auth/        users, passkeys, recovery codes, sessions
 internal/blob/        opaque content storage (filesystem today, CAS in Phase 2)
 internal/files/       the tree: nodes, versions, trash, quota, GC, fsck
+internal/webdavfs/    webdav.FileSystem over the node store
 internal/httpapi/     routing, middleware, handlers
 internal/metrics/     Prometheus registry
 ```
@@ -65,6 +70,9 @@ between the network and the auth code in slice 2.
 | `HEAD /api/v1/uploads/{id}` | session | Where to resume from |
 | `PATCH /api/v1/uploads/{id}` | session | Append a chunk |
 | `DELETE /api/v1/uploads/{id}` | session | Abandon an upload |
+| `GET`, `POST /api/v1/auth/app-passwords` | session | List / issue WebDAV credentials |
+| `DELETE /api/v1/auth/app-passwords/{id}` | session | Revoke one |
+| `/dav/*` | **app password** | WebDAV — mount as a network drive |
 
 `{id}` accepts the literal `root`, so a client can start browsing without a
 prior lookup.
@@ -197,6 +205,50 @@ would strand completed uploads whenever a client disconnected right after its
 final chunk. The created node is reported in `X-Node-Id` / `X-Node-Path`,
 because tus reserves the PATCH response body.
 
+## WebDAV
+
+Mount the tree as a network drive at `https://<host>/dav/`. No client to
+install, no sync daemon, and every application on the machine can open files
+directly — the cheapest possible "works with everything" surface, and the
+reason the node store grew a path-addressed API in slice 3.
+
+```bash
+# macOS:   Finder -> Go -> Connect to Server -> https://<host>/dav/
+# Windows: Explorer -> Map network drive -> https://<host>/dav/
+# Linux:   gio mount dav://<host>/dav/
+rclone config   # type: webdav, vendor: other, url: https://<host>/dav/
+```
+
+Authentication is **HTTP Basic with an app password**, because a filesystem
+driver cannot run a WebAuthn ceremony. Create one in Settings, then sign in with
+your username and that password. It is shown once and stored as argon2id, like
+a recovery code.
+
+This is a real weakening of the auth model, and it is contained deliberately:
+
+- One password per client, named and individually revocable. Losing a laptop
+  revokes one credential rather than forcing a global reset.
+- **Scoped to `/dav` only.** An app password cannot call the JSON API, so a
+  leaked one cannot enrol a passkey, read recovery codes, or change how you
+  sign in. It reaches files, which is bad enough; it cannot take the account.
+- Rate limited like the auth endpoints — Basic auth over WebDAV is the one
+  place in this system where online guessing against a secret is possible.
+- `cloudctl user reset-auth` revokes them alongside passkeys and sessions.
+
+The credential is `pcap_<lookup>_<secret>`. The `pcap_` prefix makes a leaked
+one greppable by secret scanners and by a human reading a config file. The
+lookup half is stored in clear and indexed so verification hashes exactly one
+candidate — a WebDAV client issues a great many requests, and argon2id at
+64 MiB per candidate is not something to do in a loop.
+
+`DELETE` over WebDAV moves to the trash rather than purging. A client deleting
+the wrong folder should be a recoverable accident.
+
+Locks are held in memory. They exist to stop two clients writing one file at
+once; losing them on restart is the same thing that happens when a client's
+connection drops. A database-backed lock table is a Phase 3 concern, for when
+there might be more than one replica.
+
 ## cloudctl
 
 ```bash
@@ -296,6 +348,7 @@ Applied automatically at startup.
 | `00002` | users, passkeys, recovery codes, sessions, ceremonies |
 | `00003` | blobs, nodes, file versions, refcount trigger |
 | `00004` | resumable upload sessions |
+| `00005` | app passwords |
 
 Blob refcounts are maintained by a **trigger**, not by application code.
 `file_versions` rows disappear through `ON DELETE CASCADE` — purging a folder

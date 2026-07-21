@@ -1,0 +1,117 @@
+import { useCallback, useEffect, useState } from "react";
+
+import { ApiError, api, type Me } from "./api";
+import { SignIn } from "./SignIn";
+import { Browser } from "./Browser";
+import { Settings } from "./Settings";
+import { RecoveryCodes } from "./RecoveryCodes";
+
+type View = "files" | "settings";
+
+export function App() {
+  const [me, setMe] = useState<Me | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [view, setView] = useState<View>("files");
+
+  // Codes are shown exactly once, right after they are issued. Held here rather
+  // than in the component that created them so navigating away cannot make them
+  // vanish before they have been written down.
+  const [freshCodes, setFreshCodes] = useState<string[] | null>(null);
+
+  const refresh = useCallback(async () => {
+    try {
+      setMe(await api.me());
+    } catch (err) {
+      // 401 is the normal signed-out state, not a failure worth reporting.
+      if (!(err instanceof ApiError) || err.status !== 401) {
+        console.error("could not load session", err);
+      }
+      setMe(null);
+    } finally {
+      setLoading(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    void refresh();
+  }, [refresh]);
+
+  if (loading) {
+    return (
+      <div className="app">
+        <p className="muted">Loading…</p>
+      </div>
+    );
+  }
+
+  if (!me) {
+    return <SignIn onSignedIn={refresh} onCodes={setFreshCodes} codes={freshCodes} />;
+  }
+
+  // A recovery session can do exactly one thing: enrol a passkey. Rendering the
+  // file browser would be a lie — every request it made would come back 403.
+  if (me.session_kind === "recovery") {
+    return (
+      <SignIn
+        recoveryFor={me.user.username}
+        onSignedIn={refresh}
+        onCodes={setFreshCodes}
+        codes={freshCodes}
+      />
+    );
+  }
+
+  return (
+    <div className="app">
+      <header className="top">
+        <h1>private cloud</h1>
+        <nav className="row small">
+          <button className="link" onClick={() => setView("files")} aria-current={view === "files"}>
+            Files
+          </button>
+          <button className="link" onClick={() => setView("settings")} aria-current={view === "settings"}>
+            Settings
+          </button>
+        </nav>
+        <span className="muted small">
+          {me.user.display_name || me.user.username}
+          {me.user.is_admin ? " (admin)" : ""}
+        </span>
+        <button
+          onClick={async () => {
+            await api.logout();
+            await refresh();
+          }}
+        >
+          Sign out
+        </button>
+      </header>
+
+      {me.remaining_recovery_codes === 0 && (
+        <div className="banner warn">
+          <strong>No recovery codes left.</strong> Without one, losing every
+          passkey means losing access to this server — the only way back in
+          would be a shell on the machine itself.{" "}
+          <button
+            className="link"
+            onClick={async () => {
+              const res = await api.regenerateRecovery();
+              setFreshCodes(res.recovery_codes);
+              await refresh();
+            }}
+          >
+            Generate a new set
+          </button>
+        </div>
+      )}
+
+      {freshCodes && <RecoveryCodes codes={freshCodes} onDismiss={() => setFreshCodes(null)} />}
+
+      {view === "files" ? (
+        <Browser />
+      ) : (
+        <Settings me={me} onChanged={refresh} onCodes={setFreshCodes} />
+      )}
+    </div>
+  );
+}

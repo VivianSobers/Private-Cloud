@@ -222,12 +222,19 @@ func userCommand(ctx context.Context, store *auth.Store, svc *auth.Service, args
 		if err != nil {
 			return err
 		}
+		// App passwords too. An account being recovered must not leave a
+		// working WebDAV credential behind for whoever caused the lockout.
+		apps, err := store.RevokeAllAppPasswords(ctx, user.ID)
+		if err != nil {
+			return err
+		}
 		codes, err := svc.RegenerateRecoveryCodes(ctx, user.ID)
 		if err != nil {
 			return err
 		}
 
-		fmt.Printf("reset %q: removed %d passkey(s), revoked %d session(s)\n\n", user.Username, removed, revoked)
+		fmt.Printf("reset %q: removed %d passkey(s), revoked %d session(s), revoked %d app password(s)\n\n",
+			user.Username, removed, revoked, apps)
 		printCodes(codes)
 		return nil
 

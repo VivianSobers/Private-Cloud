@@ -1,12 +1,14 @@
-# Caddyfile — Phase 0.
+# Caddyfile — ingress for the whole stack.
 #
 # Private plane only. Nothing here is reachable from the internet: the compose
 # file binds Caddy's ports to the Tailscale interface address, so this site is
 # served exclusively to devices on your tailnet.
 #
+# Routes, in the order they are matched: /api (the JSON API), /dav (WebDAV),
+# /grafana, /ntfy, /prometheus, /alertmanager, and everything else to the SPA.
+#
 # The public plane (share links, public WebDAV) arrives in Phase 2 as a
 # SEPARATE site block with its own rate limits. Do not add public routes here.
-
 {
 	# No ACME account needed — see the tls directive below.
 	admin off
@@ -63,6 +65,22 @@
 		}
 	}
 
+	# ---- WebDAV (Phase 1, slice 6) -----------------------------------------
+	# A separate prefix from /api because it is a different protocol with a
+	# different auth scheme: Basic auth with app passwords, since a filesystem
+	# driver cannot run a WebAuthn ceremony.
+	handle /dav* {
+		reverse_proxy api:8080 {
+			transport http {
+				# Finder and rclone both hold connections open while copying
+				# large trees. The default timeouts would sever a mount
+				# mid-transfer and leave a half-written file.
+				read_timeout 1h
+				write_timeout 1h
+			}
+		}
+	}
+
 	# ---- Grafana -----------------------------------------------------------
 	# GF_SERVER_SERVE_FROM_SUB_PATH=true in compose makes Grafana generate
 	# correct asset URLs under /grafana. Without it you get a blank page and
@@ -81,7 +99,6 @@
 				read_timeout 24h
 				write_timeout 24h
 			}
-			header_up X-Forwarded-Proto {scheme}
 		}
 	}
 
@@ -97,19 +114,24 @@
 		reverse_proxy alertmanager:9093
 	}
 
-	# ---- default -----------------------------------------------------------
-	# A landing page, so hitting the bare host tells you the stack is alive
-	# instead of returning a bare 404 you have to interpret.
+	# ---- web UI (Phase 1, slice 5) -----------------------------------------
+	# The SPA is served from the SAME ORIGIN as the API. That is not a
+	# convenience: WebAuthn binds credentials to an origin, so a UI on a
+	# different host could not use the passkeys this server issues.
 	handle {
-		respond `<!doctype html><meta charset=utf-8>
-<title>private cloud</title>
-<style>body{font:16px/1.6 system-ui;margin:4rem auto;max-width:32rem;padding:0 1rem}a{display:block;padding:.5rem 0}</style>
-<h1>private cloud — phase 0</h1>
-<p>Infrastructure is up. No application yet.</p>
-<a href="/grafana">Grafana</a>
-<a href="/ntfy">ntfy</a>
-<a href="/prometheus">Prometheus</a>
-<a href="/alertmanager">Alertmanager</a>` 200
+		root * /srv/web
+
+		# Hashed asset filenames are immutable, so they can be cached hard.
+		# index.html must NOT be, or a deploy leaves browsers running the old
+		# bundle against the new API indefinitely.
+		@assets path /assets/*
+		header @assets Cache-Control "public, max-age=31536000, immutable"
+		header /index.html Cache-Control "no-cache"
+
+		# SPA fallback: client-side routes have no file on disk, so anything
+		# that isn't a real file gets index.html and the app routes it.
+		try_files {path} /index.html
+		file_server
 	}
 }
 

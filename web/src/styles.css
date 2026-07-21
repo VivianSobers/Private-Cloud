@@ -1,0 +1,335 @@
+/* Hand-rolled, no framework.
+ *
+ * The whole file is smaller than the manifest of a CSS framework, and this is a
+ * single-purpose app whose layout will never need a grid system. Colours are
+ * declared for both schemes because a file browser is a thing people open at
+ * night. */
+
+:root {
+  color-scheme: light dark;
+
+  --bg: #ffffff;
+  --bg-subtle: #f6f7f9;
+  --bg-hover: #eceef1;
+  --fg: #14171a;
+  --fg-muted: #5b6470;
+  --border: #d8dce1;
+  --accent: #1a56b8;
+  --accent-fg: #ffffff;
+  --danger: #b3261e;
+  --warn-bg: #fff4e5;
+  --warn-border: #e6b980;
+
+  --radius: 6px;
+  --gap: 0.75rem;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #16181c;
+    --bg-subtle: #1e2126;
+    --bg-hover: #282c33;
+    --fg: #e7e9ec;
+    --fg-muted: #98a2b0;
+    --border: #333941;
+    --accent: #5b9bf8;
+    --accent-fg: #0b1220;
+    --danger: #f2837b;
+    --warn-bg: #3a2c17;
+    --warn-border: #7a5c2a;
+  }
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  font: 15px/1.5 system-ui, -apple-system, "Segoe UI", sans-serif;
+  background: var(--bg);
+  color: var(--fg);
+}
+
+a {
+  color: var(--accent);
+}
+
+button {
+  font: inherit;
+  padding: 0.4rem 0.75rem;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--bg-subtle);
+  color: var(--fg);
+  cursor: pointer;
+}
+
+button:hover:not(:disabled) {
+  background: var(--bg-hover);
+}
+
+button:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+
+button.primary {
+  background: var(--accent);
+  color: var(--accent-fg);
+  border-color: var(--accent);
+}
+
+button.danger {
+  color: var(--danger);
+}
+
+button.link {
+  background: none;
+  border: none;
+  padding: 0.15rem 0.35rem;
+  color: var(--accent);
+  text-decoration: underline;
+}
+
+input,
+select {
+  font: inherit;
+  padding: 0.4rem 0.55rem;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--bg);
+  color: var(--fg);
+  min-width: 0;
+}
+
+/* Focus must stay visible: this app is entirely keyboard-navigable, and
+ * removing the outline for looks would make it unusable without a mouse. */
+:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+
+.app {
+  max-width: 62rem;
+  margin: 0 auto;
+  padding: 1rem;
+}
+
+header.top {
+  display: flex;
+  align-items: center;
+  gap: var(--gap);
+  flex-wrap: wrap;
+  padding-bottom: 0.75rem;
+  border-bottom: 1px solid var(--border);
+  margin-bottom: 1rem;
+}
+
+header.top h1 {
+  font-size: 1.05rem;
+  margin: 0;
+  flex: 1;
+}
+
+.muted {
+  color: var(--fg-muted);
+}
+
+.small {
+  font-size: 0.85rem;
+}
+
+.row {
+  display: flex;
+  gap: var(--gap);
+  align-items: center;
+  flex-wrap: wrap;
+}
+
+.stack {
+  display: flex;
+  flex-direction: column;
+  gap: var(--gap);
+}
+
+.card {
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 1rem;
+  background: var(--bg-subtle);
+}
+
+.banner {
+  border: 1px solid var(--border);
+  border-left-width: 4px;
+  border-radius: var(--radius);
+  padding: 0.6rem 0.8rem;
+  margin-bottom: 0.75rem;
+}
+
+.banner.error {
+  border-left-color: var(--danger);
+  color: var(--danger);
+}
+
+.banner.warn {
+  background: var(--warn-bg);
+  border-color: var(--warn-border);
+  border-left-color: var(--warn-border);
+}
+
+/* Breadcrumbs wrap rather than scroll: a deep path on a phone should still be
+ * fully clickable. */
+nav.crumbs {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.25rem;
+  margin-bottom: 0.75rem;
+}
+
+nav.crumbs button {
+  border: none;
+  background: none;
+  padding: 0.2rem 0.35rem;
+  border-radius: var(--radius);
+}
+
+nav.crumbs button:hover {
+  background: var(--bg-hover);
+}
+
+nav.crumbs .sep {
+  color: var(--fg-muted);
+}
+
+table.listing {
+  width: 100%;
+  border-collapse: collapse;
+}
+
+table.listing th {
+  text-align: left;
+  font-weight: 600;
+  font-size: 0.82rem;
+  color: var(--fg-muted);
+  padding: 0.35rem 0.5rem;
+  border-bottom: 1px solid var(--border);
+}
+
+table.listing td {
+  padding: 0.4rem 0.5rem;
+  border-bottom: 1px solid var(--border);
+  vertical-align: middle;
+}
+
+table.listing tr:hover td {
+  background: var(--bg-subtle);
+}
+
+td.name {
+  width: 100%;
+}
+
+td.name button {
+  background: none;
+  border: none;
+  padding: 0;
+  text-align: left;
+  color: inherit;
+  max-width: 100%;
+  overflow-wrap: anywhere;
+}
+
+td.name button:hover {
+  text-decoration: underline;
+  background: none;
+}
+
+td.size,
+td.when {
+  white-space: nowrap;
+  color: var(--fg-muted);
+  font-size: 0.85rem;
+  text-align: right;
+}
+
+td.actions {
+  white-space: nowrap;
+  text-align: right;
+}
+
+/* The columns that stop being worth their width on a phone. */
+@media (max-width: 34rem) {
+  td.when,
+  th.when {
+    display: none;
+  }
+}
+
+.dropzone {
+  border: 2px dashed var(--border);
+  border-radius: var(--radius);
+  padding: 1.5rem;
+  text-align: center;
+  color: var(--fg-muted);
+  margin-bottom: 1rem;
+}
+
+.dropzone.over {
+  border-color: var(--accent);
+  background: var(--bg-subtle);
+  color: var(--fg);
+}
+
+.progress {
+  height: 6px;
+  background: var(--bg-hover);
+  border-radius: 3px;
+  overflow: hidden;
+}
+
+.progress > div {
+  height: 100%;
+  background: var(--accent);
+  transition: width 0.15s linear;
+}
+
+.quota {
+  min-width: 12rem;
+}
+
+code,
+pre {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 0.88em;
+}
+
+pre.codes {
+  background: var(--bg-subtle);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 0.75rem;
+  overflow-x: auto;
+  line-height: 1.9;
+}
+
+dialog {
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--bg);
+  color: var(--fg);
+  padding: 1rem;
+  min-width: min(24rem, 92vw);
+}
+
+dialog::backdrop {
+  background: rgb(0 0 0 / 45%);
+}
+
+.empty {
+  padding: 2rem 1rem;
+  text-align: center;
+  color: var(--fg-muted);
+}

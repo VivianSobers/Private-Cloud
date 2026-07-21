@@ -153,8 +153,23 @@ func (s *Server) Handler() http.Handler {
 
 	mux.HandleFunc("GET /api/v1/usage", s.requireAuth(s.handleUsage))
 
+	// App passwords: credentials for clients that cannot run a WebAuthn
+	// ceremony. Managed through the session-authenticated API, never through
+	// WebDAV itself — an app password must not be able to mint another.
+	mux.HandleFunc("GET /api/v1/auth/app-passwords", s.requireAuth(s.handleListAppPasswords))
+	mux.HandleFunc("POST /api/v1/auth/app-passwords", s.requireAuth(s.handleCreateAppPassword))
+	mux.HandleFunc("DELETE /api/v1/auth/app-passwords/{id}", s.requireAuth(s.handleRevokeAppPassword))
+
 	// fsck walks the entire blob store and can delete orphans; admin only.
 	mux.HandleFunc("POST /api/v1/admin/fsck", s.requireAdmin(s.handleFsck))
+
+	// --- WebDAV --------------------------------------------------------------
+	// Mounted outside /api because it is a different protocol with a different
+	// auth scheme. Registered as a prefix rather than with method patterns:
+	// WebDAV uses PROPFIND, PROPPATCH, MKCOL, COPY, MOVE, LOCK and UNLOCK,
+	// which ServeMux would otherwise reject as unknown methods.
+	mux.Handle(davPrefix+"/", s.withDavAuth(s.davHandler()))
+	mux.Handle(davPrefix, s.withDavAuth(s.davHandler()))
 
 	// Anything else under /api/ gets a JSON 404 rather than net/http's plain
 	// text, so clients can parse every error the same way.
