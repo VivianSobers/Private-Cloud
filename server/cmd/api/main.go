@@ -143,6 +143,7 @@ func run() error {
 
 	filesSvc := files.NewService(files.NewStore(database.Pool), blobs, log)
 	filesSvc.TrashRetention = cfg.TrashRetention
+	filesSvc.UploadTTL = cfg.UploadTTL
 
 	// Expired sessions and abandoned ceremonies would otherwise accumulate
 	// forever. Cheap enough to run in-process rather than adding a job queue
@@ -253,11 +254,13 @@ func runGC(ctx context.Context, svc *files.Service, m *metrics.Metrics, interval
 			}
 			m.GCBlobsFreed.Add(float64(res.BlobsFreed))
 			m.GCBytesFreed.Add(float64(res.BytesFreed))
-			if res.TrashPurged > 0 || res.BlobsFreed > 0 {
+			if res.TrashPurged > 0 || res.BlobsFreed > 0 || res.UploadsExpired > 0 || res.StagingFreed > 0 {
 				log.Info("garbage collected",
 					"trash_purged", res.TrashPurged,
 					"blobs_freed", res.BlobsFreed,
-					"bytes_freed", res.BytesFreed)
+					"bytes_freed", res.BytesFreed,
+					"uploads_expired", res.UploadsExpired,
+					"staging_freed", res.StagingFreed)
 			}
 		}
 	}

@@ -136,6 +136,16 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("HEAD /api/v1/nodes/{id}/content", s.requireAuth(s.handleDownload))
 	mux.HandleFunc("POST /api/v1/upload", s.requireAuth(s.handleUpload))
 
+	// --- resumable uploads (tus 1.0.0) ---------------------------------------
+	// OPTIONS is unauthenticated: it advertises protocol support and nothing
+	// else, and tus clients send it before they have anywhere to put
+	// credentials.
+	mux.HandleFunc("OPTIONS /api/v1/uploads", s.handleTusOptions)
+	mux.HandleFunc("POST /api/v1/uploads", s.requireAuth(s.handleTusCreate))
+	mux.HandleFunc("HEAD /api/v1/uploads/{id}", s.requireAuth(s.handleTusHead))
+	mux.HandleFunc("PATCH /api/v1/uploads/{id}", s.requireAuth(s.handleTusPatch))
+	mux.HandleFunc("DELETE /api/v1/uploads/{id}", s.requireAuth(s.handleTusDelete))
+
 	mux.HandleFunc("GET /api/v1/trash", s.requireAuth(s.handleListTrash))
 	mux.HandleFunc("DELETE /api/v1/trash", s.requireAuth(s.handleEmptyTrash))
 	mux.HandleFunc("POST /api/v1/trash/{id}/restore", s.requireAuth(s.handleRestoreNode))

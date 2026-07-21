@@ -27,25 +27,43 @@ type Service struct {
 	blobs blob.Store
 	log   *slog.Logger
 
+	// stager is non-nil when the blob store supports resumable uploads. Held
+	// as an interface rather than a concrete type so a Phase 2 backend can
+	// provide resumability its own way.
+	stager blob.Stager
+
 	// TrashRetention bounds how long deleted files keep consuming disk.
 	TrashRetention time.Duration
 	// BlobGCGrace keeps a newly written blob safe from GC while the transaction
 	// that references it is still in flight.
 	BlobGCGrace time.Duration
+	// UploadTTL bounds how long an abandoned resumable upload occupies disk.
+	UploadTTL time.Duration
 }
 
 func NewService(store *Store, blobs blob.Store, log *slog.Logger) *Service {
-	return &Service{
+	s := &Service{
 		store:          store,
 		blobs:          blobs,
 		log:            log,
 		TrashRetention: 30 * 24 * time.Hour,
 		BlobGCGrace:    time.Hour,
+		UploadTTL:      defaultUploadTTL,
 	}
+	if st, ok := blobs.(blob.Stager); ok {
+		s.stager = st
+	}
+	return s
 }
 
 func (s *Service) Store() *Store     { return s.store }
 func (s *Service) Blobs() blob.Store { return s.blobs }
+
+// SupportsResumable reports whether the configured blob store can do partial
+// writes. The HTTP layer answers 501 rather than 500 when it cannot.
+func (s *Service) SupportsResumable() bool { return s.stager != nil }
+
+func (s *Service) stagingStore() blob.Stager { return s.stager }
 
 // Upload streams r into storage and records it as a file.
 //
@@ -120,9 +138,11 @@ func (s *Service) Open(ctx context.Context, ownerID, id uuid.UUID) (*Node, io.Re
 // --- garbage collection -----------------------------------------------------
 
 type GCResult struct {
-	TrashPurged int64
-	BlobsFreed  int
-	BytesFreed  int64
+	TrashPurged    int64
+	BlobsFreed     int
+	BytesFreed     int64
+	UploadsExpired int
+	StagingFreed   int
 }
 
 // CollectGarbage purges expired trash and then deletes the blobs that fall to
@@ -139,6 +159,12 @@ func (s *Service) CollectGarbage(ctx context.Context) (GCResult, error) {
 		return res, fmt.Errorf("purge expired trash: %w", err)
 	}
 	res.TrashPurged = purged
+
+	expired, staged, err := s.collectExpiredUploads(ctx)
+	if err != nil {
+		return res, err
+	}
+	res.UploadsExpired, res.StagingFreed = expired, staged
 
 	// Bounded per pass so a large cleanup cannot hold resources for an
 	// unbounded time; the next tick picks up where this one stopped.
@@ -166,6 +192,53 @@ func (s *Service) CollectGarbage(ctx context.Context) (GCResult, error) {
 		res.BytesFreed += b.Size
 	}
 	return res, nil
+}
+
+// collectExpiredUploads removes abandoned resumable uploads, then sweeps
+// staging files whose session row is gone.
+//
+// The staging sweep is driven by the database, not by file age: a file with no
+// session row is provably dead, whereas "old" would eventually delete a very
+// large upload that a client is still slowly working through.
+func (s *Service) collectExpiredUploads(ctx context.Context) (expired, swept int, err error) {
+	if s.stager == nil {
+		return 0, 0, nil
+	}
+
+	sessions, err := s.store.ExpiredUploads(ctx, 500)
+	if err != nil {
+		return 0, 0, fmt.Errorf("list expired uploads: %w", err)
+	}
+	for _, sess := range sessions {
+		if err := s.store.DeleteUpload(ctx, sess.OwnerID, sess.ID); err != nil {
+			s.log.Warn("could not delete expired upload session", "upload_id", sess.ID, "error", err)
+			continue
+		}
+		expired++
+	}
+
+	known, err := s.store.AllStagingKeys(ctx)
+	if err != nil {
+		return expired, 0, fmt.Errorf("list staging keys: %w", err)
+	}
+
+	var orphans []string
+	if err := s.stager.WalkStaging(func(key string, _ int64) error {
+		if !known[key] {
+			orphans = append(orphans, key)
+		}
+		return nil
+	}); err != nil {
+		return expired, 0, fmt.Errorf("walk staging area: %w", err)
+	}
+	for _, key := range orphans {
+		if err := s.stager.RemovePartial(key); err != nil {
+			s.log.Warn("could not remove orphan staging file", "key", key, "error", err)
+			continue
+		}
+		swept++
+	}
+	return expired, swept, nil
 }
 
 // --- fsck -------------------------------------------------------------------

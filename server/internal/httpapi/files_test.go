@@ -63,3 +63,37 @@ func TestLastPathSegment(t *testing.T) {
 		}
 	}
 }
+
+func TestParseUploadMetadata(t *testing.T) {
+	// tus encodes values in base64 because the header must be ASCII and
+	// filenames are not.
+	got := parseUploadMetadata("filename 5pel5pys6KqeLnR4dA==,filetype dGV4dC9wbGFpbg==,is_final")
+	if got["filename"] != "日本語.txt" {
+		t.Errorf("filename = %q", got["filename"])
+	}
+	if got["filetype"] != "text/plain" {
+		t.Errorf("filetype = %q", got["filetype"])
+	}
+	// A valueless pair is legal per the spec.
+	if v, ok := got["is_final"]; !ok || v != "" {
+		t.Errorf("valueless pair = %q, present=%t", v, ok)
+	}
+}
+
+func TestParseUploadMetadataSkipsMalformedPairs(t *testing.T) {
+	// One unparseable optional field must not stop an upload whose filename
+	// decoded perfectly well.
+	got := parseUploadMetadata("filename cmVwb3J0LnBkZg==,junk !!!not-base64!!!")
+	if got["filename"] != "report.pdf" {
+		t.Errorf("filename = %q, want report.pdf", got["filename"])
+	}
+	if _, ok := got["junk"]; ok {
+		t.Error("a malformed pair was accepted")
+	}
+}
+
+func TestParseUploadMetadataEmpty(t *testing.T) {
+	if len(parseUploadMetadata("")) != 0 {
+		t.Error("empty header should yield no metadata")
+	}
+}

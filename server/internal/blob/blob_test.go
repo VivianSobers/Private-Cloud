@@ -210,3 +210,108 @@ func TestNewFSStoreRejectsEmptyRoot(t *testing.T) {
 		t.Error("NewFSStore(\"\") succeeded; an empty root would write into the working directory")
 	}
 }
+
+func TestAppendPartialTruncatesToOffset(t *testing.T) {
+	// The crash case resumable uploads exist for: bytes reached the disk but
+	// the offset was never committed. Truncating on the next append makes the
+	// caller's recorded offset the single authority, so a resumed upload
+	// cannot splice a duplicated chunk into the middle of the file.
+	s := newStore(t)
+	ctx := context.Background()
+
+	key, err := s.CreatePartial()
+	if err != nil {
+		t.Fatalf("CreatePartial: %v", err)
+	}
+
+	h := sha256.New()
+	if _, err := s.AppendPartial(ctx, key, 0, h, strings.NewReader("AAAABBBB")); err != nil {
+		t.Fatalf("AppendPartial: %v", err)
+	}
+	if n, _ := s.StatPartial(key); n != 8 {
+		t.Fatalf("staging size = %d, want 8", n)
+	}
+
+	// The caller only ever committed 4 bytes, so it resumes from there.
+	h2 := sha256.New()
+	h2.Write([]byte("AAAA"))
+	if _, err := s.AppendPartial(ctx, key, 4, h2, strings.NewReader("CCCC")); err != nil {
+		t.Fatalf("resume: %v", err)
+	}
+
+	blobKey, err := s.CommitPartial(key)
+	if err != nil {
+		t.Fatalf("CommitPartial: %v", err)
+	}
+	rc, err := s.Open(ctx, blobKey)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer rc.Close()
+
+	got, _ := io.ReadAll(rc)
+	if string(got) != "AAAACCCC" {
+		t.Errorf("resumed file = %q, want %q — the uncommitted tail was not discarded", got, "AAAACCCC")
+	}
+	want := sha256.Sum256([]byte("AAAACCCC"))
+	if !bytes.Equal(h2.Sum(nil), want[:]) {
+		t.Error("the resumed hash does not describe the resumed content")
+	}
+}
+
+func TestStagingFilesAreNotBlobs(t *testing.T) {
+	// An fsck that reported partial uploads as orphans would delete files users
+	// are actively uploading.
+	s := newStore(t)
+	if _, err := s.CreatePartial(); err != nil {
+		t.Fatal(err)
+	}
+
+	var blobs int
+	if err := s.Walk(func(string, int64) error { blobs++; return nil }); err != nil {
+		t.Fatal(err)
+	}
+	if blobs != 0 {
+		t.Errorf("Walk reported %d blob(s); staging files are not blobs", blobs)
+	}
+
+	var staged int
+	if err := s.WalkStaging(func(string, int64) error { staged++; return nil }); err != nil {
+		t.Fatal(err)
+	}
+	if staged != 1 {
+		t.Errorf("WalkStaging found %d, want 1", staged)
+	}
+
+	// And SweepTempFiles must leave them alone — they belong to sessions the
+	// database still knows about.
+	if _, err := s.SweepTempFiles(); err != nil {
+		t.Fatal(err)
+	}
+	staged = 0
+	_ = s.WalkStaging(func(string, int64) error { staged++; return nil })
+	if staged != 1 {
+		t.Error("SweepTempFiles destroyed an in-progress upload")
+	}
+}
+
+func TestCommitPartialProducesAFannedOutKey(t *testing.T) {
+	s := newStore(t)
+	key, err := s.CreatePartial()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.AppendPartial(context.Background(), key, 0, sha256.New(), strings.NewReader("x")); err != nil {
+		t.Fatal(err)
+	}
+	blobKey, err := s.CommitPartial(key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if parts := strings.Split(blobKey, "/"); len(parts) != 3 {
+		t.Errorf("committed key %q is not in the ab/cd/abcd... layout", blobKey)
+	}
+	if _, err := s.StatPartial(key); !errors.Is(err, ErrNotFound) {
+		t.Error("the staging file survived the commit; it should have been renamed away")
+	}
+}

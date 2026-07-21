@@ -1,12 +1,12 @@
 # private-cloud API
 
-Go backend for the private cloud. **Phase 1, slices 1–3 complete.**
+Go backend for the private cloud. **Phase 1, slices 1–4 complete.**
 
 What exists: configuration, database pool, embedded migrations, health probes,
-Prometheus metrics, structured logging, graceful shutdown, passkey auth, and the
-file tree — folders, uploads, downloads with Range support, trash, quotas,
-garbage collection and fsck. What doesn't: resumable uploads, web UI, WebDAV,
-search — slices 4 through 7. See
+Prometheus metrics, structured logging, graceful shutdown, passkey auth, the
+file tree — folders, downloads with Range support, trash, quotas, garbage
+collection and fsck — and resumable uploads over tus. What doesn't: web UI,
+WebDAV, search — slices 5 through 7. See
 [../docs/phase-1-design.md](../docs/phase-1-design.md).
 
 ## Layout
@@ -60,6 +60,11 @@ between the network and the auth code in slice 2.
 | `DELETE /api/v1/trash` | session | Empty the trash |
 | `GET /api/v1/usage` | session | Bytes used, quota, file count |
 | `POST /api/v1/admin/fsck[?repair=true]` | **admin** | Disk vs database audit |
+| `OPTIONS /api/v1/uploads` | — | tus capabilities |
+| `POST /api/v1/uploads` | session | Start a resumable upload |
+| `HEAD /api/v1/uploads/{id}` | session | Where to resume from |
+| `PATCH /api/v1/uploads/{id}` | session | Append a chunk |
+| `DELETE /api/v1/uploads/{id}` | session | Abandon an upload |
 
 `{id}` accepts the literal `root`, so a client can start browsing without a
 prior lookup.
@@ -140,6 +145,58 @@ already thrown away.
 Trashed files keep consuming quota until purged. That's honest: the bytes really
 are still on the disk.
 
+## Resumable uploads
+
+`POST /api/v1/upload` is fine for small files. A 4 GB video over a phone
+connection will fail eventually, and starting over from zero is the difference
+between a usable file server and a toy — so large uploads go through
+**tus 1.0.0** (core + creation + termination + expiration).
+
+tus rather than a bespoke chunk protocol because the clients already exist: uppy
+and tus-js-client in the browser, tus-py-client elsewhere. Inventing our own
+framing would mean writing every one of those clients too, and getting
+resumption subtly wrong in each.
+
+```
+POST   /api/v1/uploads      Upload-Length: 4294967296
+                            Upload-Metadata: filename <b64>,parent_id <b64>
+  -> 201, Location: /api/v1/uploads/<id>
+
+PATCH  /api/v1/uploads/<id> Upload-Offset: 0
+                            Content-Type: application/offset+octet-stream
+  -> 204, Upload-Offset: 1048576
+
+HEAD   /api/v1/uploads/<id>  -> 200, Upload-Offset: <resume here>
+```
+
+Three things make this survive a crash rather than merely a disconnect:
+
+- **The declared length is required.** `Upload-Defer-Length` is unsupported,
+  because without a size there is no way to check quota before accepting bytes,
+  and discovering at 99% that a file will not fit is the worst possible moment.
+- **The content hash is computed incrementally.** `crypto/sha256` implements
+  `BinaryMarshaler`, so the digest state is suspended between requests instead
+  of re-reading a finished multi-gigabyte file just to learn its hash. The state
+  and the offset are written in **one statement** — split across two, a crash
+  between them would leave a hash that does not describe the bytes the offset
+  claims.
+- **The staging file is truncated to the committed offset before every append.**
+  A crash after writing bytes but before committing progress leaves the file
+  longer than the record. Truncating makes the recorded offset the single
+  authority, so a resumed upload cannot splice a duplicated chunk into the
+  middle of a file.
+
+Concurrent `PATCH`es are rejected with `423 Locked`. The lock is a
+`locked_until` timestamp refreshed while a chunk is in flight, not
+`SELECT ... FOR UPDATE`: a row lock would have to be held inside a transaction
+for the whole transfer, tying up a pool connection for as long as the client's
+network takes.
+
+Finishing is automatic on the last byte. tus has no commit step, and adding one
+would strand completed uploads whenever a client disconnected right after its
+final chunk. The created node is reported in `X-Node-Id` / `X-Node-Path`,
+because tus reserves the PATCH response body.
+
 ## cloudctl
 
 ```bash
@@ -219,6 +276,7 @@ rather than on the first request that touches it.
 | `PC_BLOB_PATH` | `/data/blobs` | **Must be absolute**, and inside the ZFS dataset that sanoid and restic cover |
 | `PC_TRASH_RETENTION` | `720h` | How long deleted files survive |
 | `PC_BLOB_GC_INTERVAL` | `6h` | How often expired trash and orphan content are swept |
+| `PC_UPLOAD_TTL` | `48h` | How long an abandoned resumable upload occupies disk |
 
 The database password is masked by `Config.Redacted()` before any logging, and
 there's a test asserting it — so a future refactor can't quietly leak it into
@@ -237,6 +295,7 @@ Applied automatically at startup.
 | `00001` | extensions (`pg_trgm`) |
 | `00002` | users, passkeys, recovery codes, sessions, ceremonies |
 | `00003` | blobs, nodes, file versions, refcount trigger |
+| `00004` | resumable upload sessions |
 
 Blob refcounts are maintained by a **trigger**, not by application code.
 `file_versions` rows disappear through `ON DELETE CASCADE` — purging a folder

@@ -167,6 +167,7 @@ services:
       PC_BLOB_PATH: /data/blobs
       PC_TRASH_RETENTION: ${PC_TRASH_RETENTION:-720h}
       PC_BLOB_GC_INTERVAL: ${PC_BLOB_GC_INTERVAL:-6h}
+      PC_UPLOAD_TTL: ${PC_UPLOAD_TTL:-48h}
     # distroless/static:nonroot — uid 65532, no shell, no package manager.
     # read_only applies to the image layers; the blob bind mount above is
     # writable, which is the one place this container needs to write.

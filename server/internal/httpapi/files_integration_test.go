@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/guru-bharadwaj20/private-cloud/server/internal/auth"
 	"github.com/guru-bharadwaj20/private-cloud/server/internal/blob"
@@ -36,7 +37,9 @@ import (
 
 type apiFixture struct {
 	t       *testing.T
+	ctx     context.Context
 	handler http.Handler
+	pool    *pgxpool.Pool
 	cookie  *http.Cookie
 	admin   *http.Cookie
 	userID  uuid.UUID
@@ -82,7 +85,7 @@ func newAPIFixture(t *testing.T) *apiFixture {
 		Version: "test", Commit: "test", CookieName: "pc_session",
 	})
 
-	f := &apiFixture{t: t, handler: srv.Handler()}
+	f := &apiFixture{t: t, ctx: ctx, handler: srv.Handler(), pool: database.Pool}
 	f.userID, f.cookie = newSession(t, ctx, authStore, authSvc, false)
 	_, f.admin = newSession(t, ctx, authStore, authSvc, true)
 	return f

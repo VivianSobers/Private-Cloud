@@ -62,6 +62,11 @@ type Config struct {
 	TrashRetention time.Duration
 	// BlobGCInterval is how often unreferenced blobs are swept.
 	BlobGCInterval time.Duration
+	// UploadTTL bounds how long an abandoned resumable upload occupies disk.
+	// Generous by default: a large file over a slow link legitimately spans
+	// days of intermittent connectivity, and expiring it mid-transfer costs
+	// the user everything they had already sent.
+	UploadTTL time.Duration
 
 	// MigrateOnStart runs pending migrations during startup. Convenient for a
 	// single-node deployment; would be wrong with multiple replicas racing to
@@ -96,6 +101,7 @@ func Load() (*Config, error) {
 		BlobPath:       env("PC_BLOB_PATH", "/data/blobs"),
 		TrashRetention: envDuration("PC_TRASH_RETENTION", 30*24*time.Hour),
 		BlobGCInterval: envDuration("PC_BLOB_GC_INTERVAL", 6*time.Hour),
+		UploadTTL:      envDuration("PC_UPLOAD_TTL", 48*time.Hour),
 
 		MigrateOnStart: envBool("PC_MIGRATE_ON_START", true),
 	}
@@ -173,6 +179,9 @@ func (c *Config) validate() error {
 	}
 	if c.BlobGCInterval <= 0 {
 		return fmt.Errorf("PC_BLOB_GC_INTERVAL must be positive")
+	}
+	if c.UploadTTL <= 0 {
+		return fmt.Errorf("PC_UPLOAD_TTL must be positive")
 	}
 	return nil
 }

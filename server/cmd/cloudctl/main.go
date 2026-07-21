@@ -366,6 +366,8 @@ func gcCommand(ctx context.Context, database *db.DB, log *slog.Logger) error {
 	}
 	fmt.Printf("purged %d expired trash item(s)\n", res.TrashPurged)
 	fmt.Printf("freed %d blob(s), %s\n", res.BlobsFreed, humanBytes(res.BytesFreed))
+	fmt.Printf("expired %d abandoned upload(s), swept %d staging file(s)\n",
+		res.UploadsExpired, res.StagingFreed)
 	return nil
 }
 

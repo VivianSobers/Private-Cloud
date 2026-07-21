@@ -14,6 +14,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"hash"
 	"io"
 	"os"
 	"path/filepath"
@@ -41,6 +42,29 @@ type Store interface {
 
 	Stat(ctx context.Context, key string) (int64, error)
 	Delete(ctx context.Context, key string) error
+}
+
+// Stager is the optional half of a store: support for partial, resumable
+// writes. Kept separate from Store because a future object-storage backend
+// would implement resumability through multipart uploads rather than an
+// append-at-offset file, and forcing that shape into the core interface would
+// make it the wrong abstraction for both.
+type Stager interface {
+	// CreatePartial allocates an empty staging object and returns its key.
+	CreatePartial() (string, error)
+
+	// AppendPartial truncates to offset, then writes r, updating hasher with
+	// the bytes written. Truncating first makes the caller's committed offset
+	// the single authority on progress.
+	AppendPartial(ctx context.Context, key string, offset int64, hasher hash.Hash, r io.Reader) (int64, error)
+
+	// CommitPartial promotes a completed staging object to a real blob and
+	// returns its key.
+	CommitPartial(key string) (string, error)
+
+	StatPartial(key string) (int64, error)
+	RemovePartial(key string) error
+	WalkStaging(fn func(key string, size int64) error) error
 }
 
 // FSStore stores one file per blob on a local filesystem, fanned out two levels
@@ -205,6 +229,119 @@ func (s *FSStore) Delete(_ context.Context, key string) error {
 	return err
 }
 
+// --- staging (resumable uploads) --------------------------------------------
+
+// stagingDir holds partial files for in-progress resumable uploads.
+//
+// Inside the blob root, not beside it, so that finishing an upload is a rename
+// within one filesystem — which is atomic, and does not copy the bytes a second
+// time. The leading dot keeps it out of the two-hex-level fan-out that Walk
+// treats as blobs.
+const stagingDir = ".staging"
+
+// CreatePartial starts a staging file and returns its key.
+func (s *FSStore) CreatePartial() (string, error) {
+	raw := make([]byte, 16)
+	if _, err := rand.Read(raw); err != nil {
+		return "", fmt.Errorf("generate staging key: %w", err)
+	}
+	key := stagingDir + "/" + hex.EncodeToString(raw)
+
+	full, err := s.pathFor(key)
+	if err != nil {
+		return "", err
+	}
+	if err := os.MkdirAll(filepath.Dir(full), 0o700); err != nil {
+		return "", fmt.Errorf("create staging directory: %w", err)
+	}
+	f, err := os.OpenFile(full, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o600)
+	if err != nil {
+		return "", fmt.Errorf("create staging file: %w", err)
+	}
+	return key, f.Close()
+}
+
+// AppendPartial writes r at the given offset, returning the bytes written and
+// the running hash after them.
+//
+// The file is TRUNCATED to offset first. A crash between writing bytes and
+// committing the new offset leaves the file longer than the recorded progress;
+// truncating makes the recorded offset the single authority, so a resumed
+// upload cannot silently splice a duplicated chunk into the middle of a file.
+func (s *FSStore) AppendPartial(ctx context.Context, key string, offset int64, hasher hash.Hash, r io.Reader) (int64, error) {
+	full, err := s.pathFor(key)
+	if err != nil {
+		return 0, err
+	}
+	f, err := os.OpenFile(full, os.O_WRONLY, 0o600)
+	if errors.Is(err, os.ErrNotExist) {
+		return 0, ErrNotFound
+	}
+	if err != nil {
+		return 0, err
+	}
+	defer f.Close()
+
+	if err := f.Truncate(offset); err != nil {
+		return 0, fmt.Errorf("truncate staging file: %w", err)
+	}
+	if _, err := f.Seek(offset, io.SeekStart); err != nil {
+		return 0, err
+	}
+
+	written, copyErr := io.Copy(io.MultiWriter(f, hasher), &ctxReader{ctx: ctx, r: r})
+
+	// fsync even on a failed copy: the caller commits whatever arrived, and a
+	// recorded offset whose bytes never reached the platter is exactly the
+	// corruption resumable uploads are supposed to avoid.
+	if err := f.Sync(); err != nil {
+		return 0, fmt.Errorf("sync staging file: %w", err)
+	}
+	return written, copyErr
+}
+
+// CommitPartial moves a completed staging file into the blob layout.
+//
+// A rename, not a copy: the bytes are already on the right filesystem, and
+// re-reading a multi-gigabyte upload to move it would double the IO cost of
+// every large file.
+func (s *FSStore) CommitPartial(key string) (string, error) {
+	src, err := s.pathFor(key)
+	if err != nil {
+		return "", err
+	}
+
+	raw := make([]byte, 16)
+	if _, err := rand.Read(raw); err != nil {
+		return "", fmt.Errorf("generate blob key: %w", err)
+	}
+	name := hex.EncodeToString(raw)
+	blobKey := fmt.Sprintf("%s/%s/%s", name[0:2], name[2:4], name)
+
+	dst, err := s.pathFor(blobKey)
+	if err != nil {
+		return "", err
+	}
+	if err := os.MkdirAll(filepath.Dir(dst), 0o700); err != nil {
+		return "", fmt.Errorf("create blob directory: %w", err)
+	}
+	if err := os.Rename(src, dst); err != nil {
+		return "", fmt.Errorf("commit staged upload: %w", err)
+	}
+	if err := os.Chmod(dst, 0o400); err != nil {
+		return "", fmt.Errorf("seal blob: %w", err)
+	}
+	return blobKey, nil
+}
+
+// StatPartial reports the on-disk size of a staging file.
+func (s *FSStore) StatPartial(key string) (int64, error) { return s.Stat(context.Background(), key) }
+
+// RemovePartial discards an abandoned upload.
+func (s *FSStore) RemovePartial(key string) error { return s.Delete(context.Background(), key) }
+
+// --- maintenance ------------------------------------------------------------
+
 // Walk visits every stored blob key. Used by fsck to find orphans.
 func (s *FSStore) Walk(fn func(key string, size int64) error) error {
 	return filepath.WalkDir(s.root, func(p string, d os.DirEntry, err error) error {
@@ -212,6 +349,11 @@ func (s *FSStore) Walk(fn func(key string, size int64) error) error {
 			return err
 		}
 		if d.IsDir() {
+			// Partial uploads are not blobs, and an fsck that reported them as
+			// orphans would delete files users are actively uploading.
+			if d.Name() == stagingDir {
+				return filepath.SkipDir
+			}
 			return nil
 		}
 		// Temp files from interrupted uploads are not blobs.
@@ -231,11 +373,22 @@ func (s *FSStore) Walk(fn func(key string, size int64) error) error {
 }
 
 // SweepTempFiles removes leftovers from uploads interrupted by a crash.
+//
+// Staging files are deliberately NOT swept here: they belong to upload sessions
+// the database still knows about, and deleting them would silently destroy an
+// upload the client believes it can resume. Expired sessions are reclaimed by
+// the GC, which has the database row to prove they are dead.
 func (s *FSStore) SweepTempFiles() (int, error) {
 	var removed int
 	err := filepath.WalkDir(s.root, func(p string, d os.DirEntry, err error) error {
-		if err != nil || d.IsDir() {
+		if err != nil {
 			return err
+		}
+		if d.IsDir() {
+			if d.Name() == stagingDir {
+				return filepath.SkipDir
+			}
+			return nil
 		}
 		if strings.HasPrefix(d.Name(), ".upload-") {
 			if os.Remove(p) == nil {
@@ -245,6 +398,32 @@ func (s *FSStore) SweepTempFiles() (int, error) {
 		return nil
 	})
 	return removed, err
+}
+
+// WalkStaging visits every partial-upload file, so the GC can detect staging
+// files whose session row has vanished.
+func (s *FSStore) WalkStaging(fn func(key string, size int64) error) error {
+	dir := filepath.Join(s.root, stagingDir)
+	entries, err := os.ReadDir(dir)
+	if errors.Is(err, os.ErrNotExist) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	for _, e := range entries {
+		if e.IsDir() {
+			continue
+		}
+		info, err := e.Info()
+		if err != nil {
+			return err
+		}
+		if err := fn(stagingDir+"/"+e.Name(), info.Size()); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 // ctxReader aborts a copy when the request context is cancelled, so a client
