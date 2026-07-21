@@ -5,7 +5,10 @@ Documentation=file:///opt/private-cloud/docs/runbook-restore.md
 # will happily back up an empty mountpoint and "succeed".
 After=zfs-mount.service docker.service network-online.target
 Wants=network-online.target
-RequiresMountsFor=/tank/configs /tank/postgres
+# /tank/blobs is listed because the script backs it up from Phase 1 onward. An
+# unmounted dataset is an empty directory, and restic would snapshot the empty
+# directory and exit 0 — a backup that reports success and contains no files.
+RequiresMountsFor=/tank/configs /tank/postgres /tank/blobs
 
 [Service]
 Type=oneshot

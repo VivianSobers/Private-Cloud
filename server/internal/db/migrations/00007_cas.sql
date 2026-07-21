@@ -154,25 +154,28 @@ CREATE TRIGGER manifest_chunks_refcount
     FOR EACH ROW EXECUTE FUNCTION chunk_refcount_bump();
 
 -- +goose Down
+-- The refusal comes FIRST, before anything is dropped. Rolling this migration
+-- back destroys the only record of how a manifest-backed version is assembled,
+-- and a file that cannot be reassembled is a lost file — not something to
+-- discover halfway through a DDL script. goose wraps each migration in a
+-- transaction so a later RAISE would also roll back, but relying on that means
+-- the safety depends on the runner rather than on the migration.
+-- +goose StatementBegin
+DO $$
+BEGIN
+    IF EXISTS (SELECT 1 FROM file_versions WHERE manifest_id IS NOT NULL) THEN
+        RAISE EXCEPTION 'cannot roll back: % file version(s) are stored as manifests. Migrate them to whole-file blobs first.',
+            (SELECT count(*) FROM file_versions WHERE manifest_id IS NOT NULL);
+    END IF;
+END $$;
+-- +goose StatementEnd
+
 DROP TRIGGER IF EXISTS manifest_chunks_refcount ON manifest_chunks;
 DROP FUNCTION IF EXISTS chunk_refcount_bump();
 
 ALTER TABLE file_versions DROP CONSTRAINT IF EXISTS file_versions_storage_check;
 DROP INDEX IF EXISTS file_versions_manifest_idx;
 ALTER TABLE file_versions DROP COLUMN IF EXISTS manifest_id;
-
--- Restoring NOT NULL is only safe if nothing was stored as a manifest. Any row
--- with a NULL blob_id here is a CAS-backed version whose content the down
--- migration is about to orphan, so refuse rather than destroy it.
--- +goose StatementBegin
-DO $$
-BEGIN
-    IF EXISTS (SELECT 1 FROM file_versions WHERE blob_id IS NULL) THEN
-        RAISE EXCEPTION 'cannot roll back: % file version(s) are stored as manifests. Migrate them to whole-file blobs first.',
-            (SELECT count(*) FROM file_versions WHERE blob_id IS NULL);
-    END IF;
-END $$;
--- +goose StatementEnd
 
 ALTER TABLE file_versions ALTER COLUMN blob_id SET NOT NULL;
 

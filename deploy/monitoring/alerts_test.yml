@@ -34,9 +34,17 @@ tests:
         exp_alerts:
           - exp_labels: { severity: critical }
             # Annotations are rendered at eval_time itself, NOT at the moment
-            # the `for` duration was satisfied — so $value here is exactly 37h
-            # (133200s), not 37h minus an interval. 1d 13h 0m 0s is the
-            # humanizeDuration rendering of that.
+            # the `for` duration was satisfied, so $value here is the age at
+            # exactly 37h — 133200s, rendered by humanizeDuration as 1d 13h 0m 0s.
+            #
+            # This is only true because the recording rule that produces
+            # privatecloud_backup_age_seconds sits in the same group, directly
+            # above this alert. When it lived in a separate 'derived' group the
+            # alert read the previous evaluation's sample and this said
+            # 1d 12h 59m 0s. That one-minute skew is harmless on a 36-hour
+            # threshold, but it was the visible symptom of a real cross-group
+            # race, so the assertion is left exact on purpose: if the rule is
+            # ever moved back out, this fails.
             exp_annotations:
               summary: "No successful backup in over 36 hours"
               description: "Last success was 1d 13h 0m 0s ago. The nightly timer or the offsite target is broken. Check: journalctl -u restic-backup.service"

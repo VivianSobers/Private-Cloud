@@ -46,8 +46,14 @@ die()  {
 # config
 # --------------------------------------------------------------------------
 [[ -f "$BACKUP_ENV" ]] || { echo "missing $BACKUP_ENV — copy deploy/secrets/.env.example and fill it in" >&2; exit 1; }
-# shellcheck disable=SC1090
-set -a; source "$BACKUP_ENV"; set +a
+# `set -a` so everything the env file defines is exported for restic to read.
+# The source is on its own line because a shellcheck directive applies to the
+# NEXT COMMAND, and on a `set -a; source ...` one-liner that next command is
+# `set -a` — so the disable silently did not cover the source at all.
+set -a
+# shellcheck disable=SC1090  # path is configurable by design; nothing to follow
+source "$BACKUP_ENV"
+set +a
 
 : "${RESTIC_REPOSITORY:?RESTIC_REPOSITORY not set in $BACKUP_ENV}"
 : "${RESTIC_PASSWORD_FILE:?RESTIC_PASSWORD_FILE not set in $BACKUP_ENV}"
@@ -171,6 +177,7 @@ cmd_backup() {
       | gzip -1 > "$dump_dir/pgdumpall-$(date +%Y%m%d).sql.gz" \
       || die "pg_dumpall failed"
     # Keep only the last 3 local dumps; restic keeps the history.
+    # shellcheck disable=SC2012  # names are generated above as pgdumpall-<date>.sql.gz
     ls -1t "$dump_dir"/pgdumpall-*.sql.gz 2>/dev/null | tail -n +4 | xargs -r rm -f
   else
     warn "postgres container not running — skipping DB dump (file data still backed up)"

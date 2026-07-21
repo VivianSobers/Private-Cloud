@@ -85,9 +85,14 @@ test_zfs() {
   local snapdir="$mp/.zfs/snapshot/testpoint"
   if [[ -f "$snapdir/documents/photo.bin" ]]; then
     local browsed; browsed="$(sha256sum "$snapdir/documents/photo.bin" | cut -d' ' -f1)"
-    [[ "$browsed" == "$orig_photo" ]] \
-      && ok "browsable snapshot at .zfs/snapshot/ returns byte-identical data" \
-      || bad "file in .zfs/snapshot differs from original"
+    # if/else rather than `cond && ok || bad`: in that form a failing `ok`
+    # ALSO runs `bad`, and this script's exit code is the restore gate. A
+    # false FAIL here is as bad as a false PASS.
+    if [[ "$browsed" == "$orig_photo" ]]; then
+      ok "browsable snapshot at .zfs/snapshot/ returns byte-identical data"
+    else
+      bad "file in .zfs/snapshot differs from original"
+    fi
   else
     bad "cannot browse .zfs/snapshot/testpoint (is snapdir=hidden blocking it? try: zfs set snapdir=visible $SCRATCH)"
   fi
@@ -99,13 +104,17 @@ test_zfs() {
   new_thesis="$(sha256sum "$mp/documents/thesis.txt" | cut -d' ' -f1)"
   new_photo="$(sha256sum  "$mp/documents/photo.bin"  | cut -d' ' -f1)"
 
-  [[ "$new_thesis" == "$orig_thesis" ]] \
-    && ok "rollback restored overwritten file exactly" \
-    || bad "rollback did not restore the overwritten file"
+  if [[ "$new_thesis" == "$orig_thesis" ]]; then
+    ok "rollback restored overwritten file exactly"
+  else
+    bad "rollback did not restore the overwritten file"
+  fi
 
-  [[ "$new_photo" == "$orig_photo" ]] \
-    && ok "rollback restored deleted 1MB binary exactly" \
-    || bad "rollback did not restore the deleted file"
+  if [[ "$new_photo" == "$orig_photo" ]]; then
+    ok "rollback restored deleted 1MB binary exactly"
+  else
+    bad "rollback did not restore the deleted file"
+  fi
 
   log "TEST 1 complete (scratch dataset destroyed)"
 }
@@ -122,8 +131,12 @@ test_restic() {
   command -v restic >/dev/null 2>&1 || { bad "restic not installed (apt install restic)"; return; }
   [[ -f "$BACKUP_ENV" ]] || { bad "missing $BACKUP_ENV — configure backups first"; return; }
 
-  # shellcheck disable=SC1090
-  set -a; source "$BACKUP_ENV"; set +a
+  # Source on its own line: a shellcheck directive covers the next COMMAND, and
+  # on a `set -a; source ...` one-liner that is `set -a`, not the source.
+  set -a
+  # shellcheck disable=SC1090  # path is configurable by design
+  source "$BACKUP_ENV"
+  set +a
   [[ -n "${RESTIC_REPOSITORY:-}" ]] || { bad "RESTIC_REPOSITORY is empty in $BACKUP_ENV"; return; }
 
   if [[ $DRY_RUN -eq 1 ]]; then

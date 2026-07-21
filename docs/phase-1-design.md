@@ -1,7 +1,10 @@
 # Phase 1 — MVP Design
 
-**Status: proposed, not started.** This document is the shape of Phase 1,
-written before any code so the expensive decisions get made deliberately.
+**Status: built.** All seven slices are implemented and committed; see the
+slice table in §7. This document was written before any code so the expensive
+decisions got made deliberately, and it is kept as the record of *why* the
+shipped design looks the way it does. Where the code diverged from the plan the
+section says so inline — the plan is not retconned to match.
 
 **Exit criterion:** you stop using Google Drive for manual file workflows. Not
 "the API works" — you actually keep real files here, on purpose, because it's
@@ -26,6 +29,12 @@ image digest pinning, textfile collectors, production hardware.
 The reasoning: Phase 1 is the first phase that creates data you'd be upset to
 lose. Monitoring gaps cost you visibility; storage gaps cost you the files.
 Nothing else in Phase 0 is load-bearing for writing Go.
+
+> **Still open.** The three boxes above are deliberately unticked: each needs
+> `sudo` on the real server and none of them can be verified from a dev
+> checkout. The code is built and tested, so the gate now reads "before you
+> put files in here you'd cry about losing", not "before you write Go".
+> Run `sudo ./scripts/restore-test.sh` and tick them yourself.
 
 ---
 
@@ -198,17 +207,28 @@ doing Phase 0 first, and it's easy to forget to collect.
 
 ## 7. Build order
 
-Vertical slices, each ending somewhere usable.
+Vertical slices, each ending somewhere usable. All seven shipped.
 
-| # | Slice | Done when |
-|---|---|---|
-| 1 | **Skeleton** — config, DB, migrations, `/healthz`, `/metrics`, structured logs, compose service behind Caddy | Grafana shows API metrics |
-| 2 | **Auth** — passkey register/login, sessions, recovery codes, admin bootstrap, `cloudctl` | You log in with a passkey from your phone |
-| 3 | **Files core** — tree CRUD, simple upload, download w/ Range, trash, `fsck` | `curl` round-trips a file |
-| 4 | **Resumable upload** — TUS | A 2 GB upload survives killing the connection |
-| 5 | **Web UI** — browse, upload, download, preview, trash | You use it in a browser without `curl` |
-| 6 | **WebDAV** | Your OS file manager mounts it |
-| 7 | **Search** — trigram on name/path | Finding a file is faster than remembering where it is |
+| # | Slice | Done when | Shipped as |
+|---|---|---|---|
+| 1 | **Skeleton** — config, DB, migrations, `/healthz`, `/metrics`, structured logs, compose service behind Caddy | Grafana shows API metrics | ✅ `internal/{config,db,metrics}` |
+| 2 | **Auth** — passkey register/login, sessions, recovery codes, admin bootstrap, `cloudctl` | You log in with a passkey from your phone | ✅ `internal/auth`, `cmd/cloudctl` |
+| 3 | **Files core** — tree CRUD, simple upload, download w/ Range, trash, `fsck` | `curl` round-trips a file | ✅ `internal/files` |
+| 4 | **Resumable upload** — TUS | A 2 GB upload survives killing the connection | ✅ `internal/files/uploads.go` |
+| 5 | **Web UI** — browse, upload, download, preview, trash | You use it in a browser without `curl` | ✅ `web/` |
+| 6 | **WebDAV** | Your OS file manager mounts it | ✅ `internal/webdavfs` |
+| 7 | **Search** — trigram on name/path | Finding a file is faster than remembering where it is | ✅ `internal/files/search.go` |
+
+Two things came out differently from the plan and are worth recording:
+
+- **App passwords, not in the plan at all.** WebDAV cannot do WebAuthn — there
+  is no ceremony a Finder mount can drive — so slice 6 needed a second
+  credential type (`internal/auth/apppassword.go`). Scoped, revocable, and
+  never usable against the JSON API.
+- **Search ranks, it does not just filter.** The plan said "trigram on
+  name/path". A bare `LIKE` over a trigram index returns matches in table order,
+  which is useless once you have more than a screenful. The shipped query ranks
+  exact → prefix → similarity → recency.
 
 **Auth is slice 2, before files, deliberately.** Retrofitting authorization into
 handlers that assumed a single user is miserable and error-prone. Every file
@@ -233,19 +253,18 @@ working client months before Phase 3.
 
 ---
 
-## 9. Open questions
+## 9. Open questions — resolved
 
-1. **Single-user or multi-user tables from the start?** My recommendation:
-   multi-user schema, single-user UI. Single-user assumptions metastasize
-   through every query, and the schema cost now is close to zero.
-2. **Does the dev box stay the dev box?** If the 2×4 TB mirror arrives
-   mid-phase, do we migrate data or start clean? Starting clean is far simpler
-   if Phase 1 data is disposable — worth deciding before it isn't.
-3. **Web UI: how much polish in Phase 1?** Recommendation: unstyled-but-usable.
-   Real design work is wasted before the storage engine changes under it.
-4. **Preview scope.** Without thumbnails (Phase 2), preview means serving the
-   original and letting the browser render it. Fine for images and PDFs, bad
-   for a 40 MB RAW. Cap preview by size and MIME type.
+1. **Single-user or multi-user tables from the start?** ✅ Multi-user schema,
+   single-user UI, as recommended. Every query carries `owner_id`; it is a
+   field on the WebDAV `FileSystem` rather than a parameter, so there is no
+   handler that could forget to pass it.
+2. **Does the dev box stay the dev box?** ✅ Started clean. Phase 1 data was
+   disposable, so nothing had to be migrated.
+3. **Web UI: how much polish in Phase 1?** ✅ Unstyled-but-usable — one
+   hand-written `styles.css`, no framework, no router.
+4. **Preview scope.** ✅ Serve the original, capped by size and MIME type; no
+   thumbnailing. Still the right answer until Phase 2 adds derived renditions.
 
 ---
 

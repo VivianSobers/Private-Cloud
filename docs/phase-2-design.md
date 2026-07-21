@@ -1,8 +1,8 @@
 # Phase 2 — Storage Engine Design
 
-**Status: proposed.** Written before any code, so the expensive decisions get
-made deliberately — the same discipline that made Phase 1's schema survive
-first contact.
+**Status: in progress — slice 1 partial.** Written before any code, so the
+expensive decisions get made deliberately — the same discipline that made
+Phase 1's schema survive first contact. See §7 for what is actually built.
 
 **Exit criterion:** you can recover a file you overwrote three weeks ago, send
 someone a link to a folder without giving them an account, and the pool holds
@@ -159,12 +159,21 @@ review effort should concentrate.
 
 Same discipline as Phase 1: each slice ends green, committed, and useful.
 
-| Slice | Contents |
-|---|---|
-| **1** | Chunk store: FastCDC + BLAKE3 + zstd behind `blob.Store`; `chunks` and `manifest_chunks` schema; writes chunk, reads reassemble; both formats coexist |
-| **2** | Chunk GC, refcount recomputation, `fsck` for CAS, background migration of Phase 1 blobs, dedup statistics |
-| **3** | Version history: list, restore, retention policy, UI |
-| **4** | Share links: public plane, tokens, expiry, rate limits, UI |
+| Slice | Contents | Status |
+|---|---|---|
+| **1a** | Chunk store: FastCDC + BLAKE3 + zstd behind `blob.Store`; `chunks` and `manifest_chunks` schema; writes chunk, reads reassemble; both formats coexist | ✅ `internal/cas` |
+| **1b** | Route the upload path through the chunker; quota still counts logical bytes | ⬜ next |
+| **2** | Chunk GC, refcount recomputation, `fsck` for CAS, background migration of Phase 1 blobs, dedup statistics | 🟡 GC/fsck/refcount audit built (`internal/cas/gc.go`); migration and stats outstanding |
+| **3** | Version history: list, restore, retention policy, UI | ⬜ |
+| **4** | Share links: public plane, tokens, expiry, rate limits, UI | ⬜ |
+
+**Slice 2's checker landed before slice 1b on purpose.** `fsck` walks the blob
+directory and deletes anything the database does not name. Chunks live in that
+same directory under the same `ab/cd/hash` layout but are recorded in `chunks`,
+not `blobs` — so a checker that only understands whole-file blobs would classify
+every deduplicated byte as an orphan and delete it on the first `fsck --repair`.
+The checker has to understand the new format *before* anything writes it, not
+after. `TestFsckDoesNotTreatChunksAsOrphans` exists to keep it that way.
 
 ---
 

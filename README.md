@@ -114,11 +114,14 @@ are documented, deliberate exceptions to the isolation rules, not oversights.
 
 | Phase | Scope | Status |
 |---|---|---|
-| 0 | Storage, network, monitoring, backups, runbooks | **complete** |
-| **1** | MVP: auth (passkeys), upload/download, web UI, WebDAV | **in progress** — slice 2 of 7 |
-| 2 | CAS storage engine, versioning, dedup, share links, search | not started |
+| 0 | Storage, network, monitoring, backups, runbooks | **complete** — the three `sudo` restore gates in [docs/phase-1-design.md](docs/phase-1-design.md) §0 are the operator's to tick |
+| 1 | MVP: auth (passkeys), upload/download, resumable uploads, web UI, WebDAV, search | **complete** — all 7 slices |
+| **2** | CAS storage engine, versioning, dedup, share links | **in progress** — chunk store, CAS-aware fsck/GC done; uploads still write whole files |
 | 3 | Sync engine: change journal, Go client, conflict resolution | not started |
 | 4 | ML: OCR, semantic search, tagging; OIDC; hardening | not started |
+
+Search moved into Phase 1 (slice 7) rather than waiting for Phase 2 — trigram
+indexes needed nothing the storage engine had to provide first.
 
 ---
 

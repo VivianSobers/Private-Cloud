@@ -153,6 +153,20 @@ groups:
   # ==========================================================================
   - name: backup
     rules:
+      # Live age of the last successful backup. Derived here rather than written
+      # by the backup script, because a textfile value would freeze at ~0 the
+      # moment it was written and never grow.
+      #
+      # It lives in THIS group, immediately above its consumer, and not with the
+      # other recording rules. Prometheus evaluates groups concurrently but the
+      # rules WITHIN a group strictly in order, so this placement is the only
+      # thing that guarantees BackupTooOld reads an age computed this instant
+      # rather than whatever the previous evaluation of some other group left
+      # behind. In its own group the two race, and the alert reports an age up
+      # to one interval stale — which is how the rule test caught it.
+      - record: privatecloud_backup_age_seconds
+        expr: time() - privatecloud_backup_last_success_timestamp
+
       - alert: BackupTimerNotRunning
         expr: node_systemd_unit_state{name="restic-backup.timer",state="active"} == 0
         for: 1h
@@ -318,12 +332,10 @@ groups:
           description: "{{ $value }} of 10 connections in use. Look for slow queries or a leaked transaction."
 
   # ==========================================================================
-  # Recording rules: derived series the alerts and dashboards read. Kept in
-  # their own group so they evaluate as a unit.
-  - name: derived
-    rules:
-      # Live age of the last successful backup. Derived here rather than written
-      # by the backup script, because a textfile value would freeze at ~0 the
-      # moment it was written and never grow.
-      - record: privatecloud_backup_age_seconds
-        expr: time() - privatecloud_backup_last_success_timestamp
+  # Recording rules that nothing in this file alerts on live beside the
+  # dashboards that read them. A derived series consumed by an alert belongs in
+  # the alert's own group instead — see privatecloud_backup_age_seconds in the
+  # 'backup' group above for why.
+  #
+  # (Empty for now. Kept as the documented home for dashboard-only recordings so
+  # the next one does not get parked next to an alert that does not need it.)

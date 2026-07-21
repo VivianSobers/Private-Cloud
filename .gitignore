@@ -1,6 +1,11 @@
 # ---- secrets ----
 .env
 *.env
+# .env and *.env do NOT cover Vite's .env.local / .env.production.local, which
+# is where a frontend secret would actually land — neither pattern matches a
+# name that merely STARTS with ".env". The negations below must stay after this
+# line or they are overridden.
+.env.*
 !.env.example
 !deploy/secrets/.env.example
 deploy/secrets/*.key
