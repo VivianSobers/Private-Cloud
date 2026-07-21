@@ -44,6 +44,22 @@ type Store interface {
 	Delete(ctx context.Context, key string) error
 }
 
+// KeyedPutter is implemented by stores that let the CALLER choose the key.
+//
+// Content-addressed storage needs this: a chunk's key is its hash, decided
+// before the write. Put's random key is right for whole files, where the hash
+// is not known until the stream has been consumed, and wrong here.
+type KeyedPutter interface {
+	// PutKeyed writes r at the given key. It reports whether the key already
+	// existed, in which case nothing is written.
+	//
+	// Idempotent by necessity: dedup means the same chunk arrives repeatedly,
+	// and re-writing identical bytes would be pure IO. Since the key IS the
+	// content hash, an existing key already holds exactly what would be
+	// written.
+	PutKeyed(ctx context.Context, key string, r io.Reader) (existed bool, err error)
+}
+
 // Stager is the optional half of a store: support for partial, resumable
 // writes. Kept separate from Store because a future object-storage backend
 // would implement resumability through multipart uploads rather than an
@@ -179,6 +195,60 @@ func (s *FSStore) Put(ctx context.Context, r io.Reader) (*PutResult, error) {
 	}
 
 	return &PutResult{Key: key, Size: written, SHA256: hasher.Sum(nil)}, nil
+}
+
+// PutKeyed writes r at a caller-chosen key, skipping the write if it exists.
+//
+// The temp-file-then-rename dance is the same as Put's and for the same reason:
+// a crash mid-write must leave a stray temp file rather than a truncated chunk
+// that the database believes is complete. The difference is that a torn chunk
+// here would corrupt files belonging to everyone who shares it, not just the
+// uploader.
+func (s *FSStore) PutKeyed(ctx context.Context, key string, r io.Reader) (bool, error) {
+	full, err := s.pathFor(key)
+	if err != nil {
+		return false, err
+	}
+	if _, err := os.Stat(full); err == nil {
+		// The key is the content hash, so what is already there is byte for
+		// byte what would be written. Rewriting it would be pure IO.
+		return true, nil
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return false, err
+	}
+
+	if err := os.MkdirAll(filepath.Dir(full), 0o700); err != nil {
+		return false, fmt.Errorf("create chunk directory: %w", err)
+	}
+	tmp, err := os.CreateTemp(filepath.Dir(full), ".upload-*")
+	if err != nil {
+		return false, fmt.Errorf("create temp chunk: %w", err)
+	}
+	tmpName := tmp.Name()
+
+	if _, err := io.Copy(tmp, &ctxReader{ctx: ctx, r: r}); err != nil {
+		tmp.Close()
+		os.Remove(tmpName)
+		return false, fmt.Errorf("write chunk: %w", err)
+	}
+	if err := tmp.Sync(); err != nil {
+		tmp.Close()
+		os.Remove(tmpName)
+		return false, fmt.Errorf("sync chunk: %w", err)
+	}
+	if err := tmp.Close(); err != nil {
+		os.Remove(tmpName)
+		return false, fmt.Errorf("close chunk: %w", err)
+	}
+
+	if err := os.Rename(tmpName, full); err != nil {
+		os.Remove(tmpName)
+		return false, fmt.Errorf("commit chunk: %w", err)
+	}
+	if err := os.Chmod(full, 0o400); err != nil {
+		return false, fmt.Errorf("seal chunk: %w", err)
+	}
+	return false, nil
 }
 
 func (s *FSStore) Open(_ context.Context, key string) (io.ReadSeekCloser, error) {
