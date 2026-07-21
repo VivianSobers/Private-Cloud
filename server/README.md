@@ -1,13 +1,14 @@
 # private-cloud API
 
-Go backend for the private cloud. **Phase 1, slices 1–6 complete.**
+Go backend for the private cloud. **Phase 1 complete — all seven slices.**
 
-What exists: configuration, database pool, embedded migrations, health probes,
-Prometheus metrics, structured logging, graceful shutdown, passkey auth, the
-file tree — folders, downloads with Range support, trash, quotas, garbage
-collection and fsck — resumable uploads over tus, a React web UI, and WebDAV.
-What doesn't: search — slice 7. See
-[../docs/phase-1-design.md](../docs/phase-1-design.md).
+Configuration, database pool, embedded migrations, health probes, Prometheus
+metrics, structured logging, graceful shutdown, passkey auth, the file tree
+(folders, downloads with Range support, trash, quotas, garbage collection and
+fsck), resumable uploads over tus, a React web UI, WebDAV, and filename search.
+
+Phase 2 is next: content-addressed storage, versioning, dedup and share links.
+See [../docs/phase-1-design.md](../docs/phase-1-design.md).
 
 The web UI lives in [../web/](../web/) and is served by Caddy from the same
 origin as this API — not for convenience, but because WebAuthn binds passkeys
@@ -64,6 +65,7 @@ between the network and the auth code in slice 2.
 | `DELETE /api/v1/trash/{id}` | session | Purge permanently |
 | `DELETE /api/v1/trash` | session | Empty the trash |
 | `GET /api/v1/usage` | session | Bytes used, quota, file count |
+| `GET /api/v1/search?q=` | session | Filename search |
 | `POST /api/v1/admin/fsck[?repair=true]` | **admin** | Disk vs database audit |
 | `OPTIONS /api/v1/uploads` | — | tus capabilities |
 | `POST /api/v1/uploads` | session | Start a resumable upload |
@@ -249,6 +251,38 @@ once; losing them on restart is the same thing that happens when a client's
 connection drops. A database-backed lock table is a Phase 3 concern, for when
 there might be more than one replica.
 
+## Search
+
+Filename search, not content search. `GET /api/v1/search?q=budg` with optional
+`kind`, `under`, `limit`, `offset` and `include_trashed`.
+
+**Trigram (`pg_trgm`), deliberately not full-text.** `to_tsvector` stems words
+and matches on token boundaries — it is the right tool for document *content*,
+which arrives in Phase 4 with OCR and embeddings. But filenames are not prose.
+People search them by fragment: `budg` should find `budget-2026-final.xlsx`,
+and so should `2026`. Full-text search finds neither, because neither is a
+token in that filename.
+
+That requires an unanchored `LIKE '%frag%'`, which no btree index can help
+with — without the GIN trigram indexes in migration `00006`, every search is a
+sequential scan of the entire tree.
+
+Ranking is exact match, then prefix, then trigram similarity, then most
+recently updated. Someone typing a full filename wants *that* file, not the
+forty others containing it as a substring; and `budg` ranking `budget.xlsx`
+above `old-budget.xlsx` matches how people think about names.
+
+Paths are matched as well as names, so `photos` finds everything under
+`/photos` without the caller having to know whether the fragment spans a
+directory boundary. Results carry `matched_path` so a filename with no visible
+relationship to the query does not look like a bug.
+
+Queries shorter than two characters are refused rather than served: pg_trgm
+indexes trigrams, so a single character cannot use the index at all.
+
+The trash is excluded by default. Finding a file you deleted last month and
+being unable to tell that it is deleted is worse than not finding it.
+
 ## cloudctl
 
 ```bash
@@ -349,6 +383,7 @@ Applied automatically at startup.
 | `00003` | blobs, nodes, file versions, refcount trigger |
 | `00004` | resumable upload sessions |
 | `00005` | app passwords |
+| `00006` | trigram indexes for search |
 
 Blob refcounts are maintained by a **trigger**, not by application code.
 `file_versions` rows disappear through `ON DELETE CASCADE` — purging a folder

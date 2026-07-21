@@ -1,8 +1,11 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 
-import { ApiError, api, formatBytes, formatDate, type Node, type Usage } from "./api";
+import { ApiError, api, formatBytes, formatDate, type Node, type SearchHit, type Usage } from "./api";
 import { Trash } from "./Trash";
 import { upload, type UploadHandle } from "./upload";
+
+/** Below this, the server refuses the query rather than scan the whole tree. */
+const MIN_QUERY = 2;
 
 interface Transfer {
   id: number;
@@ -25,6 +28,10 @@ export function Browser() {
   const [dragOver, setDragOver] = useState(false);
   const [showTrash, setShowTrash] = useState(false);
 
+  const [query, setQuery] = useState("");
+  const [hits, setHits] = useState<SearchHit[] | null>(null);
+  const [searchScoped, setSearchScoped] = useState(false);
+
   const fileInput = useRef<HTMLInputElement>(null);
 
   const load = useCallback(async (id?: string) => {
@@ -46,6 +53,33 @@ export function Browser() {
   useEffect(() => {
     void load();
   }, [load]);
+
+  // Debounced search. Without the delay every keystroke is a trigram scan, and
+  // responses can arrive out of order — the `cancelled` flag is what stops a
+  // slow early query from overwriting the results of a later, faster one.
+  useEffect(() => {
+    const text = query.trim();
+    if (text.length < MIN_QUERY) {
+      setHits(null);
+      return;
+    }
+    let cancelled = false;
+    const timer = setTimeout(() => {
+      void api
+        .search(text, { under: searchScoped ? folder?.path : undefined })
+        .then((res) => {
+          if (!cancelled) setHits(res.results);
+        })
+        .catch((err) => {
+          if (!cancelled) setError(err instanceof ApiError ? err.message : String(err));
+        });
+    }, 200);
+
+    return () => {
+      cancelled = true;
+      clearTimeout(timer);
+    };
+  }, [query, searchScoped, folder?.path]);
 
   const reload = useCallback(() => {
     if (folder) void load(folder.id);
@@ -134,6 +168,29 @@ export function Browser() {
           New folder
         </button>
         <button onClick={() => setShowTrash(true)}>Trash</button>
+
+        <span style={{ flex: 1 }} />
+
+        <input
+          type="search"
+          value={query}
+          placeholder="Search files…"
+          aria-label="Search files"
+          onChange={(e) => setQuery(e.target.value)}
+          onKeyDown={(e) => {
+            if (e.key === "Escape") setQuery("");
+          }}
+        />
+        {folder && folder.path !== "/" && (
+          <label className="row small muted">
+            <input
+              type="checkbox"
+              checked={searchScoped}
+              onChange={(e) => setSearchScoped(e.target.checked)}
+            />
+            in this folder
+          </label>
+        )}
       </div>
 
       <div
@@ -187,7 +244,16 @@ export function Browser() {
         </div>
       )}
 
-      {loading ? (
+      {hits !== null ? (
+        <SearchResults
+          hits={hits}
+          query={query.trim()}
+          onOpenFolder={(id) => {
+            setQuery("");
+            void load(id);
+          }}
+        />
+      ) : loading ? (
         <p className="muted">Loading…</p>
       ) : children.length === 0 ? (
         <div className="empty">This folder is empty.</div>
@@ -241,6 +307,64 @@ export function Browser() {
         </table>
       )}
     </div>
+  );
+}
+
+function SearchResults({
+  hits,
+  query,
+  onOpenFolder,
+}: {
+  hits: SearchHit[];
+  query: string;
+  onOpenFolder: (id: string) => void;
+}) {
+  if (hits.length === 0) {
+    return <div className="empty">Nothing matches “{query}”.</div>;
+  }
+
+  return (
+    <>
+      <p className="muted small">
+        {hits.length} result{hits.length === 1 ? "" : "s"} for “{query}”
+      </p>
+      <table className="listing">
+        <thead>
+          <tr>
+            <th>Name</th>
+            <th style={{ textAlign: "right" }}>Size</th>
+            <th className="when" style={{ textAlign: "right" }}>
+              Modified
+            </th>
+          </tr>
+        </thead>
+        <tbody>
+          {hits.map((h) => (
+            <tr key={h.id}>
+              <td className="name">
+                {h.kind === "folder" ? (
+                  <button onClick={() => onOpenFolder(h.id)}>📁 {h.name}</button>
+                ) : (
+                  <a href={api.downloadUrl(h.id)} target="_blank" rel="noreferrer">
+                    📄 {h.name}
+                  </a>
+                )}
+                {/* The full path, because a result list without it is a pile of
+                    identically named files with no way to tell them apart. */}
+                <div className="muted small">
+                  {h.path}
+                  {/* Why this matched, so a filename with no visible relation to
+                      the query does not look like a bug. */}
+                  {h.matched_path && " · matched the folder name"}
+                </div>
+              </td>
+              <td className="size">{h.kind === "file" ? formatBytes(h.size ?? 0) : "—"}</td>
+              <td className="when">{formatDate(h.updated_at)}</td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </>
   );
 }
 

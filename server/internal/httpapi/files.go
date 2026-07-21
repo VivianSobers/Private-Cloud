@@ -10,6 +10,7 @@ import (
 	"mime/multipart"
 	"net/http"
 	"net/url"
+	"strconv"
 	"strings"
 
 	"github.com/google/uuid"
@@ -549,6 +550,66 @@ func contentDisposition(name string, forceDownload bool) string {
 
 	return fmt.Sprintf(`%s; filename="%s"; filename*=UTF-8''%s`,
 		disp, fallback, url.PathEscape(name))
+}
+
+// --- search -----------------------------------------------------------------
+
+// handleSearch finds nodes by filename fragment.
+//
+// Trigram matching over names and paths, not full-text search over content:
+// filenames are not prose, and people search them by fragment. Content search
+// arrives in Phase 4 with OCR and embeddings, where it belongs.
+func (s *Server) handleSearch(w http.ResponseWriter, r *http.Request) {
+	q := r.URL.Query()
+
+	query := files.SearchQuery{
+		Text:           q.Get("q"),
+		Kind:           q.Get("kind"),
+		Under:          q.Get("under"),
+		IncludeTrashed: q.Get("include_trashed") == "true",
+		Limit:          atoiDefault(q.Get("limit"), 50),
+		Offset:         atoiDefault(q.Get("offset"), 0),
+	}
+
+	results, err := s.files.Store().Search(r.Context(), CurrentUser(r.Context()).ID, query)
+	if err != nil {
+		if errors.Is(err, files.ErrInvalidName) {
+			writeError(w, r, http.StatusBadRequest, "query_too_short", err.Error())
+			return
+		}
+		s.serverError(w, r, "search", err)
+		return
+	}
+
+	out := make([]map[string]any, 0, len(results))
+	for _, res := range results {
+		item := nodeJSON(res.Node)
+		// Why a result matched, so "the query is not in this filename" has a
+		// visible answer rather than looking like a bug.
+		item["matched_path"] = res.MatchedPath
+		out = append(out, item)
+	}
+
+	writeJSON(w, r, http.StatusOK, map[string]any{
+		"query":   query.Text,
+		"results": out,
+		"count":   len(out),
+		// Whether another page exists. A total count would need a second
+		// aggregate over the same trigram scan to answer a question no client
+		// asks — "are there more" is what paging actually needs.
+		"has_more": len(out) == query.Limit,
+	})
+}
+
+func atoiDefault(raw string, def int) int {
+	if raw == "" {
+		return def
+	}
+	n, err := strconv.Atoi(raw)
+	if err != nil || n < 0 {
+		return def
+	}
+	return n
 }
 
 // --- admin ------------------------------------------------------------------

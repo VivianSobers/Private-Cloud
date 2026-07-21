@@ -35,6 +35,11 @@ export interface Node {
   updated_at: string;
 }
 
+/** A search result: a node, plus whether the query hit an ancestor folder. */
+export interface SearchHit extends Node {
+  matched_path: boolean;
+}
+
 export interface User {
   id: string;
   username: string;
@@ -200,6 +205,16 @@ export const api = {
   emptyTrash: () => request<{ status: string; items_purged: number }>("/api/v1/trash", { method: "DELETE" }),
 
   usage: () => request<Usage>("/api/v1/usage"),
+
+  search: (q: string, opts: { under?: string; kind?: string; limit?: number } = {}) => {
+    const params = new URLSearchParams({ q });
+    if (opts.under && opts.under !== "/") params.set("under", opts.under);
+    if (opts.kind) params.set("kind", opts.kind);
+    if (opts.limit) params.set("limit", String(opts.limit));
+    return request<{ query: string; results: SearchHit[]; count: number; has_more: boolean }>(
+      `/api/v1/search?${params}`,
+    );
+  },
 
   fsck: (repair: boolean) =>
     request<Record<string, unknown>>(`/api/v1/admin/fsck?repair=${repair}`, { method: "POST" }),

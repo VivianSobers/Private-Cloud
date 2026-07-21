@@ -152,6 +152,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("DELETE /api/v1/trash/{id}", s.requireAuth(s.handlePurgeNode))
 
 	mux.HandleFunc("GET /api/v1/usage", s.requireAuth(s.handleUsage))
+	mux.HandleFunc("GET /api/v1/search", s.requireAuth(s.handleSearch))
 
 	// App passwords: credentials for clients that cannot run a WebAuthn
 	// ceremony. Managed through the session-authenticated API, never through
