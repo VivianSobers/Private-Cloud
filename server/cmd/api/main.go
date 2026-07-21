@@ -18,6 +18,7 @@ import (
 
 	"github.com/guru-bharadwaj20/private-cloud/server/internal/auth"
 	"github.com/guru-bharadwaj20/private-cloud/server/internal/blob"
+	"github.com/guru-bharadwaj20/private-cloud/server/internal/cas"
 	"github.com/guru-bharadwaj20/private-cloud/server/internal/config"
 	"github.com/guru-bharadwaj20/private-cloud/server/internal/db"
 	"github.com/guru-bharadwaj20/private-cloud/server/internal/files"
@@ -145,6 +146,16 @@ func run() error {
 	filesSvc.TrashRetention = cfg.TrashRetention
 	filesSvc.UploadTTL = cfg.UploadTTL
 
+	// Content-addressed storage. Uploads do not route through it yet, but fsck
+	// and GC must know the format exists BEFORE anything writes it — a checker
+	// that only understands whole-file blobs would classify every chunk on disk
+	// as an orphan and delete it.
+	casStore, err := cas.NewStore(database.Pool, blobs)
+	if err != nil {
+		return fmt.Errorf("content-addressed store: %w", err)
+	}
+	filesSvc.SetCAS(casStore)
+
 	// Expired sessions and abandoned ceremonies would otherwise accumulate
 	// forever. Cheap enough to run in-process rather than adding a job queue
 	// for a single periodic DELETE.
@@ -254,13 +265,16 @@ func runGC(ctx context.Context, svc *files.Service, m *metrics.Metrics, interval
 			}
 			m.GCBlobsFreed.Add(float64(res.BlobsFreed))
 			m.GCBytesFreed.Add(float64(res.BytesFreed))
-			if res.TrashPurged > 0 || res.BlobsFreed > 0 || res.UploadsExpired > 0 || res.StagingFreed > 0 {
+			if res.TrashPurged > 0 || res.BlobsFreed > 0 || res.UploadsExpired > 0 ||
+				res.StagingFreed > 0 || res.ChunksFreed > 0 {
 				log.Info("garbage collected",
 					"trash_purged", res.TrashPurged,
 					"blobs_freed", res.BlobsFreed,
 					"bytes_freed", res.BytesFreed,
 					"uploads_expired", res.UploadsExpired,
-					"staging_freed", res.StagingFreed)
+					"staging_freed", res.StagingFreed,
+					"chunks_freed", res.ChunksFreed,
+					"chunk_bytes_freed", res.ChunkBytesFreed)
 			}
 		}
 	}

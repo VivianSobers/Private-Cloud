@@ -624,9 +624,12 @@ func (s *Server) handleFsck(w http.ResponseWriter, r *http.Request) {
 	}
 	writeJSON(w, r, http.StatusOK, map[string]any{
 		"checked":            report.Checked,
+		"chunks_checked":     report.ChunksChecked,
 		"orphans":            len(report.Orphans),
 		"orphan_bytes":       report.OrphanBytes,
 		"missing":            report.Missing,
+		"missing_chunks":     report.MissingChunks,
+		"refcount_drift":     report.RefcountDrift,
 		"size_mismatch":      report.SizeMismatch,
 		"temp_files_removed": report.TempFilesRemoved,
 		"repaired":           repair,

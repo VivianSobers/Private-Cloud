@@ -14,6 +14,7 @@ import (
 	"github.com/google/uuid"
 
 	"github.com/guru-bharadwaj20/private-cloud/server/internal/blob"
+	"github.com/guru-bharadwaj20/private-cloud/server/internal/cas"
 )
 
 // Service joins the node store to the blob store.
@@ -31,6 +32,12 @@ type Service struct {
 	// as an interface rather than a concrete type so a Phase 2 backend can
 	// provide resumability its own way.
 	stager blob.Stager
+
+	// cas is non-nil once content-addressed storage is configured. It is
+	// optional because whole-file blobs remain a supported, permanent format —
+	// but fsck and GC must consult it whenever it exists, or they will treat
+	// every chunk on disk as garbage.
+	cas *cas.Store
 
 	// TrashRetention bounds how long deleted files keep consuming disk.
 	TrashRetention time.Duration
@@ -55,6 +62,17 @@ func NewService(store *Store, blobs blob.Store, log *slog.Logger) *Service {
 	}
 	return s
 }
+
+// SetCAS attaches a content-addressed store.
+//
+// Wiring this in is what makes fsck and GC aware that chunks exist. Uploads do
+// not yet route through it — that is the remaining half of Phase 2 slice 1 —
+// but the maintenance paths must understand the format BEFORE anything writes
+// it, not after.
+func (s *Service) SetCAS(store *cas.Store) { s.cas = store }
+
+// CAS returns the content-addressed store, or nil.
+func (s *Service) CAS() *cas.Store { return s.cas }
 
 func (s *Service) Store() *Store     { return s.store }
 func (s *Service) Blobs() blob.Store { return s.blobs }
@@ -143,6 +161,9 @@ type GCResult struct {
 	BytesFreed     int64
 	UploadsExpired int
 	StagingFreed   int
+
+	ChunksFreed     int
+	ChunkBytesFreed int64
 }
 
 // CollectGarbage purges expired trash and then deletes the blobs that fall to
@@ -191,7 +212,55 @@ func (s *Service) CollectGarbage(ctx context.Context) (GCResult, error) {
 		res.BlobsFreed++
 		res.BytesFreed += b.Size
 	}
+
+	chunksFreed, chunkBytes, err := s.collectChunks(ctx)
+	if err != nil {
+		return res, err
+	}
+	res.ChunksFreed, res.ChunkBytesFreed = chunksFreed, chunkBytes
+
 	return res, nil
+}
+
+// collectChunks reclaims chunks no manifest references any more.
+//
+// Row first, then bytes, exactly as for blobs. The reverse would briefly leave
+// a chunk row pointing at content already deleted — and because chunks are
+// shared, that window would break files belonging to people who had nothing to
+// do with whatever triggered the collection.
+func (s *Service) collectChunks(ctx context.Context) (int, int64, error) {
+	if s.cas == nil {
+		return 0, 0, nil
+	}
+
+	candidates, err := s.cas.UnreferencedChunks(ctx, s.BlobGCGrace, 1000)
+	if err != nil {
+		return 0, 0, fmt.Errorf("list unreferenced chunks: %w", err)
+	}
+
+	var freed int
+	var bytes int64
+	for _, c := range candidates {
+		// Re-checks refcount inside the delete. Dedup means popular chunks are
+		// claimed constantly, so losing that race is routine rather than
+		// exotic — and the cost of getting it wrong is another user's file.
+		deleted, err := s.cas.DeleteChunkRow(ctx, c.Hash)
+		if err != nil {
+			return freed, bytes, fmt.Errorf("delete chunk row: %w", err)
+		}
+		if !deleted {
+			continue
+		}
+		if err := s.blobs.Delete(ctx, c.StorageKey); err != nil {
+			// The row is gone, so this is now an orphan on disk rather than a
+			// dangling reference — the safe direction. fsck sweeps it.
+			s.log.Warn("chunk row deleted but file remains", "key", c.StorageKey, "error", err)
+			continue
+		}
+		freed++
+		bytes += int64(c.StoredSize)
+	}
+	return freed, bytes, nil
 }
 
 // collectExpiredUploads removes abandoned resumable uploads, then sweeps
@@ -258,8 +327,18 @@ type FsckReport struct {
 	// SizeMismatch rows whose on-disk size disagrees with the recorded size.
 	SizeMismatch []string
 
+	// MissingChunks is data loss too, and worse than Missing: a chunk is
+	// shared, so its absence damages every file referencing it — potentially
+	// files belonging to people who were never involved.
+	MissingChunks []string
+
+	// RefcountDrift means the maintenance trigger did not do its job. Reported,
+	// never silently corrected.
+	RefcountDrift []string
+
 	TempFilesRemoved int
 	Checked          int
+	ChunksChecked    int
 }
 
 // Fsck compares the blob store against the database.
@@ -268,6 +347,12 @@ type FsckReport struct {
 // provably unreferenced. Nothing here deletes a row: a report that says "these
 // bytes are missing" is far more useful than a tool that quietly erases the
 // records of files the user still expects to exist.
+//
+// It MUST account for both storage formats. Whole-file blobs and CAS chunks
+// share one blob store root and one directory layout, so a checker that knew
+// only about `blobs` would classify every chunk on disk as an orphan — and
+// `--repair` would then delete all deduplicated content in the system. That is
+// not a hypothetical: it is what this function did before chunks existed.
 func (s *Service) Fsck(ctx context.Context, repair bool) (*FsckReport, error) {
 	fs, ok := s.blobs.(*blob.FSStore)
 	if !ok {
@@ -279,23 +364,45 @@ func (s *Service) Fsck(ctx context.Context, repair bool) (*FsckReport, error) {
 		return nil, err
 	}
 
+	// Chunk keys, when a CAS store is configured. Absent one, an empty map is
+	// correct — there are no chunks to account for.
+	chunks := map[string]cas.ChunkRef{}
+	if s.cas != nil {
+		if chunks, err = s.cas.AllChunkKeys(ctx); err != nil {
+			return nil, fmt.Errorf("load chunk keys: %w", err)
+		}
+	}
+
 	report := &FsckReport{}
 	seen := make(map[string]bool, len(known))
+	seenChunks := make(map[string]bool, len(chunks))
 
 	err = fs.Walk(func(key string, size int64) error {
 		report.Checked++
-		seen[key] = true
 
-		ref, ok := known[key]
-		if !ok {
-			report.Orphans = append(report.Orphans, key)
-			report.OrphanBytes += size
+		if ref, ok := known[key]; ok {
+			seen[key] = true
+			if ref.Size != size {
+				report.SizeMismatch = append(report.SizeMismatch,
+					fmt.Sprintf("%s: database says %d bytes, disk has %d", key, ref.Size, size))
+			}
 			return nil
 		}
-		if ref.Size != size {
-			report.SizeMismatch = append(report.SizeMismatch,
-				fmt.Sprintf("%s: database says %d bytes, disk has %d", key, ref.Size, size))
+
+		if ref, ok := chunks[key]; ok {
+			seenChunks[key] = true
+			report.ChunksChecked++
+			// stored_size, not size: what is on disk is the compressed form.
+			if int64(ref.StoredSize) != size {
+				report.SizeMismatch = append(report.SizeMismatch,
+					fmt.Sprintf("chunk %s: database says %d stored bytes, disk has %d",
+						key, ref.StoredSize, size))
+			}
+			return nil
 		}
+
+		report.Orphans = append(report.Orphans, key)
+		report.OrphanBytes += size
 		return nil
 	})
 	if err != nil {
@@ -305,6 +412,29 @@ func (s *Service) Fsck(ctx context.Context, repair bool) (*FsckReport, error) {
 	for key := range known {
 		if !seen[key] {
 			report.Missing = append(report.Missing, key)
+		}
+	}
+	for key := range chunks {
+		if !seenChunks[key] {
+			// A missing chunk is worse than a missing blob: it is shared, so it
+			// damages every file that references it, potentially across users.
+			report.MissingChunks = append(report.MissingChunks, key)
+		}
+	}
+
+	// Refcount drift means the trigger did not do its job — a bug, a manual
+	// edit, or a half-applied migration. Reported, never silently corrected:
+	// an inflated count only wastes disk, but a wrongly deflated one gets live
+	// chunks deleted, and "fixing" the number first would destroy the evidence.
+	if s.cas != nil {
+		drift, err := s.cas.VerifyRefcounts(ctx, 100)
+		if err != nil {
+			return nil, err
+		}
+		for _, d := range drift {
+			report.RefcountDrift = append(report.RefcountDrift,
+				fmt.Sprintf("chunk %x: recorded %d references, actually %d",
+					d.Hash, d.Recorded, d.Actual))
 		}
 	}
 

@@ -24,7 +24,21 @@ run: ## run locally against a database on localhost
 
 .PHONY: test
 test: ## unit tests with the race detector
-	go test -race ./...
+	# -race requires cgo. In a golang:alpine container CGO_ENABLED defaults to 0
+	# and this silently degrades to a plain run, so set it explicitly and install
+	# gcc/musl-dev there. The race detector is what caught a data race inside a
+	# chunking library that looked completely fine by inspection.
+	CGO_ENABLED=1 go test -race ./...
+
+.PHONY: test-integration
+test-integration: ## tests that need a real Postgres
+	# The tree and storage logic live largely in SQL — partial unique indexes,
+	# cascades, refcount triggers, prefix rewrites. A mock would pass while the
+	# real schema silently allowed duplicate siblings, so these run against a
+	# genuine database and skip without one.
+	@test -n "$(PC_TEST_DATABASE_URL)" || \
+		(echo "set PC_TEST_DATABASE_URL — see README 'Integration tests'"; exit 1)
+	go test ./... -count=1
 
 .PHONY: cover
 cover: ## test coverage report

@@ -32,6 +32,7 @@ import (
 
 	"github.com/guru-bharadwaj20/private-cloud/server/internal/auth"
 	"github.com/guru-bharadwaj20/private-cloud/server/internal/blob"
+	"github.com/guru-bharadwaj20/private-cloud/server/internal/cas"
 	"github.com/guru-bharadwaj20/private-cloud/server/internal/db"
 	"github.com/guru-bharadwaj20/private-cloud/server/internal/files"
 )
@@ -301,7 +302,17 @@ func filesService(database *db.DB, log *slog.Logger) (*files.Service, error) {
 	if err != nil {
 		return nil, err
 	}
-	return files.NewService(files.NewStore(database.Pool), store, log), nil
+	svc := files.NewService(files.NewStore(database.Pool), store, log)
+
+	// Without this, fsck sees chunks as orphans and --repair deletes every
+	// deduplicated byte in the system.
+	casStore, err := cas.NewStore(database.Pool, store)
+	if err != nil {
+		return nil, fmt.Errorf("content-addressed store: %w", err)
+	}
+	svc.SetCAS(casStore)
+
+	return svc, nil
 }
 
 func fsckCommand(ctx context.Context, database *db.DB, log *slog.Logger, args []string) error {
@@ -317,7 +328,7 @@ func fsckCommand(ctx context.Context, database *db.DB, log *slog.Logger, args []
 		return err
 	}
 
-	fmt.Printf("checked %d blob(s) on disk\n", report.Checked)
+	fmt.Printf("checked %d file(s) on disk (%d of them chunks)\n", report.Checked, report.ChunksChecked)
 	fmt.Printf("orphans (on disk, no database row): %d (%s)\n",
 		len(report.Orphans), humanBytes(report.OrphanBytes))
 
@@ -330,6 +341,23 @@ func fsckCommand(ctx context.Context, database *db.DB, log *slog.Logger, args []
 		fmt.Println("docs/runbook-restore.md.")
 		for _, k := range report.Missing {
 			fmt.Printf("    %s\n", k)
+		}
+	}
+	if len(report.MissingChunks) > 0 {
+		fmt.Printf("\nMISSING CHUNKS — %d chunk(s) have rows but no bytes.\n", len(report.MissingChunks))
+		fmt.Println("Chunks are SHARED: each missing one damages every file that")
+		fmt.Println("references it, possibly across users. Restore from backup.")
+		for _, k := range report.MissingChunks {
+			fmt.Printf("    %s\n", k)
+		}
+	}
+	if len(report.RefcountDrift) > 0 {
+		fmt.Printf("\nREFCOUNT DRIFT — %d chunk(s) disagree with reality:\n", len(report.RefcountDrift))
+		fmt.Println("The maintenance trigger did not do its job. Not corrected here:")
+		fmt.Println("an inflated count only wastes disk, but a deflated one gets live")
+		fmt.Println("chunks deleted, and overwriting it would destroy the evidence.")
+		for _, d := range report.RefcountDrift {
+			fmt.Printf("    %s\n", d)
 		}
 	}
 	if len(report.SizeMismatch) > 0 {
@@ -347,9 +375,11 @@ func fsckCommand(ctx context.Context, database *db.DB, log *slog.Logger, args []
 	}
 
 	// Non-zero exit on data loss so a cron wrapper notices without parsing text.
-	if len(report.Missing) > 0 || len(report.SizeMismatch) > 0 {
-		return fmt.Errorf("fsck found %d missing and %d mismatched blob(s)",
-			len(report.Missing), len(report.SizeMismatch))
+	if len(report.Missing) > 0 || len(report.MissingChunks) > 0 ||
+		len(report.SizeMismatch) > 0 || len(report.RefcountDrift) > 0 {
+		return fmt.Errorf("fsck found %d missing blob(s), %d missing chunk(s), %d mismatch(es), %d refcount drift(s)",
+			len(report.Missing), len(report.MissingChunks),
+			len(report.SizeMismatch), len(report.RefcountDrift))
 	}
 	return nil
 }
@@ -375,6 +405,7 @@ func gcCommand(ctx context.Context, database *db.DB, log *slog.Logger) error {
 	fmt.Printf("freed %d blob(s), %s\n", res.BlobsFreed, humanBytes(res.BytesFreed))
 	fmt.Printf("expired %d abandoned upload(s), swept %d staging file(s)\n",
 		res.UploadsExpired, res.StagingFreed)
+	fmt.Printf("freed %d chunk(s), %s\n", res.ChunksFreed, humanBytes(res.ChunkBytesFreed))
 	return nil
 }
 
