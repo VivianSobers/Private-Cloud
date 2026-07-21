@@ -180,14 +180,29 @@ cmd_backup() {
   local paths=()
   paths+=("$(take_snapshot "$POOL/configs")")
   paths+=("$(take_snapshot "$POOL/postgres")")
-  # tank/blobs is intentionally NOT here in Phase 0: it is empty until the app
-  # exists, and 3TB of blobs needs a sized offsite target. Add it in Phase 2:
-  #   paths+=("$(take_snapshot "$POOL/blobs")")
+
+  # File content. Excluded in Phase 0 while the dataset was empty; included from
+  # Phase 1 onward, because it is now the only copy of data nobody can recreate.
+  # A snapshot of the database without the blobs it references would restore to
+  # a tree full of files whose bytes are gone.
+  #
+  # Set BACKUP_BLOBS=false only if you have deliberately sized an offsite target
+  # that cannot hold them, and understand that a restore then gives you file
+  # NAMES and no content.
+  if [[ "${BACKUP_BLOBS:-true}" == "true" ]]; then
+    if zfs list -H -o name "$POOL/blobs" >/dev/null 2>&1; then
+      paths+=("$(take_snapshot "$POOL/blobs")")
+    else
+      warn "$POOL/blobs does not exist — skipping (expected before the app has run)"
+    fi
+  else
+    warn "BACKUP_BLOBS=false — file CONTENT is not being backed up"
+  fi
 
   log "backing up: ${paths[*]}"
   restic backup \
     --host "$HOSTNAME_TAG" \
-    --tag phase0 \
+    --tag privatecloud \
     --exclude-caches \
     --one-file-system \
     "${paths[@]}" \
