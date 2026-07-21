@@ -19,6 +19,18 @@ type Metrics struct {
 	BuildInfo      *prometheus.GaugeVec
 	SchemaVersion  prometheus.Gauge
 	DBPoolAcquired prometheus.GaugeFunc
+
+	// Transfer counters are separate from the duration histogram on purpose:
+	// bytes moved and time taken answer different questions, and a 60-second
+	// upload in the same histogram as a 5ms metadata lookup makes both
+	// unreadable.
+	UploadBytes   prometheus.Counter
+	DownloadBytes prometheus.Counter
+
+	// GC results, so "is the trash actually being reclaimed" is answerable from
+	// a dashboard instead of by reading logs.
+	GCBlobsFreed prometheus.Counter
+	GCBytesFreed prometheus.Counter
 }
 
 // New builds a dedicated registry rather than using the global default. A
@@ -70,6 +82,23 @@ func New(version, commit string, poolStats func() float64) *Metrics {
 			Name: "privatecloud_schema_version",
 			Help: "Applied goose migration version.",
 		}),
+
+		UploadBytes: prometheus.NewCounter(prometheus.CounterOpts{
+			Name: "privatecloud_upload_bytes_total",
+			Help: "Total bytes accepted through file uploads.",
+		}),
+		DownloadBytes: prometheus.NewCounter(prometheus.CounterOpts{
+			Name: "privatecloud_download_bytes_total",
+			Help: "Total bytes served through file downloads.",
+		}),
+		GCBlobsFreed: prometheus.NewCounter(prometheus.CounterOpts{
+			Name: "privatecloud_gc_blobs_freed_total",
+			Help: "Blobs deleted by garbage collection.",
+		}),
+		GCBytesFreed: prometheus.NewCounter(prometheus.CounterOpts{
+			Name: "privatecloud_gc_bytes_freed_total",
+			Help: "Bytes reclaimed by garbage collection.",
+		}),
 	}
 
 	m.DBPoolAcquired = prometheus.NewGaugeFunc(
@@ -87,6 +116,10 @@ func New(version, commit string, poolStats func() float64) *Metrics {
 		m.BuildInfo,
 		m.SchemaVersion,
 		m.DBPoolAcquired,
+		m.UploadBytes,
+		m.DownloadBytes,
+		m.GCBlobsFreed,
+		m.GCBytesFreed,
 		// Go runtime and process metrics: GC pressure, goroutine count, open
 		// FDs. The first two are how you spot a leak before it becomes an
 		// outage.

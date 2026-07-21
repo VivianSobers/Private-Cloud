@@ -12,16 +12,16 @@ import (
 	"github.com/guru-bharadwaj20/private-cloud/server/internal/metrics"
 )
 
-// newTestServer builds a Server with no database and no auth service.
+// newTestServer builds a Server with no database, auth service or file service.
 //
-// Handlers that touch either (/readyz, everything under /api/v1/auth) need a
-// real Postgres and are covered by integration tests; these tests cover
-// routing, middleware and response shape, which need neither.
+// Handlers that touch any of them (/readyz, /api/v1/auth/*, /api/v1/nodes/*)
+// need a real Postgres and are covered by integration tests; these tests cover
+// routing, middleware and response shape, which need none of it.
 func newTestServer(t *testing.T) http.Handler {
 	t.Helper()
 	log := slog.New(slog.NewTextHandler(io.Discard, nil))
 	m := metrics.New("test", "abc123", func() float64 { return 0 })
-	return NewServer(log, nil, m, nil, Options{Version: "test", Commit: "abc123"}).Handler()
+	return NewServer(log, nil, m, nil, nil, Options{Version: "test", Commit: "abc123"}).Handler()
 }
 
 func TestHealthzIsOKWithoutDatabase(t *testing.T) {
@@ -193,7 +193,7 @@ func TestUnmatchedRoutesShareOneLabel(t *testing.T) {
 func TestPanicIsRecovered(t *testing.T) {
 	log := slog.New(slog.NewTextHandler(io.Discard, nil))
 	m := metrics.New("test", "abc", func() float64 { return 0 })
-	s := NewServer(log, nil, m, nil, Options{Version: "test", Commit: "abc"})
+	s := NewServer(log, nil, m, nil, nil, Options{Version: "test", Commit: "abc"})
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /boom", func(http.ResponseWriter, *http.Request) {

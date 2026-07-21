@@ -58,7 +58,7 @@ CREATE TABLE nodes (
     -- from those platforms will cheerfully try to create "Photos" beside
     -- "photos". Enforcing on the folded form makes the server behave the same
     -- way everywhere instead of producing pairs of files only some clients see.
-    name      text NOT NULL CHECK (name <> '' AND name !~ '/'),
+    name      text NOT NULL,
     name_fold text NOT NULL,
 
     -- Materialised absolute path ('/', '/photos', '/photos/2026/img.jpg').
@@ -72,10 +72,28 @@ CREATE TABLE nodes (
 
     -- Soft delete. Trashed nodes keep consuming quota until purged, which is
     -- the honest behaviour — the bytes really are still on disk.
+    --
+    -- Trashing a folder stamps trashed_at on the WHOLE subtree, so every other
+    -- query can test `trashed_at IS NULL` instead of walking ancestors.
+    -- trashed_root_id records which node the user actually deleted: it is the
+    -- id of that top node on every row of the subtree. That is what makes
+    -- restore possible — without it, a subtree deleted as one unit is
+    -- indistinguishable from its members having been deleted individually, and
+    -- restoring the folder would resurrect files the user had already thrown
+    -- away separately beforehand.
     trashed_at timestamptz,
+    trashed_root_id uuid,
 
     created_at timestamptz NOT NULL DEFAULT now(),
-    updated_at timestamptz NOT NULL DEFAULT now()
+    updated_at timestamptz NOT NULL DEFAULT now(),
+
+    -- The root is the one node with an empty name — it is addressed as '/' and
+    -- has no name to display. Every other node must have a real one, and no
+    -- name may contain a separator or the materialised path becomes ambiguous.
+    CONSTRAINT nodes_name_check CHECK (
+        (parent_id IS NULL AND name = '' AND path = '/')
+        OR (parent_id IS NOT NULL AND name <> '' AND position('/' in name) = 0)
+    )
 );
 
 -- No two live siblings may share a folded name. Trashed nodes are excluded so
@@ -92,6 +110,8 @@ CREATE UNIQUE INDEX nodes_owner_root_key
 CREATE INDEX nodes_owner_idx  ON nodes (owner_id);
 CREATE INDEX nodes_parent_idx ON nodes (parent_id) WHERE trashed_at IS NULL;
 CREATE INDEX nodes_trash_idx  ON nodes (owner_id, trashed_at) WHERE trashed_at IS NOT NULL;
+-- Restoring a subtree is a lookup by trash root, not a tree walk.
+CREATE INDEX nodes_trash_root_idx ON nodes (trashed_root_id) WHERE trashed_root_id IS NOT NULL;
 
 -- Prefix scans over the materialised path. text_pattern_ops is required for
 -- LIKE 'prefix%' to use the index on a non-C collation.
@@ -132,7 +152,39 @@ ALTER TABLE nodes
     ADD CONSTRAINT nodes_kind_head_check
     CHECK ((kind = 'folder' AND head_version_id IS NULL) OR kind = 'file');
 
+-- ---------------------------------------------------------------------------
+-- refcount maintenance
+-- ---------------------------------------------------------------------------
+-- A trigger rather than application code, because file_versions rows disappear
+-- through ON DELETE CASCADE — purging a folder deletes versions several levels
+-- down without any Go code ever naming them. Anything that tried to keep the
+-- count in the service layer would have to reimplement the cascade to know what
+-- it just destroyed, and would drift the first time a new delete path appeared.
+--
+-- An undercount is the dangerous direction: it lets GC delete bytes a live file
+-- still points at. Keeping the count adjacent to the row change is what makes
+-- that impossible.
+
+-- +goose StatementBegin
+CREATE OR REPLACE FUNCTION blob_refcount_bump() RETURNS trigger AS $$
+BEGIN
+    IF TG_OP = 'INSERT' THEN
+        UPDATE blobs SET refcount = refcount + 1 WHERE id = NEW.blob_id;
+    ELSIF TG_OP = 'DELETE' THEN
+        UPDATE blobs SET refcount = refcount - 1 WHERE id = OLD.blob_id;
+    END IF;
+    RETURN NULL;
+END;
+$$ LANGUAGE plpgsql;
+-- +goose StatementEnd
+
+CREATE TRIGGER file_versions_refcount
+    AFTER INSERT OR DELETE ON file_versions
+    FOR EACH ROW EXECUTE FUNCTION blob_refcount_bump();
+
 -- +goose Down
+DROP TRIGGER IF EXISTS file_versions_refcount ON file_versions;
+DROP FUNCTION IF EXISTS blob_refcount_bump();
 ALTER TABLE nodes DROP CONSTRAINT IF EXISTS nodes_kind_head_check;
 ALTER TABLE nodes DROP CONSTRAINT IF EXISTS nodes_head_version_fk;
 DROP TABLE IF EXISTS file_versions;

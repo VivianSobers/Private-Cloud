@@ -1,19 +1,25 @@
 # private-cloud API
 
-Go backend for the private cloud. **Phase 1, slice 1: skeleton.**
+Go backend for the private cloud. **Phase 1, slices 1–3 complete.**
 
 What exists: configuration, database pool, embedded migrations, health probes,
-Prometheus metrics, structured logging, graceful shutdown. What doesn't: auth,
-files, uploads, WebDAV, search — slices 2 through 7. See
+Prometheus metrics, structured logging, graceful shutdown, passkey auth, and the
+file tree — folders, uploads, downloads with Range support, trash, quotas,
+garbage collection and fsck. What doesn't: resumable uploads, web UI, WebDAV,
+search — slices 4 through 7. See
 [../docs/phase-1-design.md](../docs/phase-1-design.md).
 
 ## Layout
 
 ```
 cmd/api/              entrypoint, graceful shutdown, healthcheck subcommand
+cmd/cloudctl/         admin CLI: users, recovery, fsck, gc
 internal/config/      env loading + eager validation
 internal/db/          pgx pool, goose migrations (embedded)
 internal/db/migrations/
+internal/auth/        users, passkeys, recovery codes, sessions
+internal/blob/        opaque content storage (filesystem today, CAS in Phase 2)
+internal/files/       the tree: nodes, versions, trash, quota, GC, fsck
 internal/httpapi/     routing, middleware, handlers
 internal/metrics/     Prometheus registry
 ```
@@ -39,6 +45,24 @@ between the network and the auth code in slice 2.
 | `GET|DELETE /api/v1/auth/credentials[/{id}]` | session | Manage passkeys |
 | `GET|DELETE /api/v1/auth/sessions[/{id}]` | session | Manage devices |
 | `POST /api/v1/auth/recovery/regenerate` | session | New recovery codes |
+| `GET /api/v1/nodes/root` | session | The user's root folder |
+| `GET /api/v1/nodes/resolve?path=/a/b` | session | Resolve an absolute path |
+| `GET /api/v1/nodes/{id}` | session | Node metadata |
+| `GET /api/v1/nodes/{id}/children` | session | List a folder |
+| `PATCH /api/v1/nodes/{id}` | session | Rename and/or move |
+| `DELETE /api/v1/nodes/{id}` | session | Move to trash |
+| `POST /api/v1/folders` | session | Create a folder |
+| `POST /api/v1/upload?parent_id=&name=` | session | Upload (raw body or multipart) |
+| `GET|HEAD /api/v1/nodes/{id}/content` | session | Download; Range + ETag |
+| `GET /api/v1/trash` | session | What's in the trash |
+| `POST /api/v1/trash/{id}/restore` | session | Undelete |
+| `DELETE /api/v1/trash/{id}` | session | Purge permanently |
+| `DELETE /api/v1/trash` | session | Empty the trash |
+| `GET /api/v1/usage` | session | Bytes used, quota, file count |
+| `POST /api/v1/admin/fsck[?repair=true]` | **admin** | Disk vs database audit |
+
+`{id}` accepts the literal `root`, so a client can start browsing without a
+prior lookup.
 
 `/healthz` and `/readyz` are split on purpose. Docker restarts a container whose
 healthcheck fails; if liveness depended on Postgres, a brief database blip would
@@ -76,6 +100,46 @@ browser with an error that tells you nothing.
 **Changing RPID invalidates every enrolled passkey.** Settle on the final
 hostname (the MagicDNS name) before enrolling keys you care about.
 
+## Storage model
+
+```
+node ──► file_version ──► blob ──► bytes on disk
+```
+
+That indirection is the **Phase 2 shape adopted early**. Slice 3 writes exactly
+one version per file and stores whole files, but because the versioned layer
+already exists, adding history and content-defined chunking later is a data
+migration rather than a schema rewrite over live data.
+
+Blobs are addressed by a random key, not a content hash: the hash isn't known
+until the stream has been read, and buffering an arbitrary upload to learn it
+first isn't acceptable. Content addressing arrives in Phase 2, at the chunk
+level, where it belongs.
+
+**Bytes are written before the database row.** A crash between the two leaves an
+unreferenced blob, which GC reclaims and `fsck` reports. The opposite ordering
+would leave a file the UI lists, the API describes and nobody can download — a
+failure no background job can repair, because the bytes were never written.
+
+Paths are materialised on every node (`/photos/2026/img.jpg`). Denormalised on
+purpose: subtree reads become a prefix scan, which is what search in slice 7 and
+inherited ACLs in Phase 2 both want. Rename pays for it by rewriting
+descendants, in the same transaction.
+
+Sibling uniqueness is enforced on a **folded** (lowercased) name. Linux is
+case-sensitive, macOS and Windows are not, and a WebDAV client from either will
+try to create `Photos` beside `photos`. Allowing both produces a pair of entries
+only some clients can see.
+
+Deleting is a soft delete that stamps the whole subtree, plus a `trashed_root_id`
+recording which node the user actually deleted. Without that column, a folder
+deleted as one unit is indistinguishable from its contents having been deleted
+individually beforehand — and restoring it would resurrect files the user had
+already thrown away.
+
+Trashed files keep consuming quota until purged. That's honest: the bytes really
+are still on the disk.
+
 ## cloudctl
 
 ```bash
@@ -84,12 +148,20 @@ cloudctl user create <name> [--admin]    # prints recovery codes
 cloudctl user reset-auth <name>          # the lockout escape hatch
 cloudctl user disable|enable <name>
 cloudctl recovery regenerate <name>
-cloudctl cleanup
+cloudctl cleanup                         # expired sessions and ceremonies
+cloudctl fsck [--repair]                 # compare the blob store to the database
+cloudctl gc                              # purge expired trash, free unreferenced blobs
 ```
 
 `reset-auth` clears passkeys, revokes live sessions, and issues new recovery
 codes together — clearing credentials while leaving sessions running would be a
 half-measure.
+
+`fsck` exits non-zero when it finds missing or mismatched content, so a cron
+wrapper notices without parsing text. It never deletes a database row: a report
+saying "these bytes are gone" is far more useful than a tool that quietly erases
+the record of a file you still expect to exist. `--repair` only removes things
+that are provably unreferenced.
 
 ## Development
 
@@ -100,11 +172,33 @@ make run      # against a database on localhost:5432
 make docker   # build the container image
 ```
 
-No Go installed? Everything works in a container:
+No Go installed? Everything works in a container. The named volumes matter —
+without them every run re-downloads the module graph:
 
 ```bash
-docker run --rm -v "$PWD:/src" -w /src golang:1.25-alpine \
-  sh -c "go vet ./... && go test ./..."
+docker run --rm -v "$PWD:/src" -w /src \
+  -v pc-gomod25:/go/pkg/mod -v pc-gobuild25:/root/.cache/go-build \
+  golang:1.25-alpine sh -c "go vet ./... && go test ./..."
+```
+
+### Integration tests
+
+The tree logic lives almost entirely in SQL — partial unique indexes, cascades,
+the refcount trigger, prefix rewrites on rename. None of that is exercised by a
+mock: a fake store would pass while the real schema silently allowed duplicate
+siblings. So those tests run against a real Postgres and skip without one.
+
+```bash
+docker network create pc-test
+docker run -d --name pc-test-pg --network pc-test \
+  -e POSTGRES_PASSWORD=test -e POSTGRES_DB=privatecloud postgres:17.5-alpine
+
+docker run --rm --network pc-test -v "$PWD:/src" -w /src \
+  -v pc-gomod25:/go/pkg/mod -v pc-gobuild25:/root/.cache/go-build \
+  -e PC_TEST_DATABASE_URL="postgres://postgres:test@pc-test-pg:5432/privatecloud?sslmode=disable" \
+  golang:1.25-alpine go test ./... -count=1
+
+docker rm -f pc-test-pg && docker network rm pc-test
 ```
 
 ## Configuration
@@ -122,6 +216,9 @@ rather than on the first request that touches it.
 | `PC_MIGRATE_ON_START` | `true` | Correct for one node; wrong with replicas racing |
 | `PC_DB_MAX_CONNS` | `10` | |
 | `PC_SHUTDOWN_TIMEOUT` | `20s` | Drain window for in-flight requests |
+| `PC_BLOB_PATH` | `/data/blobs` | **Must be absolute**, and inside the ZFS dataset that sanoid and restic cover |
+| `PC_TRASH_RETENTION` | `720h` | How long deleted files survive |
+| `PC_BLOB_GC_INTERVAL` | `6h` | How often expired trash and orphan content are swept |
 
 The database password is masked by `Config.Redacted()` before any logging, and
 there's a test asserting it — so a future refactor can't quietly leak it into
@@ -133,8 +230,21 @@ SQL under `internal/db/migrations/`, embedded into the binary with `go:embed`.
 The container therefore can't drift from the schema its code expects, and
 there's no "did you copy the migrations directory" failure mode.
 
-Applied automatically at startup. Slice 1 ships only extensions; the domain
-schema lands with auth in slice 2.
+Applied automatically at startup.
+
+| Version | Contents |
+|---|---|
+| `00001` | extensions (`pg_trgm`) |
+| `00002` | users, passkeys, recovery codes, sessions, ceremonies |
+| `00003` | blobs, nodes, file versions, refcount trigger |
+
+Blob refcounts are maintained by a **trigger**, not by application code.
+`file_versions` rows disappear through `ON DELETE CASCADE` — purging a folder
+destroys versions several levels down that no Go code ever names — so anything
+keeping the count in the service layer would have to reimplement the cascade to
+know what it just deleted, and would drift the first time a new delete path
+appeared. An undercount is the dangerous direction: it lets GC delete bytes a
+live file still points at.
 
 ## Metrics
 
@@ -147,7 +257,13 @@ Caddy outage doesn't blind the monitoring).
 - `privatecloud_db_pool_acquired_connections`
 - `privatecloud_schema_version`
 - `privatecloud_build_info{version,commit}`
+- `privatecloud_upload_bytes_total` / `privatecloud_download_bytes_total`
+- `privatecloud_gc_blobs_freed_total` / `privatecloud_gc_bytes_freed_total`
 - Go runtime + process collectors
+
+Transfer counters are separate from the duration histogram deliberately: bytes
+moved and time taken answer different questions, and a 60-second upload sharing
+a histogram with a 5ms metadata lookup makes both unreadable.
 
 **The `route` label is the ServeMux pattern, never the raw path.** Labelling by
 raw path would create a time series per filename and destroy Prometheus; there

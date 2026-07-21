@@ -8,6 +8,7 @@ package config
 import (
 	"fmt"
 	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"time"
@@ -50,6 +51,18 @@ type Config struct {
 	CookieName   string
 	CookieSecure bool
 
+	// --- storage ---
+	//
+	// BlobPath is where file content lives. It must be on the ZFS dataset that
+	// Phase 0 set up (tank/data), because that is what sanoid snapshots and
+	// restic backs up — a blob store outside it is silently unprotected.
+	BlobPath string
+
+	// TrashRetention bounds how long deleted files keep occupying disk.
+	TrashRetention time.Duration
+	// BlobGCInterval is how often unreferenced blobs are swept.
+	BlobGCInterval time.Duration
+
 	// MigrateOnStart runs pending migrations during startup. Convenient for a
 	// single-node deployment; would be wrong with multiple replicas racing to
 	// migrate, which is why it is a flag rather than unconditional.
@@ -79,6 +92,10 @@ func Load() (*Config, error) {
 		// Secure cookies by default; only a dev run over plain HTTP should
 		// ever turn this off, and it must be an explicit act.
 		CookieSecure: envBool("PC_COOKIE_SECURE", true),
+
+		BlobPath:       env("PC_BLOB_PATH", "/data/blobs"),
+		TrashRetention: envDuration("PC_TRASH_RETENTION", 30*24*time.Hour),
+		BlobGCInterval: envDuration("PC_BLOB_GC_INTERVAL", 6*time.Hour),
 
 		MigrateOnStart: envBool("PC_MIGRATE_ON_START", true),
 	}
@@ -138,6 +155,25 @@ func (c *Config) validate() error {
 	if c.Env == "prod" && !c.CookieSecure {
 		return fmt.Errorf("PC_COOKIE_SECURE=false is not allowed when PC_ENV=prod")
 	}
+
+	if c.BlobPath == "" {
+		return fmt.Errorf("PC_BLOB_PATH is required")
+	}
+	// A relative path resolves against whatever the working directory happens
+	// to be, which differs between `make run`, the container and systemd. For
+	// the one directory holding every byte the user owns, that is not a risk
+	// worth taking.
+	if !filepath.IsAbs(c.BlobPath) {
+		return fmt.Errorf("PC_BLOB_PATH must be an absolute path (got %q)", c.BlobPath)
+	}
+	// A retention of zero would purge the trash on its first sweep, which is
+	// indistinguishable from having no trash at all.
+	if c.TrashRetention <= 0 {
+		return fmt.Errorf("PC_TRASH_RETENTION must be positive")
+	}
+	if c.BlobGCInterval <= 0 {
+		return fmt.Errorf("PC_BLOB_GC_INTERVAL must be positive")
+	}
 	return nil
 }
 
@@ -151,6 +187,8 @@ func (c *Config) Redacted() map[string]any {
 		"db_max_conns":     c.DBMaxConns,
 		"log_level":        c.LogLevel,
 		"log_format":       c.LogFormat,
+		"blob_path":        c.BlobPath,
+		"trash_retention":  c.TrashRetention.String(),
 		"migrate_on_start": c.MigrateOnStart,
 	}
 }

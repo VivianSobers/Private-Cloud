@@ -17,8 +17,10 @@ import (
 	"time"
 
 	"github.com/guru-bharadwaj20/private-cloud/server/internal/auth"
+	"github.com/guru-bharadwaj20/private-cloud/server/internal/blob"
 	"github.com/guru-bharadwaj20/private-cloud/server/internal/config"
 	"github.com/guru-bharadwaj20/private-cloud/server/internal/db"
+	"github.com/guru-bharadwaj20/private-cloud/server/internal/files"
 	"github.com/guru-bharadwaj20/private-cloud/server/internal/httpapi"
 	"github.com/guru-bharadwaj20/private-cloud/server/internal/metrics"
 )
@@ -131,14 +133,26 @@ func run() error {
 	}
 	log.Info("webauthn configured", "rpid", cfg.WebAuthnRPID, "origins", cfg.WebAuthnOrigins)
 
+	// Constructed before the listener starts: an unwritable blob directory must
+	// stop the process here, not surface as a 500 on the first upload.
+	blobs, err := blob.NewFSStore(cfg.BlobPath)
+	if err != nil {
+		return fmt.Errorf("blob store: %w", err)
+	}
+	log.Info("blob store ready", "path", blobs.Root())
+
+	filesSvc := files.NewService(files.NewStore(database.Pool), blobs, log)
+	filesSvc.TrashRetention = cfg.TrashRetention
+
 	// Expired sessions and abandoned ceremonies would otherwise accumulate
 	// forever. Cheap enough to run in-process rather than adding a job queue
 	// for a single periodic DELETE.
 	go runCleanup(ctx, authSvc, log)
+	go runGC(ctx, filesSvc, m, cfg.BlobGCInterval, log)
 
 	srv := &http.Server{
 		Addr: cfg.HTTPAddr,
-		Handler: httpapi.NewServer(log, database, m, authSvc, httpapi.Options{
+		Handler: httpapi.NewServer(log, database, m, authSvc, filesSvc, httpapi.Options{
 			Version:      version,
 			Commit:       commit,
 			CookieName:   cfg.CookieName,
@@ -213,6 +227,37 @@ func runCleanup(ctx context.Context, svc *auth.Service, log *slog.Logger) {
 			}
 			if sessions > 0 || ceremonies > 0 {
 				log.Info("auth cleanup", "sessions", sessions, "ceremonies", ceremonies)
+			}
+		}
+	}
+}
+
+// runGC reclaims expired trash and unreferenced blobs.
+//
+// Deliberately not run at startup: a restart loop would otherwise turn into a
+// tight deletion loop, and there is nothing urgent about reclaiming space that
+// has already been unreferenced for hours.
+func runGC(ctx context.Context, svc *files.Service, m *metrics.Metrics, interval time.Duration, log *slog.Logger) {
+	ticker := time.NewTicker(interval)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			res, err := svc.CollectGarbage(ctx)
+			if err != nil {
+				log.Warn("garbage collection failed", "error", err)
+				continue
+			}
+			m.GCBlobsFreed.Add(float64(res.BlobsFreed))
+			m.GCBytesFreed.Add(float64(res.BytesFreed))
+			if res.TrashPurged > 0 || res.BlobsFreed > 0 {
+				log.Info("garbage collected",
+					"trash_purged", res.TrashPurged,
+					"blobs_freed", res.BlobsFreed,
+					"bytes_freed", res.BytesFreed)
 			}
 		}
 	}

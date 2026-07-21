@@ -17,6 +17,7 @@ import (
 
 	"github.com/guru-bharadwaj20/private-cloud/server/internal/auth"
 	"github.com/guru-bharadwaj20/private-cloud/server/internal/db"
+	"github.com/guru-bharadwaj20/private-cloud/server/internal/files"
 	"github.com/guru-bharadwaj20/private-cloud/server/internal/metrics"
 )
 
@@ -25,6 +26,7 @@ type Server struct {
 	db      *db.DB
 	metrics *metrics.Metrics
 	auth    *auth.Service
+	files   *files.Service
 	version string
 	commit  string
 	started time.Time
@@ -44,7 +46,7 @@ type Options struct {
 	CookieSecure bool
 }
 
-func NewServer(log *slog.Logger, database *db.DB, m *metrics.Metrics, authSvc *auth.Service, opts Options) *Server {
+func NewServer(log *slog.Logger, database *db.DB, m *metrics.Metrics, authSvc *auth.Service, filesSvc *files.Service, opts Options) *Server {
 	if opts.CookieName == "" {
 		opts.CookieName = "pc_session"
 	}
@@ -53,6 +55,7 @@ func NewServer(log *slog.Logger, database *db.DB, m *metrics.Metrics, authSvc *a
 		db:           database,
 		metrics:      m,
 		auth:         authSvc,
+		files:        filesSvc,
 		version:      opts.Version,
 		commit:       opts.Commit,
 		started:      time.Now(),
@@ -87,7 +90,6 @@ func (s *Server) Handler() http.Handler {
 		},
 	))
 
-	// The versioned API surface. Files and uploads arrive in slice 3.
 	mux.HandleFunc("GET /api/v1/version", s.handleVersion)
 
 	// --- auth: unauthenticated, rate limited --------------------------------
@@ -115,6 +117,34 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /api/v1/auth/sessions", s.requireAuth(s.handleListSessions))
 	mux.HandleFunc("DELETE /api/v1/auth/sessions/{id}", s.requireAuth(s.handleRevokeSession))
 	mux.HandleFunc("POST /api/v1/auth/recovery/regenerate", s.requireAuth(s.handleRegenerateRecoveryCodes))
+
+	// --- files ---------------------------------------------------------------
+	// Every route below is requireAuth-wrapped individually. A prefix-matched
+	// "protect everything under /api/v1/nodes" rule would silently stop
+	// protecting the day someone adds a route one path segment to the side.
+	mux.HandleFunc("GET /api/v1/nodes/root", s.requireAuth(s.handleGetRoot))
+	mux.HandleFunc("GET /api/v1/nodes/resolve", s.requireAuth(s.handleResolvePath))
+	mux.HandleFunc("GET /api/v1/nodes/{id}", s.requireAuth(s.handleGetNode))
+	mux.HandleFunc("GET /api/v1/nodes/{id}/children", s.requireAuth(s.handleListChildren))
+	mux.HandleFunc("PATCH /api/v1/nodes/{id}", s.requireAuth(s.handlePatchNode))
+	mux.HandleFunc("DELETE /api/v1/nodes/{id}", s.requireAuth(s.handleTrashNode))
+	mux.HandleFunc("POST /api/v1/folders", s.requireAuth(s.handleCreateFolder))
+
+	// HEAD is registered explicitly. ServeMux does not imply it from GET, and
+	// without it a client checking a file's size before downloading gets a 405.
+	mux.HandleFunc("GET /api/v1/nodes/{id}/content", s.requireAuth(s.handleDownload))
+	mux.HandleFunc("HEAD /api/v1/nodes/{id}/content", s.requireAuth(s.handleDownload))
+	mux.HandleFunc("POST /api/v1/upload", s.requireAuth(s.handleUpload))
+
+	mux.HandleFunc("GET /api/v1/trash", s.requireAuth(s.handleListTrash))
+	mux.HandleFunc("DELETE /api/v1/trash", s.requireAuth(s.handleEmptyTrash))
+	mux.HandleFunc("POST /api/v1/trash/{id}/restore", s.requireAuth(s.handleRestoreNode))
+	mux.HandleFunc("DELETE /api/v1/trash/{id}", s.requireAuth(s.handlePurgeNode))
+
+	mux.HandleFunc("GET /api/v1/usage", s.requireAuth(s.handleUsage))
+
+	// fsck walks the entire blob store and can delete orphans; admin only.
+	mux.HandleFunc("POST /api/v1/admin/fsck", s.requireAdmin(s.handleFsck))
 
 	// Anything else under /api/ gets a JSON 404 rather than net/http's plain
 	// text, so clients can parse every error the same way.

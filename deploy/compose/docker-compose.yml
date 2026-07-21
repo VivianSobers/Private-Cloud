@@ -139,6 +139,12 @@ services:
     networks: [data, edge, monitoring]
     # No ports. The API is reachable only through Caddy, which is itself bound
     # to the Tailscale IP. Publishing a port here would bypass that.
+    #
+    # File content lives on the ZFS dataset, NOT in a Docker volume. That is
+    # what puts it inside sanoid's snapshot schedule and restic's backup set —
+    # a named volume under /var/lib/docker would be silently unprotected.
+    volumes:
+      - ${PC_BLOB_HOST_PATH:-/tank/data/blobs}:/data/blobs
     environment:
       PC_ENV: ${PC_ENV:-prod}
       PC_HTTP_ADDR: ":8080"
@@ -157,7 +163,17 @@ services:
       PC_SESSION_TTL: ${PC_SESSION_TTL:-720h}
       PC_COOKIE_NAME: ${PC_COOKIE_NAME:-pc_session}
       PC_COOKIE_SECURE: ${PC_COOKIE_SECURE:-true}
+      # --- storage ---
+      PC_BLOB_PATH: /data/blobs
+      PC_TRASH_RETENTION: ${PC_TRASH_RETENTION:-720h}
+      PC_BLOB_GC_INTERVAL: ${PC_BLOB_GC_INTERVAL:-6h}
     # distroless/static:nonroot — uid 65532, no shell, no package manager.
+    # read_only applies to the image layers; the blob bind mount above is
+    # writable, which is the one place this container needs to write.
+    #
+    # The host directory must be owned by uid 65532 or the first upload fails
+    # with EACCES at startup:
+    #   sudo install -d -o 65532 -g 65532 -m 0700 /tank/data/blobs
     read_only: true
     security_opt: [no-new-privileges:true]
     cap_drop: [ALL]

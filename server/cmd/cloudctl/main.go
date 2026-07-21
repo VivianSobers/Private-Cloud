@@ -15,6 +15,8 @@
 //	cloudctl user enable <username>
 //	cloudctl recovery regenerate <username>
 //	cloudctl cleanup
+//	cloudctl fsck [--repair]
+//	cloudctl gc
 package main
 
 import (
@@ -29,7 +31,9 @@ import (
 	"github.com/google/uuid"
 
 	"github.com/guru-bharadwaj20/private-cloud/server/internal/auth"
+	"github.com/guru-bharadwaj20/private-cloud/server/internal/blob"
 	"github.com/guru-bharadwaj20/private-cloud/server/internal/db"
+	"github.com/guru-bharadwaj20/private-cloud/server/internal/files"
 )
 
 func main() {
@@ -49,8 +53,11 @@ func usage() {
   user enable <username>          unlock an account
   recovery regenerate <username>  issue a fresh set of recovery codes
   cleanup                         purge expired sessions and ceremonies
+  fsck [--repair]                 compare the blob store against the database
+  gc                              purge expired trash and unreferenced blobs
 
 Requires PC_DATABASE_URL in the environment.
+fsck and gc also require PC_BLOB_PATH.
 `)
 }
 
@@ -66,7 +73,16 @@ func run() error {
 		return fmt.Errorf("PC_DATABASE_URL is not set")
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	// Most commands are a handful of queries and should not hang forever if the
+	// database is wedged. fsck and gc walk the whole blob store, which on a
+	// full pool is minutes of I/O, so they get their own budget instead of
+	// being killed halfway through a scan that reports nothing useful.
+	timeout := 60 * time.Second
+	switch args[0] {
+	case "fsck", "gc":
+		timeout = 6 * time.Hour
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), timeout)
 	defer cancel()
 
 	// Warnings only: routine CLI output should not be buried in info logs.
@@ -105,6 +121,10 @@ func run() error {
 		}
 		fmt.Printf("removed %d expired sessions, %d stale ceremonies\n", sessions, ceremonies)
 		return nil
+	case "fsck":
+		return fsckCommand(ctx, database, log, args[1:])
+	case "gc":
+		return gcCommand(ctx, database, log)
 	case "help", "-h", "--help":
 		usage()
 		return nil
@@ -258,6 +278,108 @@ func recoveryCommand(ctx context.Context, store *auth.Store, svc *auth.Service, 
 	fmt.Printf("new recovery codes for %q (previous codes are now invalid)\n\n", user.Username)
 	printCodes(codes)
 	return nil
+}
+
+// --- storage ----------------------------------------------------------------
+
+// filesService builds the files service the storage commands need. Kept
+// separate from the auth wiring above because fsck has no business opening a
+// WebAuthn configuration.
+func filesService(database *db.DB, log *slog.Logger) (*files.Service, error) {
+	path := os.Getenv("PC_BLOB_PATH")
+	if path == "" {
+		return nil, fmt.Errorf("PC_BLOB_PATH is not set")
+	}
+	store, err := blob.NewFSStore(path)
+	if err != nil {
+		return nil, err
+	}
+	return files.NewService(files.NewStore(database.Pool), store, log), nil
+}
+
+func fsckCommand(ctx context.Context, database *db.DB, log *slog.Logger, args []string) error {
+	repair := len(args) > 0 && args[0] == "--repair"
+
+	svc, err := filesService(database, log)
+	if err != nil {
+		return err
+	}
+
+	report, err := svc.Fsck(ctx, repair)
+	if err != nil {
+		return err
+	}
+
+	fmt.Printf("checked %d blob(s) on disk\n", report.Checked)
+	fmt.Printf("orphans (on disk, no database row): %d (%s)\n",
+		len(report.Orphans), humanBytes(report.OrphanBytes))
+
+	// Missing content is the one finding that is not self-healing. Print every
+	// key rather than a count, because the response is a restore from backup
+	// and that needs to know exactly what to look for.
+	if len(report.Missing) > 0 {
+		fmt.Printf("\nMISSING CONTENT — %d file(s) have database rows but no bytes.\n", len(report.Missing))
+		fmt.Println("This is data loss. Restore from a snapshot or from restic; see")
+		fmt.Println("docs/runbook-restore.md.")
+		for _, k := range report.Missing {
+			fmt.Printf("    %s\n", k)
+		}
+	}
+	if len(report.SizeMismatch) > 0 {
+		fmt.Printf("\nSIZE MISMATCH — %d blob(s) disagree with their recorded size:\n", len(report.SizeMismatch))
+		for _, m := range report.SizeMismatch {
+			fmt.Printf("    %s\n", m)
+		}
+	}
+
+	if repair {
+		fmt.Printf("\nrepaired: removed %d orphan(s) and %d leftover temp file(s)\n",
+			len(report.Orphans), report.TempFilesRemoved)
+	} else if len(report.Orphans) > 0 {
+		fmt.Println("\nrun `cloudctl fsck --repair` to delete the orphans")
+	}
+
+	// Non-zero exit on data loss so a cron wrapper notices without parsing text.
+	if len(report.Missing) > 0 || len(report.SizeMismatch) > 0 {
+		return fmt.Errorf("fsck found %d missing and %d mismatched blob(s)",
+			len(report.Missing), len(report.SizeMismatch))
+	}
+	return nil
+}
+
+func gcCommand(ctx context.Context, database *db.DB, log *slog.Logger) error {
+	svc, err := filesService(database, log)
+	if err != nil {
+		return err
+	}
+	if v := os.Getenv("PC_TRASH_RETENTION"); v != "" {
+		d, err := time.ParseDuration(v)
+		if err != nil {
+			return fmt.Errorf("PC_TRASH_RETENTION: %w", err)
+		}
+		svc.TrashRetention = d
+	}
+
+	res, err := svc.CollectGarbage(ctx)
+	if err != nil {
+		return err
+	}
+	fmt.Printf("purged %d expired trash item(s)\n", res.TrashPurged)
+	fmt.Printf("freed %d blob(s), %s\n", res.BlobsFreed, humanBytes(res.BytesFreed))
+	return nil
+}
+
+func humanBytes(n int64) string {
+	const unit = 1024
+	if n < unit {
+		return fmt.Sprintf("%d B", n)
+	}
+	div, exp := int64(unit), 0
+	for m := n / unit; m >= unit; m /= unit {
+		div *= unit
+		exp++
+	}
+	return fmt.Sprintf("%.1f %ciB", float64(n)/float64(div), "KMGTPE"[exp])
 }
 
 func printCodes(codes []string) {
