@@ -4,6 +4,8 @@ import (
 	"context"
 	"fmt"
 	"time"
+
+	"github.com/google/uuid"
 )
 
 // ChunkRef identifies a stored chunk for the garbage collector and fsck.
@@ -83,6 +85,59 @@ func (s *Store) UnreferencedChunks(ctx context.Context, grace time.Duration, lim
 // this race would corrupt a file for someone who was never involved.
 func (s *Store) DeleteChunkRow(ctx context.Context, hash [32]byte) (bool, error) {
 	tag, err := s.pool.Exec(ctx, `DELETE FROM chunks WHERE hash = $1 AND refcount = 0`, hash[:])
+	if err != nil {
+		return false, err
+	}
+	return tag.RowsAffected() > 0, nil
+}
+
+// UnreferencedManifests lists manifests no file version points at any more.
+//
+// Purging a trashed file deletes its version rows; the manifest survives
+// because nothing cascades to it (file_versions -> manifests is RESTRICT, and
+// RESTRICT guards the other direction). This is the pass that reaps them.
+// Deleting a manifest cascades its manifest_chunks rows, and the refcount
+// trigger walks each chunk down — which is what feeds UnreferencedChunks on
+// the next pass. The chain is: version rows -> manifests -> chunk rows ->
+// chunk bytes, each step reclaimed by the step before it.
+//
+// The grace period covers the write ordering: cas.Write commits a manifest
+// BEFORE PutFile inserts the version referencing it, so an upload in flight
+// legitimately owns an unreferenced manifest for the length of that gap.
+func (s *Store) UnreferencedManifests(ctx context.Context, grace time.Duration, limit int) ([]uuid.UUID, error) {
+	rows, err := s.pool.Query(ctx, `
+		SELECT m.id FROM manifests m
+		WHERE NOT EXISTS (SELECT 1 FROM file_versions v WHERE v.manifest_id = m.id)
+		  AND m.created_at < now() - $1::interval
+		ORDER BY m.created_at
+		LIMIT $2`, grace.String(), limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var out []uuid.UUID
+	for rows.Next() {
+		var id uuid.UUID
+		if err := rows.Scan(&id); err != nil {
+			return nil, err
+		}
+		out = append(out, id)
+	}
+	return out, rows.Err()
+}
+
+// DeleteManifestRow removes a manifest, but only if it is STILL unreferenced.
+//
+// The NOT EXISTS re-check inside the delete closes the window in which an
+// identical upload could have reused this manifest between listing and
+// deletion — manifest reuse makes that race real, not hypothetical, and losing
+// it would sever a freshly uploaded file from its content.
+func (s *Store) DeleteManifestRow(ctx context.Context, id uuid.UUID) (bool, error) {
+	tag, err := s.pool.Exec(ctx, `
+		DELETE FROM manifests m
+		WHERE m.id = $1
+		  AND NOT EXISTS (SELECT 1 FROM file_versions v WHERE v.manifest_id = m.id)`, id)
 	if err != nil {
 		return false, err
 	}
