@@ -529,3 +529,37 @@ func seedBlobBackedVersion(t *testing.T, d *DB) {
 		t.Fatalf("insert blob-backed version: %v", err)
 	}
 }
+
+// The race this guards: two processes migrating one fresh database both read
+// "no version", both start issuing DDL, and one dies with "relation already
+// exists" — which is what `go test ./...` does to the shared test database
+// when two packages' fixtures start simultaneously. Migrate holds a Postgres
+// advisory lock for the duration, so the loser waits and then no-ops.
+//
+// One process cannot truly impersonate several (an in-process mutex also
+// serialises these goroutines), but this pins the behaviour the lock and the
+// mutex must jointly provide: N concurrent Migrate calls on an empty database
+// all succeed and the schema comes out at the latest version exactly once.
+func TestConcurrentMigratorsSerialize(t *testing.T) {
+	scratch := scratchDB(t)
+	ctx := context.Background()
+
+	const migrators = 4
+	errs := make(chan error, migrators)
+	for range migrators {
+		go func() { errs <- scratch.Migrate(ctx, quietLog()) }()
+	}
+	for range migrators {
+		if err := <-errs; err != nil {
+			t.Fatalf("concurrent Migrate: %v", err)
+		}
+	}
+
+	got, err := scratch.SchemaVersion(ctx)
+	if err != nil {
+		t.Fatalf("schema version: %v", err)
+	}
+	if want := latestVersion(t); got != want {
+		t.Fatalf("schema at version %d after concurrent migrators, want %d", got, want)
+	}
+}
