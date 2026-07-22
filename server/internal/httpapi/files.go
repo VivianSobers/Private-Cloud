@@ -46,8 +46,15 @@ func nodeJSON(n *files.Node) map[string]any {
 	if n.IsFile() {
 		out["size"] = n.Size
 		out["mime"] = n.MIME
-		if len(n.SHA256) > 0 {
-			out["sha256"] = hex.EncodeToString(n.SHA256)
+		// The key names the algorithm so the value stays verifiable: SHA-256
+		// for whole-file blobs, BLAKE3-256 for chunked (manifest-backed) files.
+		// A client that wants to check a download needs to know which to run.
+		if len(n.ContentHash) > 0 {
+			if n.ManifestID != nil {
+				out["blake3"] = hex.EncodeToString(n.ContentHash)
+			} else {
+				out["sha256"] = hex.EncodeToString(n.ContentHash)
+			}
 		}
 	}
 	if n.TrashedAt != nil {
@@ -479,9 +486,11 @@ func (s *Server) handleDownload(w http.ResponseWriter, r *http.Request) {
 
 	// A strong ETag: the content hash genuinely identifies the bytes, so a
 	// client can cache indefinitely and revalidate cheaply. Versions are
-	// immutable, so this never goes stale for the wrong reason.
-	if len(node.SHA256) > 0 {
-		w.Header().Set("ETag", `"`+hex.EncodeToString(node.SHA256)+`"`)
+	// immutable, so this never goes stale for the wrong reason. Which algorithm
+	// produced it (SHA-256 or BLAKE3) is irrelevant here — an ETag is an opaque
+	// identity, and both are unique per content.
+	if len(node.ContentHash) > 0 {
+		w.Header().Set("ETag", `"`+hex.EncodeToString(node.ContentHash)+`"`)
 	}
 
 	w.Header().Set("Content-Type", node.MIME)

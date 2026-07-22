@@ -29,7 +29,10 @@ export interface Node {
   parent_id?: string;
   size?: number;
   mime?: string;
+  /** Whole-file hash; the key names the algorithm. sha256 for whole-file
+   *  blobs, blake3 for chunked (content-addressed) files. */
   sha256?: string;
+  blake3?: string;
   trashed_at?: string;
   created_at: string;
   updated_at: string;

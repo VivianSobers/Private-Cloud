@@ -404,8 +404,8 @@ func (i *fileInfo) Sys() any           { return i.n }
 // identifies the bytes, so a client can cache indefinitely and revalidate
 // cheaply — and versions are immutable, so it never goes stale wrongly.
 func (i *fileInfo) ETag(context.Context) (string, error) {
-	if i.n.IsFile() && len(i.n.SHA256) > 0 {
-		return fmt.Sprintf(`"%x"`, i.n.SHA256), nil
+	if i.n.IsFile() && len(i.n.ContentHash) > 0 {
+		return fmt.Sprintf(`"%x"`, i.n.ContentHash), nil
 	}
 	// Returning ErrNotImplemented tells webdav.Handler to fall back to its
 	// default modtime+size ETag rather than failing the request.

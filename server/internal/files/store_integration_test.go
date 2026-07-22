@@ -296,7 +296,7 @@ func TestUploadAndReadBack(t *testing.T) {
 		t.Errorf("size = %d, want %d", node.Size, len(content))
 	}
 	want := sha256.Sum256([]byte(content))
-	if fmt.Sprintf("%x", node.SHA256) != fmt.Sprintf("%x", want) {
+	if fmt.Sprintf("%x", node.ContentHash) != fmt.Sprintf("%x", want) {
 		t.Error("stored hash does not match the content")
 	}
 	if !strings.HasPrefix(node.MIME, "text/plain") {

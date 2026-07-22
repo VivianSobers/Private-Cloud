@@ -130,7 +130,7 @@ func (s *Store) Search(ctx context.Context, ownerID uuid.UUID, q SearchQuery) ([
 		if err := rows.Scan(
 			&n.ID, &n.OwnerID, &n.ParentID, &n.Kind, &n.Name, &n.Path,
 			&n.HeadVersionID, &n.TrashedAt, &n.TrashedRootID, &n.CreatedAt, &n.UpdatedAt,
-			&size, &mime, &sha, &key, &score, &matchedPath,
+			&size, &mime, &sha, &key, &n.ManifestID, &score, &matchedPath,
 		); err != nil {
 			return nil, err
 		}
@@ -140,7 +140,7 @@ func (s *Store) Search(ctx context.Context, ownerID uuid.UUID, q SearchQuery) ([
 		if mime != nil {
 			n.MIME = *mime
 		}
-		n.SHA256 = sha
+		n.ContentHash = sha
 		if key != nil {
 			n.BlobKey = *key
 		}

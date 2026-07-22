@@ -34,28 +34,31 @@ func uniqueViolation(err error) bool {
 // nodeCols joins through to the head version so a listing does not need a
 // second query per file to learn its size — the N+1 that makes folder listings
 // feel slow once a directory has a few hundred entries.
+// coalesce over the two storage formats: a version points at a blob OR a
+// manifest (schema CHECK), so exactly one hash column is non-NULL.
 const nodeCols = `
 	n.id, n.owner_id, n.parent_id, n.kind, n.name, n.path,
 	n.head_version_id, n.trashed_at, n.trashed_root_id, n.created_at, n.updated_at,
-	v.size, v.mime, b.sha256, b.storage_key`
+	v.size, v.mime, coalesce(b.sha256, m.content_hash), b.storage_key, v.manifest_id`
 
 const nodeFrom = `
 	FROM nodes n
 	LEFT JOIN file_versions v ON v.id = n.head_version_id
-	LEFT JOIN blobs b         ON b.id = v.blob_id`
+	LEFT JOIN blobs b         ON b.id = v.blob_id
+	LEFT JOIN manifests m     ON m.id = v.manifest_id`
 
 func scanNode(row pgx.Row) (*Node, error) {
 	var (
 		n    Node
 		size *int64
 		mime *string
-		sha  []byte
+		hash []byte
 		key  *string
 	)
 	err := row.Scan(
 		&n.ID, &n.OwnerID, &n.ParentID, &n.Kind, &n.Name, &n.Path,
 		&n.HeadVersionID, &n.TrashedAt, &n.TrashedRootID, &n.CreatedAt, &n.UpdatedAt,
-		&size, &mime, &sha, &key,
+		&size, &mime, &hash, &key, &n.ManifestID,
 	)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, ErrNotFound
@@ -69,7 +72,7 @@ func scanNode(row pgx.Row) (*Node, error) {
 	if mime != nil {
 		n.MIME = *mime
 	}
-	n.SHA256 = sha
+	n.ContentHash = hash
 	if key != nil {
 		n.BlobKey = *key
 	}
@@ -217,16 +220,23 @@ func (s *Store) CreateFolder(ctx context.Context, ownerID, parentID uuid.UUID, n
 	return s.Get(ctx, ownerID, id)
 }
 
-// PutFileInput carries the result of a completed blob write.
+// PutFileInput carries the result of a completed content write, in exactly one
+// of the two storage formats: a whole-file blob (BlobKey + SHA256) or a CAS
+// manifest (ManifestID). The schema enforces the same exclusivity with a CHECK
+// constraint; validating it here too turns a wiring mistake into an error at
+// the call site instead of a constraint violation two layers down.
 type PutFileInput struct {
 	OwnerID  uuid.UUID
 	ParentID uuid.UUID
 	Name     string
 
 	BlobKey string
-	Size    int64
 	SHA256  []byte
-	MIME    string
+
+	ManifestID uuid.UUID
+
+	Size int64
+	MIME string
 }
 
 // PutFile records an already-written blob as a file.
@@ -242,6 +252,9 @@ type PutFileInput struct {
 func (s *Store) PutFile(ctx context.Context, in PutFileInput) (*Node, error) {
 	if err := ValidateName(in.Name); err != nil {
 		return nil, err
+	}
+	if (in.BlobKey == "") == (in.ManifestID == uuid.Nil) {
+		return nil, fmt.Errorf("PutFile requires exactly one of BlobKey or ManifestID")
 	}
 	if in.MIME == "" {
 		in.MIME = "application/octet-stream"
@@ -278,11 +291,22 @@ func (s *Store) PutFile(ctx context.Context, in PutFileInput) (*Node, error) {
 		return nil, err
 	}
 
-	var blobID uuid.UUID
-	if err := tx.QueryRow(ctx, `
-		INSERT INTO blobs (storage_key, size, sha256) VALUES ($1,$2,$3) RETURNING id`,
-		in.BlobKey, in.Size, in.SHA256).Scan(&blobID); err != nil {
-		return nil, fmt.Errorf("record blob: %w", err)
+	// The blob row exists only for whole-file storage. A manifest-backed version
+	// references the manifest committed by cas.Write — the chunk rows and their
+	// bytes are already durable by the time this transaction starts, the same
+	// bytes-before-row ordering the blob path relies on.
+	var blobID *uuid.UUID
+	if in.BlobKey != "" {
+		blobID = new(uuid.UUID)
+		if err := tx.QueryRow(ctx, `
+			INSERT INTO blobs (storage_key, size, sha256) VALUES ($1,$2,$3) RETURNING id`,
+			in.BlobKey, in.Size, in.SHA256).Scan(blobID); err != nil {
+			return nil, fmt.Errorf("record blob: %w", err)
+		}
+	}
+	var manifestID *uuid.UUID
+	if in.ManifestID != uuid.Nil {
+		manifestID = &in.ManifestID
 	}
 
 	// Is there already a live sibling with this name?
@@ -319,9 +343,9 @@ func (s *Store) PutFile(ctx context.Context, in PutFileInput) (*Node, error) {
 
 	var versionID uuid.UUID
 	if err := tx.QueryRow(ctx, `
-		INSERT INTO file_versions (node_id, blob_id, size, mime, created_by)
-		VALUES ($1,$2,$3,$4,$5) RETURNING id`,
-		nodeID, blobID, in.Size, in.MIME, in.OwnerID).Scan(&versionID); err != nil {
+		INSERT INTO file_versions (node_id, blob_id, manifest_id, size, mime, created_by)
+		VALUES ($1,$2,$3,$4,$5,$6) RETURNING id`,
+		nodeID, blobID, manifestID, in.Size, in.MIME, in.OwnerID).Scan(&versionID); err != nil {
 		return nil, fmt.Errorf("create version: %w", err)
 	}
 

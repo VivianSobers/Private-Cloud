@@ -59,11 +59,17 @@ type Node struct {
 	// Populated for files, from the head version. Zero for folders.
 	Size int64
 	MIME string
-	// SHA256 of the whole file, used for the download ETag.
-	SHA256 []byte
+	// ContentHash identifies the whole file's bytes: SHA-256 for blob-backed
+	// versions, BLAKE3-256 for manifest-backed ones. Both are strong download
+	// ETags; the API labels which algorithm it is so the value stays honest.
+	ContentHash []byte
 	// BlobKey is never exposed over the API — it is storage-layer detail that
-	// would leak the on-disk layout.
+	// would leak the on-disk layout. Empty for manifest-backed versions.
 	BlobKey string
+	// ManifestID is set when the head version is stored as CAS chunks rather
+	// than a whole-file blob. Exactly one of BlobKey/ManifestID is set for a
+	// file — the same invariant the schema enforces with a CHECK constraint.
+	ManifestID *uuid.UUID
 }
 
 func (n *Node) IsFolder() bool  { return n.Kind == KindFolder }

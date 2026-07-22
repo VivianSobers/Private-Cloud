@@ -164,12 +164,12 @@ func folderNode(name string) *files.Node {
 
 func fileNode(name string, size int64, sum []byte) *files.Node {
 	return &files.Node{
-		Kind:      files.KindFile,
-		Name:      name,
-		Path:      "/" + name,
-		Size:      size,
-		SHA256:    sum,
-		UpdatedAt: time.Date(2026, 3, 2, 9, 30, 0, 0, time.UTC),
+		Kind:        files.KindFile,
+		Name:        name,
+		Path:        "/" + name,
+		Size:        size,
+		ContentHash: sum,
+		UpdatedAt:   time.Date(2026, 3, 2, 9, 30, 0, 0, time.UTC),
 	}
 }
 
