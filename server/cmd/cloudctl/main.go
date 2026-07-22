@@ -405,7 +405,8 @@ func gcCommand(ctx context.Context, database *db.DB, log *slog.Logger) error {
 	fmt.Printf("freed %d blob(s), %s\n", res.BlobsFreed, humanBytes(res.BytesFreed))
 	fmt.Printf("expired %d abandoned upload(s), swept %d staging file(s)\n",
 		res.UploadsExpired, res.StagingFreed)
-	fmt.Printf("freed %d chunk(s), %s\n", res.ChunksFreed, humanBytes(res.ChunkBytesFreed))
+	fmt.Printf("freed %d manifest(s), %d chunk(s), %s\n",
+		res.ManifestsFreed, res.ChunksFreed, humanBytes(res.ChunkBytesFreed))
 	return nil
 }
 

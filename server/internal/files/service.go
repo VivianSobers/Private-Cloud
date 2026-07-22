@@ -1,6 +1,7 @@
 package files
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -88,15 +89,37 @@ func (s *Service) stagingStore() blob.Stager { return s.stager }
 // Ordering is deliberate and load-bearing:
 //
 //  1. write the bytes, fsync, rename into place
-//  2. insert the blob row, the node and the version in one transaction
+//  2. insert the storage rows, the node and the version in one transaction
 //
-// A crash between the two leaves an unreferenced blob, which the GC reclaims.
+// A crash between the two leaves unreferenced content, which the GC reclaims.
 // Doing it the other way round would leave a file the UI lists, the API
 // describes, and nobody can download — a failure that no background job can
 // repair because the bytes were never written.
+//
+// With CAS configured, content at or above cas.WholeFileThreshold goes through
+// the chunker; smaller files stay whole-file blobs permanently (a manifest row
+// plus a chunk row to describe 900 bytes is pure overhead). The stream's length
+// is unknown here, so the router reads exactly one threshold's worth to decide
+// — small files fit entirely in that peek, and anything that fills it is big
+// enough to chunk.
 func (s *Service) Upload(ctx context.Context, ownerID, parentID uuid.UUID, name string, r io.Reader, declaredMIME string) (*Node, error) {
 	if err := ValidateName(name); err != nil {
 		return nil, err
+	}
+
+	if s.cas != nil {
+		head := make([]byte, cas.WholeFileThreshold)
+		n, err := io.ReadFull(r, head)
+		switch {
+		case errors.Is(err, io.EOF), errors.Is(err, io.ErrUnexpectedEOF):
+			// The whole file fits below the threshold: whole-blob path.
+			r = bytes.NewReader(head[:n])
+		case err != nil:
+			return nil, fmt.Errorf("read upload: %w", err)
+		default:
+			return s.uploadViaCAS(ctx, ownerID, parentID, name,
+				io.MultiReader(bytes.NewReader(head), r), declaredMIME)
+		}
 	}
 
 	res, err := s.blobs.Put(ctx, r)
@@ -126,7 +149,48 @@ func (s *Service) Upload(ctx context.Context, ownerID, parentID uuid.UUID, name 
 	return node, nil
 }
 
-// Open returns the content of a file's head version.
+// uploadViaCAS chunks r and records the file as a manifest-backed version.
+func (s *Service) uploadViaCAS(ctx context.Context, ownerID, parentID uuid.UUID, name string, r io.Reader, declaredMIME string) (*Node, error) {
+	res, err := s.cas.Write(ctx, r)
+	if err != nil {
+		return nil, fmt.Errorf("store content: %w", err)
+	}
+
+	node, err := s.store.PutFile(ctx, PutFileInput{
+		OwnerID:    ownerID,
+		ParentID:   parentID,
+		Name:       name,
+		ManifestID: res.Manifest.ID,
+		Size:       res.LogicalSize,
+		MIME:       DetectMIME(name, declaredMIME),
+	})
+	if err != nil {
+		s.dropOrphanManifest(ctx, res)
+		return nil, err
+	}
+	return node, nil
+}
+
+// dropOrphanManifest is the best-effort cleanup after a failed manifest-backed
+// PutFile. Only the manifest row is deleted — NEVER chunk bytes directly, which
+// may be shared with other files the moment they exist. The delete re-checks
+// that nothing references the manifest, its cascade walks the chunk refcounts
+// down, and the chunk GC reclaims whatever lands on zero. If even this fails,
+// the manifest is still unreferenced and the GC's manifest pass is the backstop.
+func (s *Service) dropOrphanManifest(ctx context.Context, res *cas.WriteResult) {
+	if res.ReusedManifest {
+		// The manifest belongs to another live file; there is nothing to clean.
+		return
+	}
+	if _, err := s.cas.DeleteManifestRow(context.WithoutCancel(ctx), res.Manifest.ID); err != nil {
+		s.log.Warn("could not remove manifest after failed upload",
+			"manifest_id", res.Manifest.ID, "error", err)
+	}
+}
+
+// Open returns the content of a file's head version, reassembling from chunks
+// when the version is manifest-backed. Both readers seek, which is what lets
+// http.ServeContent answer Range requests either way.
 func (s *Service) Open(ctx context.Context, ownerID, id uuid.UUID) (*Node, io.ReadSeekCloser, error) {
 	node, err := s.store.GetLive(ctx, ownerID, id)
 	if err != nil {
@@ -135,6 +199,21 @@ func (s *Service) Open(ctx context.Context, ownerID, id uuid.UUID) (*Node, io.Re
 	if !node.IsFile() {
 		return nil, nil, ErrNotAFile
 	}
+
+	if node.ManifestID != nil {
+		if s.cas == nil {
+			// A manifest-backed file with CAS unconfigured is a deployment error,
+			// not a data error — the rows and chunks are fine, this process just
+			// cannot read them.
+			return nil, nil, fmt.Errorf("file %q is content-addressed but CAS is not configured", node.Name)
+		}
+		rc, err := s.cas.Open(ctx, *node.ManifestID)
+		if err != nil {
+			return nil, nil, err
+		}
+		return node, rc, nil
+	}
+
 	if node.BlobKey == "" {
 		return nil, nil, fmt.Errorf("file %s has no content", node.ID)
 	}
@@ -153,6 +232,75 @@ func (s *Service) Open(ctx context.Context, ownerID, id uuid.UUID) (*Node, io.Re
 	return node, rc, nil
 }
 
+// FinishStaged turns a completed staging file into a stored file, choosing the
+// storage format: CAS chunks at or above cas.WholeFileThreshold, a whole-file
+// blob below it. Both the resumable-upload finish and WebDAV's write handle end
+// here, so the format decision lives in exactly one place.
+//
+// sha256 is the whole-file digest accumulated while the bytes arrived; it is
+// recorded on the blob path and unused on the CAS path, where the manifest's
+// BLAKE3 serves as the content hash.
+func (s *Service) FinishStaged(ctx context.Context, ownerID, parentID uuid.UUID, name, stagingKey string, size int64, sha256 []byte, mime string) (*Node, error) {
+	if s.stager == nil {
+		return nil, errors.New("the configured storage backend does not support staged writes")
+	}
+	if s.cas != nil && size >= cas.WholeFileThreshold {
+		// The staging file lives inside the blob root, so the store can open it
+		// by its key directly — no rename, no second copy. It is removed only
+		// after the version exists; until then a crash leaves a session the GC
+		// can still account for.
+		rc, err := s.blobs.Open(ctx, stagingKey)
+		if err != nil {
+			return nil, fmt.Errorf("open staged upload: %w", err)
+		}
+		res, err := s.cas.Write(ctx, rc)
+		rc.Close()
+		if err != nil {
+			return nil, fmt.Errorf("store content: %w", err)
+		}
+
+		node, err := s.store.PutFile(ctx, PutFileInput{
+			OwnerID:    ownerID,
+			ParentID:   parentID,
+			Name:       name,
+			ManifestID: res.Manifest.ID,
+			Size:       res.LogicalSize,
+			MIME:       mime,
+		})
+		if err != nil {
+			s.dropOrphanManifest(ctx, res)
+			return nil, err
+		}
+		if err := s.stagingStore().RemovePartial(stagingKey); err != nil {
+			s.log.Warn("could not remove staging file after chunked finish",
+				"key", stagingKey, "error", err)
+		}
+		return node, nil
+	}
+
+	blobKey, err := s.stagingStore().CommitPartial(stagingKey)
+	if err != nil {
+		return nil, err
+	}
+	node, err := s.store.PutFile(ctx, PutFileInput{
+		OwnerID:  ownerID,
+		ParentID: parentID,
+		Name:     name,
+		BlobKey:  blobKey,
+		Size:     size,
+		SHA256:   sha256,
+		MIME:     mime,
+	})
+	if err != nil {
+		if delErr := s.blobs.Delete(context.WithoutCancel(ctx), blobKey); delErr != nil {
+			s.log.Warn("could not remove blob after failed staged finish",
+				"key", blobKey, "error", delErr)
+		}
+		return nil, err
+	}
+	return node, nil
+}
+
 // --- garbage collection -----------------------------------------------------
 
 type GCResult struct {
@@ -162,6 +310,7 @@ type GCResult struct {
 	UploadsExpired int
 	StagingFreed   int
 
+	ManifestsFreed  int
 	ChunksFreed     int
 	ChunkBytesFreed int64
 }
@@ -213,6 +362,16 @@ func (s *Service) CollectGarbage(ctx context.Context) (GCResult, error) {
 		res.BytesFreed += b.Size
 	}
 
+	// Manifests before chunks, deliberately: deleting a manifest is what walks
+	// its chunks' refcounts to zero, so this ordering lets a single GC pass
+	// reclaim a purged file all the way down to its bytes instead of leaving
+	// the chunks for the next run.
+	manifestsFreed, err := s.collectManifests(ctx)
+	if err != nil {
+		return res, err
+	}
+	res.ManifestsFreed = manifestsFreed
+
 	chunksFreed, chunkBytes, err := s.collectChunks(ctx)
 	if err != nil {
 		return res, err
@@ -220,6 +379,34 @@ func (s *Service) CollectGarbage(ctx context.Context) (GCResult, error) {
 	res.ChunksFreed, res.ChunkBytesFreed = chunksFreed, chunkBytes
 
 	return res, nil
+}
+
+// collectManifests reaps manifests no file version references any more —
+// the residue of purged trash and of failed uploads.
+func (s *Service) collectManifests(ctx context.Context) (int, error) {
+	if s.cas == nil {
+		return 0, nil
+	}
+
+	candidates, err := s.cas.UnreferencedManifests(ctx, s.BlobGCGrace, 1000)
+	if err != nil {
+		return 0, fmt.Errorf("list unreferenced manifests: %w", err)
+	}
+
+	var freed int
+	for _, id := range candidates {
+		// Re-checks inside the delete: manifest reuse means an identical upload
+		// can claim this manifest between the list and now, and losing that
+		// race must be a no-op rather than severing a fresh file's content.
+		deleted, err := s.cas.DeleteManifestRow(ctx, id)
+		if err != nil {
+			return freed, fmt.Errorf("delete manifest row: %w", err)
+		}
+		if deleted {
+			freed++
+		}
+	}
+	return freed, nil
 }
 
 // collectChunks reclaims chunks no manifest references any more.

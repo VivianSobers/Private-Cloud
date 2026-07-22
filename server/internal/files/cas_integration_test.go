@@ -11,6 +11,7 @@ import (
 
 	"github.com/guru-bharadwaj20/private-cloud/server/internal/blob"
 	"github.com/guru-bharadwaj20/private-cloud/server/internal/cas"
+	"github.com/guru-bharadwaj20/private-cloud/server/internal/files"
 )
 
 // These tests exist because of a real defect, not a hypothetical one.
@@ -165,13 +166,23 @@ func TestFsckReportsMissingChunks(t *testing.T) {
 func TestChunkGCReclaimsUnreferencedChunks(t *testing.T) {
 	f, store := casFixture(t)
 
+	// A manifest is "live" only while a file version references it. Since
+	// slice 1b the GC reaps orphaned manifests itself, so the referenced state
+	// has to be real here, not just "the manifest row exists".
 	res, err := store.Write(f.ctx, bytes.NewReader(casData(128<<10, 4)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	node, err := f.store.PutFile(f.ctx, files.PutFileInput{
+		OwnerID: f.user, ParentID: f.root, Name: "gc-victim.bin",
+		ManifestID: res.Manifest.ID, Size: res.LogicalSize,
+	})
 	if err != nil {
 		t.Fatal(err)
 	}
 	f.svc.BlobGCGrace = 0
 
-	// Referenced: GC must not touch it.
+	// Referenced by a live version: GC must not touch manifest or chunks.
 	if _, err := f.svc.CollectGarbage(f.ctx); err != nil {
 		t.Fatal(err)
 	}
@@ -181,15 +192,23 @@ func TestChunkGCReclaimsUnreferencedChunks(t *testing.T) {
 	}
 	rc.Close()
 
-	// Dropping the manifest cascades manifest_chunks away, and the trigger
-	// should take every refcount to zero.
-	if _, err := f.store.Pool().Exec(f.ctx, `DELETE FROM manifests WHERE id = $1`, res.Manifest.ID); err != nil {
+	// Trash and purge the file. The version rows cascade away, orphaning the
+	// manifest; the GC's manifest pass must then walk the whole chain down:
+	// manifest row -> manifest_chunks cascade -> refcount trigger -> chunk
+	// rows -> chunk bytes.
+	if _, err := f.store.Trash(f.ctx, f.user, node.ID); err != nil {
+		t.Fatal(err)
+	}
+	if err := f.store.Purge(f.ctx, f.user, node.ID); err != nil {
 		t.Fatal(err)
 	}
 
 	gc, err := f.svc.CollectGarbage(f.ctx)
 	if err != nil {
 		t.Fatal(err)
+	}
+	if gc.ManifestsFreed == 0 {
+		t.Error("GC freed no manifests after the referencing version was purged")
 	}
 	if gc.ChunksFreed == 0 {
 		t.Error("GC freed no chunks after the manifest was deleted — " +

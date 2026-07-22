@@ -323,28 +323,12 @@ func (h *writeHandle) Close() error {
 	}
 	h.closed = true
 
-	blobKey, err := h.stager.CommitPartial(h.stagingKey)
+	// FinishStaged owns the storage-format decision (CAS chunks above the
+	// threshold, whole-file blob below) and the cleanup when recording fails —
+	// the same single path the resumable-upload finish goes through.
+	_, err := h.fs.svc.FinishStaged(h.ctx, h.fs.ownerID, h.parentID, h.name,
+		h.stagingKey, h.written, h.hasher.Sum(nil), files.DetectMIME(h.name, ""))
 	if err != nil {
-		return err
-	}
-
-	_, err = h.fs.svc.Store().PutFile(h.ctx, files.PutFileInput{
-		OwnerID:  h.fs.ownerID,
-		ParentID: h.parentID,
-		Name:     h.name,
-		BlobKey:  blobKey,
-		Size:     h.written,
-		SHA256:   h.hasher.Sum(nil),
-		MIME:     files.DetectMIME(h.name, ""),
-	})
-	if err != nil {
-		// The bytes are committed but unreferenced. Removing them now is the
-		// tidy path; if it fails the GC still reclaims them, so nothing leaks
-		// permanently either way.
-		if delErr := h.fs.svc.Blobs().Delete(context.WithoutCancel(h.ctx), blobKey); delErr != nil {
-			h.fs.log.Warn("could not remove blob after failed WebDAV write",
-				"key", blobKey, "error", delErr)
-		}
 		return translate(err)
 	}
 	return nil

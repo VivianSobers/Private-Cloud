@@ -391,31 +391,17 @@ func (s *Service) FinishUpload(ctx context.Context, ownerID, id uuid.UUID) (*Nod
 		return nil, fmt.Errorf("staged upload is %d bytes, expected %d", onDisk, sess.Size)
 	}
 
-	blobKey, err := s.stagingStore().CommitPartial(sess.StagingKey)
+	// FinishStaged owns the storage-format decision (CAS chunks vs whole-file
+	// blob) and the cleanup on failure, for this path and WebDAV's alike.
+	node, err := s.FinishStaged(ctx, sess.OwnerID, sess.ParentID, sess.Name,
+		sess.StagingKey, sess.Size, hasher.Sum(nil), sess.MIME)
 	if err != nil {
 		return nil, err
 	}
 
-	node, err := s.store.PutFile(ctx, PutFileInput{
-		OwnerID:  sess.OwnerID,
-		ParentID: sess.ParentID,
-		Name:     sess.Name,
-		BlobKey:  blobKey,
-		Size:     sess.Size,
-		SHA256:   hasher.Sum(nil),
-		MIME:     sess.MIME,
-	})
-	if err != nil {
-		if delErr := s.blobs.Delete(context.WithoutCancel(ctx), blobKey); delErr != nil {
-			s.log.Warn("could not remove blob after failed upload finish",
-				"key", blobKey, "error", delErr)
-		}
-		return nil, err
-	}
-
-	// The staging file has been renamed away, so deleting the row cannot orphan
-	// anything. Done after the node exists so a failure here is merely a stale
-	// session the GC cleans up, not a lost file.
+	// The staging file is gone (renamed or chunked away), so deleting the row
+	// cannot orphan anything. Done after the node exists so a failure here is
+	// merely a stale session the GC cleans up, not a lost file.
 	if err := s.store.DeleteUpload(ctx, ownerID, id); err != nil {
 		s.log.Warn("could not delete finished upload session", "upload_id", id, "error", err)
 	}
