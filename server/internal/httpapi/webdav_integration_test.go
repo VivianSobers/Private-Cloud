@@ -183,6 +183,26 @@ func TestDavFullLifecycle(t *testing.T) {
 	trash := f.do(http.MethodGet, "/api/v1/trash", nil, f.cookie)
 	if items := decode(t, trash)["items"].([]any); len(items) != 1 {
 		t.Errorf("trash holds %d items after a WebDAV DELETE, want 1", len(items))
+		// If this fires with the node row GONE (not merely untrashed), some
+		// test in another package is purging trash globally against the shared
+		// database — that happened once: files' TestAutoPurgeRespectsRetention
+		// called AutoPurgeTrash with zero retention and deleted this fixture's
+		// row mid-test. The dump distinguishes the two failure shapes.
+		rows, qerr := f.pool.Query(f.ctx, `
+			SELECT id, kind, name, path, trashed_at, trashed_root_id
+			FROM nodes WHERE owner_id = $1 ORDER BY path`, f.userID)
+		if qerr != nil {
+			t.Logf("diag query: %v", qerr)
+		} else {
+			defer rows.Close()
+			for rows.Next() {
+				var id, kind, name, path string
+				var ta, tr any
+				_ = rows.Scan(&id, &kind, &name, &path, &ta, &tr)
+				t.Logf("node id=%s kind=%s name=%q path=%q trashed_at=%v trashed_root=%v",
+					id, kind, name, path, ta, tr)
+			}
+		}
 	}
 }
 

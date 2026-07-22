@@ -669,8 +669,19 @@ func TestAutoPurgeRespectsRetention(t *testing.T) {
 		t.Errorf("node was purged early: %v", err)
 	}
 
-	// Zero retention means everything in the trash is expired.
-	if _, err := f.store.AutoPurgeTrash(f.ctx, 0); err != nil {
+	// Expire THIS test's node by backdating it, never by shrinking the
+	// retention to zero. AutoPurgeTrash is global across owners — in
+	// production there is one server and that is correct — so a zero
+	// retention here purges every OTHER fixture's freshly trashed rows too.
+	// Test packages run as parallel binaries against one shared database, and
+	// this exact call was deleting internal/httpapi's WebDAV-test trash in
+	// the window between its DELETE and its trash listing.
+	if _, err := f.store.Pool().Exec(f.ctx,
+		`UPDATE nodes SET trashed_at = trashed_at - interval '31 days' WHERE id = $1`,
+		node.ID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.store.AutoPurgeTrash(f.ctx, 30*24*time.Hour); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := f.store.Get(f.ctx, f.user, node.ID); err == nil {
