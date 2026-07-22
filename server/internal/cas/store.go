@@ -57,6 +57,9 @@ type WriteResult struct {
 	// DedupedChunks were already present; NewChunks were written.
 	DedupedChunks int
 	NewChunks     int
+	// ReusedManifest reports whole-file dedup: an identical file was already
+	// stored, so no new manifest rows were written at all.
+	ReusedManifest bool
 }
 
 // Write chunks r, stores what is new, and records a manifest.
@@ -106,6 +109,40 @@ func (s *Store) Write(ctx context.Context, r io.Reader) (*WriteResult, error) {
 	})
 	if err != nil {
 		return nil, err
+	}
+
+	// Whole-file dedup: an identical file already stored means an existing
+	// manifest describes exactly these chunks (chunking is deterministic, so
+	// same content implies the same chunk sequence). Reusing it skips the
+	// manifest and manifest_chunks writes entirely.
+	//
+	// Only manifests referenced by a live file_version are candidates. An
+	// orphaned manifest may be mid-delete by GC, and handing its ID to a caller
+	// about to insert a version row would turn that race into a foreign-key
+	// error. Referenced manifests are ones GC will not touch.
+	//
+	// Skipping the chunk-row upserts is safe on this path: a live manifest
+	// references every one of these hashes through manifest_chunks, whose
+	// RESTRICT foreign key guarantees the chunk rows exist. The bytes were
+	// already (re)written by the Split callback above. Losing this lookup to a
+	// race merely costs a duplicate manifest, which the schema tolerates.
+	var existingID uuid.UUID
+	err = s.pool.QueryRow(ctx, `
+		SELECT m.id FROM manifests m
+		WHERE m.content_hash = $1 AND m.total_size = $2 AND m.chunk_count = $3
+		  AND EXISTS (SELECT 1 FROM file_versions v WHERE v.manifest_id = m.id)
+		LIMIT 1`, contentHash[:], totalSize, len(chunks)).Scan(&existingID)
+	if err == nil {
+		res.Manifest = &Manifest{
+			ID: existingID, TotalSize: totalSize,
+			ChunkCount: len(chunks), ContentHash: contentHash,
+		}
+		res.LogicalSize = totalSize
+		res.ReusedManifest = true
+		return &res, nil
+	}
+	if !errors.Is(err, pgx.ErrNoRows) {
+		return nil, fmt.Errorf("look up existing manifest: %w", err)
 	}
 
 	tx, err := s.pool.Begin(ctx)
