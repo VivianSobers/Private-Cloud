@@ -162,10 +162,29 @@ Same discipline as Phase 1: each slice ends green, committed, and useful.
 | Slice | Contents | Status |
 |---|---|---|
 | **1a** | Chunk store: FastCDC + BLAKE3 + zstd behind `blob.Store`; `chunks` and `manifest_chunks` schema; writes chunk, reads reassemble; both formats coexist | ✅ `internal/cas` |
-| **1b** | Route the upload path through the chunker; quota still counts logical bytes | ⬜ next |
-| **2** | Chunk GC, refcount recomputation, `fsck` for CAS, background migration of Phase 1 blobs, dedup statistics | 🟡 GC/fsck/refcount audit built (`internal/cas/gc.go`); migration and stats outstanding |
-| **3** | Version history: list, restore, retention policy, UI | ⬜ |
+| **1b** | Route the upload path through the chunker; quota still counts logical bytes | ✅ all three write paths (direct, resumable, WebDAV) converge on `Service.FinishStaged`/`uploadViaCAS`; files ≥ 2 KiB chunk, smaller stay whole-file blobs permanently; identical uploads reuse a live manifest; downloads reassemble with seek |
+| **2** | Chunk GC, refcount recomputation, `fsck` for CAS, background migration of Phase 1 blobs, dedup statistics | 🟡 GC (manifests → chunks → bytes), fsck and refcount audit built; `cas.Stats` exists; background migration of Phase 1 blobs outstanding |
+| **3** | Version history: list, restore, retention policy, UI | ⬜ next |
 | **4** | Share links: public plane, tokens, expiry, rate limits, UI | ⬜ |
+
+**Slice 1b notes, recorded where the next reader will look:**
+
+- The format decision lives in exactly two service functions: `FinishStaged`
+  (staged bytes: resumable finish + WebDAV close) and `Upload`'s peek router
+  (streaming, length unknown — it reads one threshold's worth to decide).
+  Nothing else in the codebase chooses a storage format.
+- `file_versions` rows are blob XOR manifest, enforced three times over: the
+  schema CHECK, a guard in `Store.PutFile`, and the API emitting `sha256` vs
+  `blake3` keyed on which one is set. A client that wants to verify a download
+  needs to know which algorithm to run, so the key names it.
+- Failed manifest-backed uploads delete only the MANIFEST row (chunk bytes may
+  already be shared); reused manifests are never deleted on failure — the
+  `ReusedManifest` guard, pinned by `TestQuotaCountsLogicalBytesUnderDedup`,
+  which fails a duplicate upload on quota and then proves the file it
+  deduplicated against still reads back intact.
+- GC ordering is manifests before chunks so one pass reclaims a purged file
+  all the way to its bytes: version rows → manifests → (cascade + trigger) →
+  chunk rows → chunk bytes.
 
 **Slice 2's checker landed before slice 1b on purpose.** `fsck` walks the blob
 directory and deletes anything the database does not name. Chunks live in that
