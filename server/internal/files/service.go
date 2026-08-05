@@ -518,6 +518,69 @@ type MigrateResult struct {
 	Failed int
 }
 
+// migrateOne chunks one blob-backed version and repoints it at the manifest.
+//
+// The order is the same crash-safety contract as every other write path: the
+// chunk bytes and manifest are durable BEFORE the version is switched to them,
+// and the old blob is left for GC rather than deleted inline. A crash between
+// the two leaves an orphan manifest the GC reaps, never a version pointing at
+// content that does not exist.
+func (s *Service) migrateOne(ctx context.Context, v MigratableVersion, res *MigrateResult) error {
+	rc, err := s.blobs.Open(ctx, v.StorageKey)
+	if errors.Is(err, blob.ErrNotFound) {
+		// The bytes are already gone — data loss fsck reports against the blob
+		// format the operator can still reason about. Migration cannot invent
+		// them, and must never repoint a version at a manifest it could not build.
+		s.log.Warn("skipping migration: blob bytes missing",
+			"version_id", v.VersionID, "blob_key", v.StorageKey)
+		res.Failed++
+		return nil
+	}
+	if err != nil {
+		return fmt.Errorf("open blob %s: %w", v.StorageKey, err)
+	}
+
+	wr, err := s.cas.Write(ctx, rc)
+	rc.Close()
+	if err != nil {
+		return fmt.Errorf("chunk blob %s: %w", v.StorageKey, err)
+	}
+
+	// Verify before switching. cas.Write hashed the plaintext it read and summed
+	// the chunk sizes; a disagreement with the version's recorded size means the
+	// read was short or the blob and its row diverged, and repointing to a
+	// manifest that is not the file would be silent corruption. Drop the orphan
+	// and count it — an anomaly to investigate, not a reason to stop.
+	if wr.LogicalSize != v.Size {
+		s.dropOrphanManifest(ctx, wr)
+		s.log.Error("skipping migration: manifest size disagrees with blob",
+			"version_id", v.VersionID, "blob_size", v.Size, "manifest_size", wr.LogicalSize)
+		res.Failed++
+		return nil
+	}
+
+	switched, err := s.store.SwitchToManifest(ctx, v.VersionID, v.BlobID, wr.Manifest.ID)
+	if err != nil {
+		s.dropOrphanManifest(ctx, wr)
+		return fmt.Errorf("repoint version %s: %w", v.VersionID, err)
+	}
+	if !switched {
+		// The version moved on between listing and now — overwritten, purged, or
+		// migrated by a concurrent worker. The manifest we built references
+		// nothing (unless it reused a live one, which dropOrphanManifest guards).
+		s.dropOrphanManifest(ctx, wr)
+		res.Skipped++
+		return nil
+	}
+
+	res.VersionsMigrated++
+	res.BytesWritten += wr.NewBytes
+	if wr.ReusedManifest {
+		res.Deduped++
+	}
+	return nil
+}
+
 // --- fsck -------------------------------------------------------------------
 
 // FsckReport describes disagreements between the database and the disk.
