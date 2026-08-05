@@ -209,6 +209,24 @@ Same discipline as Phase 1: each slice ends green, committed, and useful.
   storage rewrite is exactly when §0's backup should already exist. The
   background loop is opt-in via `PC_BLOB_MIGRATE_INTERVAL`.
 
+**Slice 3 versioning notes, recorded where the next reader will look:**
+
+- The table already held the history. Phase 1 wrote a row per overwrite and only
+  ever moved the head; slice 3 adds no schema, it surfaces (`ListVersions`),
+  bounds (`PruneVersions`) and rewinds (`RestoreVersion`) what was always there.
+- Restore is an **append**: a new version pointing at the target's existing blob
+  or manifest, head moved to it. It never deletes the versions rolled past — the
+  refcount trigger credits the reused content on INSERT, so a restore of a 4 GB
+  file is one row and zero bytes, and the rollback is itself undoable.
+- Retention prunes only versions failing BOTH tests — beyond `KeepVersions` AND
+  older than `VersionRetention` — and **never the head**, guarded by id, not just
+  by rank (`TestPruneNeverDropsHead`). Pruning runs inside GC, ordered before the
+  blob and chunk sweeps, so one pass reclaims a retired version's rows and then
+  its bytes.
+- `OpenVersion` mirrors `Open` for a non-head version, so the UI previews or
+  downloads history without restoring first; both readers seek, so Range works
+  against a past version too.
+
 **Slice 2's checker landed before slice 1b on purpose.** `fsck` walks the blob
 directory and deletes anything the database does not name. Chunks live in that
 same directory under the same `ab/cd/hash` layout but are recorded in `chunks`,
