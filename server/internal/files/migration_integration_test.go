@@ -230,3 +230,37 @@ func TestMigratePreservesQuota(t *testing.T) {
 		t.Errorf("live bytes moved across migration: %d -> %d", before.LiveBytes, after.LiveBytes)
 	}
 }
+
+func TestMigrateDedupsIdenticalBlobs(t *testing.T) {
+	// Two Phase 1 blobs holding identical content should converge on ONE manifest
+	// as they migrate — the first builds it, the second reuses it. This is dedup
+	// arriving retroactively for content stored before CAS existed.
+	f := newFixture(t)
+	data := uniqueData(96<<10, 6)
+	a := f.uploadBytes("a.bin", data)
+	b := f.uploadBytes("b.bin", data)
+
+	f.enableCAS(t)
+	res, err := f.svc.MigrateBlobs(f.ctx, 100)
+	if err != nil {
+		t.Fatalf("MigrateBlobs: %v", err)
+	}
+	if res.VersionsMigrated != 2 {
+		t.Fatalf("migrated %d, want 2", res.VersionsMigrated)
+	}
+	if res.Deduped != 1 {
+		t.Errorf("deduped %d, want 1 — the second blob should have reused the first's manifest", res.Deduped)
+	}
+
+	na, err := f.store.Get(f.ctx, f.user, a.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	nb, err := f.store.Get(f.ctx, f.user, b.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if na.ManifestID == nil || nb.ManifestID == nil || *na.ManifestID != *nb.ManifestID {
+		t.Error("identical blobs did not converge on one manifest after migration")
+	}
+}
