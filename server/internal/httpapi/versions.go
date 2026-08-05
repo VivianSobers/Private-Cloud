@@ -63,3 +63,23 @@ func (s *Server) handleListVersions(w http.ResponseWriter, r *http.Request) {
 	}
 	writeJSON(w, r, http.StatusOK, map[string]any{"versions": out})
 }
+
+// handleRestoreVersion rolls a file back to a past version by appending a new
+// head with that content — the history in between is preserved, so the rollback
+// is itself undoable.
+func (s *Server) handleRestoreVersion(w http.ResponseWriter, r *http.Request) {
+	id, ok := s.nodeIDParam(w, r)
+	if !ok {
+		return
+	}
+	versionID, ok := s.versionIDParam(w, r)
+	if !ok {
+		return
+	}
+	node, err := s.files.Store().RestoreVersion(r.Context(), CurrentUser(r.Context()).ID, id, versionID)
+	if err != nil {
+		s.writeFilesError(w, r, "restore version", err)
+		return
+	}
+	writeJSON(w, r, http.StatusOK, map[string]any{"node": nodeJSON(node)})
+}
