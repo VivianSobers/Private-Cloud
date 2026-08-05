@@ -145,6 +145,8 @@ func run() error {
 	filesSvc := files.NewService(files.NewStore(database.Pool), blobs, log)
 	filesSvc.TrashRetention = cfg.TrashRetention
 	filesSvc.UploadTTL = cfg.UploadTTL
+	filesSvc.KeepVersions = cfg.KeepVersions
+	filesSvc.VersionRetention = cfg.VersionRetention
 
 	// Content-addressed storage. Uploads do not route through it yet, but fsck
 	// and GC must know the format exists BEFORE anything writes it — a checker
