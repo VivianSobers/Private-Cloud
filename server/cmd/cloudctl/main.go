@@ -57,9 +57,10 @@ func usage() {
   cleanup                         purge expired sessions and ceremonies
   fsck [--repair]                 compare the blob store against the database
   gc                              purge expired trash and unreferenced blobs
+  migrate-blobs [--limit=N] [--all]  rewrite Phase 1 whole-file blobs as chunks
 
 Requires PC_DATABASE_URL in the environment.
-fsck and gc also require PC_BLOB_PATH.
+fsck, gc and migrate-blobs also require PC_BLOB_PATH.
 `)
 }
 
