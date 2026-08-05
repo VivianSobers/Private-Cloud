@@ -213,12 +213,12 @@ func (c *Config) validate() error {
 // Logging a config struct verbatim is how credentials end up in Loki.
 func (c *Config) Redacted() map[string]any {
 	return map[string]any{
-		"env":              c.Env,
-		"http_addr":        c.HTTPAddr,
-		"database_url":     redactURL(c.DatabaseURL),
-		"db_max_conns":     c.DBMaxConns,
-		"log_level":        c.LogLevel,
-		"log_format":       c.LogFormat,
+		"env":                   c.Env,
+		"http_addr":             c.HTTPAddr,
+		"database_url":          redactURL(c.DatabaseURL),
+		"db_max_conns":          c.DBMaxConns,
+		"log_level":             c.LogLevel,
+		"log_format":            c.LogFormat,
 		"blob_path":             c.BlobPath,
 		"trash_retention":       c.TrashRetention.String(),
 		"migrate_on_start":      c.MigrateOnStart,
