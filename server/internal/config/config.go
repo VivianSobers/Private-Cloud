@@ -83,6 +83,13 @@ type Config struct {
 	// stays incremental and a single tick cannot monopolise disk and CPU on a
 	// small box for an unbounded time.
 	BlobMigrateBatch int
+
+	// KeepVersions is how many of a file's newest versions survive pruning
+	// regardless of age; VersionRetention keeps anything younger than it whatever
+	// its rank. A version is pruned only when it fails both. Forgiving by
+	// default: with CAS, keeping history of an unchanged file is nearly free.
+	KeepVersions     int
+	VersionRetention time.Duration
 }
 
 func Load() (*Config, error) {
@@ -120,6 +127,9 @@ func Load() (*Config, error) {
 		// backup, rather than having a deploy start rewriting storage on its own.
 		BlobMigrateInterval: envDuration("PC_BLOB_MIGRATE_INTERVAL", 0),
 		BlobMigrateBatch:    envInt("PC_BLOB_MIGRATE_BATCH", 100),
+
+		KeepVersions:     envInt("PC_KEEP_VERSIONS", 25),
+		VersionRetention: envDuration("PC_VERSION_RETENTION", 90*24*time.Hour),
 	}
 
 	if err := c.validate(); err != nil {
@@ -206,6 +216,15 @@ func (c *Config) validate() error {
 	if c.BlobMigrateInterval > 0 && c.BlobMigrateBatch <= 0 {
 		return fmt.Errorf("PC_BLOB_MIGRATE_BATCH must be positive when PC_BLOB_MIGRATE_INTERVAL is set")
 	}
+	// A keep-count below one could prune a file's only non-head history on the
+	// first sweep; retention must be positive so "younger than the window" is a
+	// meaningful test rather than pruning everything immediately.
+	if c.KeepVersions < 1 {
+		return fmt.Errorf("PC_KEEP_VERSIONS must be at least 1")
+	}
+	if c.VersionRetention <= 0 {
+		return fmt.Errorf("PC_VERSION_RETENTION must be positive")
+	}
 	return nil
 }
 
@@ -224,6 +243,8 @@ func (c *Config) Redacted() map[string]any {
 		"migrate_on_start":      c.MigrateOnStart,
 		"blob_migrate_interval": c.BlobMigrateInterval.String(),
 		"blob_migrate_batch":    c.BlobMigrateBatch,
+		"keep_versions":         c.KeepVersions,
+		"version_retention":     c.VersionRetention.String(),
 	}
 }
 
