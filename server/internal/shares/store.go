@@ -115,6 +115,63 @@ func (st *Store) TryIncrementDownload(ctx context.Context, id uuid.UUID) (bool, 
 	return tag.RowsAffected() > 0, nil
 }
 
+// Revoke kills a link immediately, scoped to its owner. Idempotent: revoking an
+// already-revoked share reports false (nothing changed) rather than erroring, so
+// a double click is harmless.
+func (st *Store) Revoke(ctx context.Context, ownerID, id uuid.UUID) (bool, error) {
+	tag, err := st.pool.Exec(ctx, `
+		UPDATE shares SET revoked_at = now()
+		WHERE id = $1 AND owner_id = $2 AND revoked_at IS NULL`, id, ownerID)
+	if err != nil {
+		return false, err
+	}
+	return tag.RowsAffected() > 0, nil
+}
+
+// OwnerShare is a share as its creator sees it: the row plus the file it points
+// at. The node name and path are safe to show HERE because the viewer owns them
+// — this is the management listing, not the public surface.
+type OwnerShare struct {
+	Share
+	NodeName    string
+	NodePath    string
+	NodeTrashed bool
+}
+
+// ListForOwner returns every share a user has created, newest first.
+func (st *Store) ListForOwner(ctx context.Context, ownerID uuid.UUID) ([]OwnerShare, error) {
+	rows, err := st.pool.Query(ctx, `
+		SELECT s.id, s.node_id, s.owner_id, s.token_hash, s.unlock_key, s.password_hash,
+		       s.expires_at, s.max_downloads, s.download_count, s.created_at, s.revoked_at,
+		       n.name, n.path, (n.trashed_at IS NOT NULL)
+		FROM shares s
+		JOIN nodes n ON n.id = s.node_id
+		WHERE s.owner_id = $1
+		ORDER BY s.created_at DESC`, ownerID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var out []OwnerShare
+	for rows.Next() {
+		var (
+			os OwnerShare
+			pw *string
+		)
+		if err := rows.Scan(&os.ID, &os.NodeID, &os.OwnerID, &os.TokenHash, &os.UnlockKey, &pw,
+			&os.ExpiresAt, &os.MaxDownloads, &os.DownloadCount, &os.CreatedAt, &os.RevokedAt,
+			&os.NodeName, &os.NodePath, &os.NodeTrashed); err != nil {
+			return nil, err
+		}
+		if pw != nil {
+			os.PasswordHash = *pw
+		}
+		out = append(out, os)
+	}
+	return out, rows.Err()
+}
+
 // Share is one public link to one file.
 type Share struct {
 	ID      uuid.UUID
