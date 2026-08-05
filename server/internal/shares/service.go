@@ -158,6 +158,76 @@ func (s *Service) Unlock(ctx context.Context, token, password string) (string, e
 	return unlockProof(sh), nil
 }
 
+// Entry is one child of a shared folder, carrying only what a listing needs —
+// name, kind, size. Never a path or an id: the visitor navigates by name within
+// the share, and the rest of the owner's tree stays invisible.
+type Entry struct {
+	Name string
+	Kind string
+	Size int64
+}
+
+// PublicShare is the entire leak-free view of a share. When a password gates it
+// and the caller has not unlocked, it carries nothing but HasPassword — not even
+// the filename, so the second gate the owner asked for actually gates something.
+type PublicShare struct {
+	HasPassword bool
+	Unlocked    bool
+
+	Name    string
+	Kind    string // "file" | "folder"
+	Size    int64
+	MIME    string
+	Path    string  // relative sub-path being viewed within a folder share
+	Entries []Entry // populated for an unlocked folder
+}
+
+// View returns what the landing page may show. A locked share reveals only that
+// a password is needed; an unlocked (or passwordless) one reveals the file's
+// size or the folder's immediate listing at relPath — and never the owner, the
+// absolute path, or anything outside the shared subtree.
+func (s *Service) View(ctx context.Context, token, proof, relPath string) (*PublicShare, error) {
+	sh, err := s.lookup(ctx, token)
+	if err != nil {
+		return nil, err
+	}
+	if err := checkValidity(sh, time.Now()); err != nil {
+		return nil, err
+	}
+
+	if sh.HasPassword() && !validUnlock(sh, proof) {
+		// Locked: the minimum that lets a client know to prompt for a password.
+		return &PublicShare{HasPassword: true}, nil
+	}
+
+	node, err := s.resolveNode(ctx, sh, relPath)
+	if err != nil {
+		return nil, err
+	}
+
+	pv := &PublicShare{
+		HasPassword: sh.HasPassword(),
+		Unlocked:    true,
+		Name:        node.Name,
+		Kind:        node.Kind,
+		Path:        strings.Trim(relPath, "/"),
+	}
+	if node.IsFile() {
+		pv.Size = node.Size
+		pv.MIME = node.MIME
+		return pv, nil
+	}
+
+	children, err := s.files.Store().ListChildren(ctx, sh.OwnerID, node.ID)
+	if err != nil {
+		return nil, err
+	}
+	for _, c := range children {
+		pv.Entries = append(pv.Entries, Entry{Name: c.Name, Kind: c.Kind, Size: c.Size})
+	}
+	return pv, nil
+}
+
 // hashToken hashes a URL token for lookup. SHA-256 is right here for the same
 // reason it is for session tokens: the token is 256 bits of CSPRNG output, so
 // there is no low-entropy secret to slow an attacker over, and hashing at rest
