@@ -59,9 +59,9 @@ type Service struct {
 
 func NewService(store *Store, blobs blob.Store, log *slog.Logger) *Service {
 	s := &Service{
-		store:          store,
-		blobs:          blobs,
-		log:            log,
+		store:            store,
+		blobs:            blobs,
+		log:              log,
 		TrashRetention:   30 * 24 * time.Hour,
 		BlobGCGrace:      time.Hour,
 		UploadTTL:        defaultUploadTTL,
