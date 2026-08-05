@@ -12,6 +12,7 @@ import (
 	"bytes"
 	"context"
 	"crypto/sha256"
+	"errors"
 	"io"
 	"log/slog"
 	"os"
@@ -173,5 +174,51 @@ func TestTokenStoredOnlyHashed(t *testing.T) {
 	}
 	if hit {
 		t.Error("the plaintext token leaked into a stored column")
+	}
+}
+
+func TestPasswordGatesContent(t *testing.T) {
+	f := newFixture(t)
+	node := f.upload(f.root, "vault.txt", "top secret")
+	_, token, err := f.shares.Create(f.ctx, f.user, node.ID, shares.CreateOptions{Password: "hunter2"})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// A locked view reveals nothing but "there is a password" — not even the name.
+	view, err := f.shares.View(f.ctx, token, "", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if view.Unlocked || view.Name != "" || view.Kind != "" {
+		t.Errorf("locked view leaked information: %+v", view)
+	}
+	if !view.HasPassword {
+		t.Error("locked view did not signal that a password is required")
+	}
+
+	// Content is denied without the proof...
+	if _, _, err := f.shares.OpenContent(f.ctx, token, "", ""); !errors.Is(err, shares.ErrPasswordNeeded) {
+		t.Errorf("content without unlock = %v, want ErrPasswordNeeded", err)
+	}
+	// ...a wrong password does not unlock...
+	if _, err := f.shares.Unlock(f.ctx, token, "wrong"); !errors.Is(err, shares.ErrWrongPassword) {
+		t.Errorf("wrong password = %v, want ErrWrongPassword", err)
+	}
+	// ...and the right one yields a proof that unlocks view and content.
+	proof, err := f.shares.Unlock(f.ctx, token, "hunter2")
+	if err != nil {
+		t.Fatalf("Unlock: %v", err)
+	}
+	v2, err := f.shares.View(f.ctx, token, proof, "")
+	if err != nil || !v2.Unlocked || v2.Name != "vault.txt" {
+		t.Errorf("unlocked view wrong: %+v (err %v)", v2, err)
+	}
+	_, rc, err := f.shares.OpenContent(f.ctx, token, proof, "")
+	if err != nil {
+		t.Fatalf("OpenContent with proof: %v", err)
+	}
+	if got := f.readAll(rc); got != "top secret" {
+		t.Errorf("served %q", got)
 	}
 }
