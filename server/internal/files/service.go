@@ -359,6 +359,8 @@ type GCResult struct {
 	UploadsExpired int
 	StagingFreed   int
 
+	VersionsPruned int64
+
 	ManifestsFreed  int
 	ChunksFreed     int
 	ChunkBytesFreed int64
@@ -384,6 +386,16 @@ func (s *Service) CollectGarbage(ctx context.Context) (GCResult, error) {
 		return res, err
 	}
 	res.UploadsExpired, res.StagingFreed = expired, staged
+
+	// Prune old versions before reclaiming bytes, deliberately: dropping a version
+	// row is what drops its blob's refcount and orphans its manifest, so pruning
+	// here lets the sweeps below reclaim a retired version all the way to disk in
+	// this same pass instead of leaving it for the next one.
+	pruned, err := s.store.PruneVersions(ctx, s.KeepVersions, s.VersionRetention, 1000)
+	if err != nil {
+		return res, fmt.Errorf("prune versions: %w", err)
+	}
+	res.VersionsPruned = pruned
 
 	// Bounded per pass so a large cleanup cannot hold resources for an
 	// unbounded time; the next tick picks up where this one stopped.
