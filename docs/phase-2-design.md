@@ -163,7 +163,7 @@ Same discipline as Phase 1: each slice ends green, committed, and useful.
 |---|---|---|
 | **1a** | Chunk store: FastCDC + BLAKE3 + zstd behind `blob.Store`; `chunks` and `manifest_chunks` schema; writes chunk, reads reassemble; both formats coexist | ✅ `internal/cas` |
 | **1b** | Route the upload path through the chunker; quota still counts logical bytes | ✅ all three write paths (direct, resumable, WebDAV) converge on `Service.FinishStaged`/`uploadViaCAS`; files ≥ 2 KiB chunk, smaller stay whole-file blobs permanently; identical uploads reuse a live manifest; downloads reassemble with seek |
-| **2** | Chunk GC, refcount recomputation, `fsck` for CAS, background migration of Phase 1 blobs, dedup statistics | 🟡 GC (manifests → chunks → bytes), fsck and refcount audit built; `cas.Stats` exists; background migration of Phase 1 blobs outstanding |
+| **2** | Chunk GC, refcount recomputation, `fsck` for CAS, background migration of Phase 1 blobs, dedup statistics | ✅ GC (manifests → chunks → bytes), fsck and refcount audit, `cas.Stats`, and in-place background migration of Phase 1 blobs — `cloudctl migrate-blobs` or the opt-in `PC_BLOB_MIGRATE_INTERVAL` loop |
 | **3** | Version history: list, restore, retention policy, UI | ⬜ next |
 | **4** | Share links: public plane, tokens, expiry, rate limits, UI | ⬜ |
 
