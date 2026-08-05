@@ -3,6 +3,7 @@ package shares
 import (
 	"context"
 	"crypto/hmac"
+	"crypto/rand"
 	"crypto/sha256"
 	"crypto/subtle"
 	"encoding/base64"
@@ -12,6 +13,9 @@ import (
 	"strings"
 	"time"
 
+	"github.com/google/uuid"
+
+	"github.com/guru-bharadwaj20/private-cloud/server/internal/auth"
 	"github.com/guru-bharadwaj20/private-cloud/server/internal/files"
 )
 
@@ -45,6 +49,88 @@ func NewService(store *Store, filesSvc *files.Service, log *slog.Logger) *Servic
 }
 
 func (s *Service) Store() *Store { return s.store }
+
+// tokenBytes is the entropy of a share token: 256 bits, unguessable, so the URL
+// itself is the primary credential.
+const tokenBytes = 32
+
+// CreateOptions are the knobs a share can be born with. Zero values mean "no
+// password", "never expires", "no download cap" — the least restrictive link.
+type CreateOptions struct {
+	Password     string
+	ExpiresIn    time.Duration
+	MaxDownloads int64
+}
+
+// Create mints a share for one of the owner's files or folders and returns the
+// plaintext token ONCE. The token is never stored — only its hash — so it cannot
+// be recovered later; a lost link is re-created, not looked up.
+func (s *Service) Create(ctx context.Context, ownerID, nodeID uuid.UUID, opts CreateOptions) (*Share, string, error) {
+	node, err := s.files.Store().GetLive(ctx, ownerID, nodeID)
+	if err != nil {
+		// files.ErrNotFound: not the owner's, or not live. The HTTP layer maps it.
+		return nil, "", err
+	}
+	// The root is the whole account; sharing it would turn one link into blanket
+	// access to everything the user owns. A share names a file or a folder.
+	if node.IsRoot() {
+		return nil, "", ErrShareTargetKind
+	}
+	if !node.IsFile() && !node.IsFolder() {
+		return nil, "", ErrShareTargetKind
+	}
+
+	raw := make([]byte, tokenBytes)
+	if _, err := rand.Read(raw); err != nil {
+		return nil, "", err
+	}
+	token := base64.RawURLEncoding.EncodeToString(raw)
+
+	unlockKey := make([]byte, 32)
+	if _, err := rand.Read(unlockKey); err != nil {
+		return nil, "", err
+	}
+
+	var pwHash string
+	if opts.Password != "" {
+		if pwHash, err = auth.HashSecret(opts.Password); err != nil {
+			return nil, "", err
+		}
+	}
+	var expiresAt *time.Time
+	if opts.ExpiresIn > 0 {
+		t := time.Now().Add(opts.ExpiresIn)
+		expiresAt = &t
+	}
+	var maxDownloads *int64
+	if opts.MaxDownloads > 0 {
+		m := opts.MaxDownloads
+		maxDownloads = &m
+	}
+
+	share, err := s.store.Create(ctx, CreateInput{
+		NodeID:       node.ID,
+		OwnerID:      ownerID,
+		TokenHash:    hashToken(token),
+		UnlockKey:    unlockKey,
+		PasswordHash: pwHash,
+		ExpiresAt:    expiresAt,
+		MaxDownloads: maxDownloads,
+	})
+	if err != nil {
+		return nil, "", err
+	}
+	return share, token, nil
+}
+
+// List returns the owner's shares. Revoke kills one immediately.
+func (s *Service) List(ctx context.Context, ownerID uuid.UUID) ([]OwnerShare, error) {
+	return s.store.ListForOwner(ctx, ownerID)
+}
+
+func (s *Service) Revoke(ctx context.Context, ownerID, id uuid.UUID) (bool, error) {
+	return s.store.Revoke(ctx, ownerID, id)
+}
 
 // hashToken hashes a URL token for lookup. SHA-256 is right here for the same
 // reason it is for session tokens: the token is 256 bits of CSPRNG output, so
