@@ -10,6 +10,7 @@ package files_test
 
 import (
 	"errors"
+	"io"
 	"testing"
 	"time"
 
@@ -136,5 +137,46 @@ func TestRestoreRejectsForeignVersion(t *testing.T) {
 	}
 	if _, err := f.store.RestoreVersion(f.ctx, f.user, a.ID, bVersions[0].ID); !errors.Is(err, files.ErrNotFound) {
 		t.Errorf("restoring another file's version = %v, want ErrNotFound", err)
+	}
+}
+
+func TestOpenVersionServesHistoricalBytes(t *testing.T) {
+	// Downloading a past version must serve THAT snapshot, not the head — the UI
+	// previews an old version without restoring it first. The reader also seeks,
+	// so ServeContent can answer a Range request against history.
+	f := newFixture(t)
+	old := "the original text, long enough to seek within"
+	f.overwrite("story.txt", old)
+	node := f.overwrite("story.txt", "the replacement text")
+
+	versions, err := f.store.ListVersions(f.ctx, f.user, node.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	oldest := versions[len(versions)-1]
+
+	vc, rc, err := f.svc.OpenVersion(f.ctx, f.user, node.ID, oldest.ID)
+	if err != nil {
+		t.Fatalf("OpenVersion: %v", err)
+	}
+	defer rc.Close()
+
+	if vc.Name != "story.txt" {
+		t.Errorf("version download name = %q, want story.txt", vc.Name)
+	}
+	if got, _ := io.ReadAll(rc); string(got) != old {
+		t.Errorf("version content = %q, want %q", got, old)
+	}
+
+	// Seek mid-way and read the tail — Range support against a past version.
+	if _, err := rc.Seek(4, io.SeekStart); err != nil {
+		t.Fatalf("Seek: %v", err)
+	}
+	tail := make([]byte, 8)
+	if _, err := io.ReadFull(rc, tail); err != nil {
+		t.Fatalf("ReadFull: %v", err)
+	}
+	if string(tail) != old[4:12] {
+		t.Errorf("seeked read = %q, want %q", tail, old[4:12])
 	}
 }
