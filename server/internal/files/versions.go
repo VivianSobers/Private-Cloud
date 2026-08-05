@@ -150,3 +150,37 @@ func (s *Store) RestoreVersion(ctx context.Context, ownerID, nodeID, versionID u
 	}
 	return s.Get(ctx, ownerID, nodeID)
 }
+
+// PruneVersions deletes old non-head versions per the retention policy: keep the
+// newest keepN of every file, keep anything younger than retention, drop the
+// rest. The head is never a candidate, whatever its age or rank.
+//
+// This only removes the version ROWS. Their blobs and chunks fall to the refcount
+// trigger and are reclaimed by the same GC pass that runs this — which is why GC
+// prunes before it sweeps blobs and chunks: one pass then reclaims a dropped
+// version all the way to its bytes. Bounded by limit so a backlog of history
+// cannot hold a transaction open for an unbounded time; the next tick continues.
+func (s *Store) PruneVersions(ctx context.Context, keepN int, retention time.Duration, limit int) (int64, error) {
+	tag, err := s.pool.Exec(ctx, `
+		WITH ranked AS (
+			SELECT v.id, v.created_at, n.head_version_id,
+			       row_number() OVER (
+			           PARTITION BY v.node_id ORDER BY v.created_at DESC, v.id DESC
+			       ) AS rn
+			FROM file_versions v
+			JOIN nodes n ON n.id = v.node_id
+		)
+		DELETE FROM file_versions
+		WHERE id IN (
+			SELECT id FROM ranked
+			WHERE id <> head_version_id
+			  AND rn > $1
+			  AND created_at < now() - $2::interval
+			ORDER BY created_at
+			LIMIT $3
+		)`, keepN, retention.String(), limit)
+	if err != nil {
+		return 0, err
+	}
+	return tag.RowsAffected(), nil
+}
