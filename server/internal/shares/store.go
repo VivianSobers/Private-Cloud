@@ -10,10 +10,80 @@
 package shares
 
 import (
+	"context"
+	"errors"
+	"fmt"
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgxpool"
 )
+
+// ErrNotFound is returned when no share matches — deliberately the same answer
+// for "never existed" and "you may not see it", so the public surface never
+// distinguishes the two.
+var ErrNotFound = errors.New("share not found")
+
+// Store persists shares.
+type Store struct {
+	pool *pgxpool.Pool
+}
+
+func NewStore(pool *pgxpool.Pool) *Store { return &Store{pool: pool} }
+
+const shareCols = `id, node_id, owner_id, token_hash, unlock_key, password_hash,
+	expires_at, max_downloads, download_count, created_at, revoked_at`
+
+func scanShare(row pgx.Row) (*Share, error) {
+	var (
+		s  Share
+		pw *string
+	)
+	err := row.Scan(&s.ID, &s.NodeID, &s.OwnerID, &s.TokenHash, &s.UnlockKey, &pw,
+		&s.ExpiresAt, &s.MaxDownloads, &s.DownloadCount, &s.CreatedAt, &s.RevokedAt)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil, ErrNotFound
+	}
+	if err != nil {
+		return nil, err
+	}
+	if pw != nil {
+		s.PasswordHash = *pw
+	}
+	return &s, nil
+}
+
+// CreateInput carries a new share's fields. The token has already been hashed
+// and the password already argon2-encoded by the service — the store never sees
+// a plaintext secret.
+type CreateInput struct {
+	NodeID       uuid.UUID
+	OwnerID      uuid.UUID
+	TokenHash    []byte
+	UnlockKey    []byte
+	PasswordHash string
+	ExpiresAt    *time.Time
+	MaxDownloads *int64
+}
+
+// Create records a new share.
+func (st *Store) Create(ctx context.Context, in CreateInput) (*Share, error) {
+	var pw *string
+	if in.PasswordHash != "" {
+		pw = &in.PasswordHash
+	}
+	row := st.pool.QueryRow(ctx, `
+		INSERT INTO shares (node_id, owner_id, token_hash, unlock_key, password_hash, expires_at, max_downloads)
+		VALUES ($1,$2,$3,$4,$5,$6,$7)
+		RETURNING `+shareCols,
+		in.NodeID, in.OwnerID, in.TokenHash, in.UnlockKey, pw, in.ExpiresAt, in.MaxDownloads)
+	sh, err := scanShare(row)
+	if err != nil {
+		return nil, fmt.Errorf("create share: %w", err)
+	}
+	return sh, nil
+}
 
 // Share is one public link to one file.
 type Share struct {
