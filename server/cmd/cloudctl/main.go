@@ -81,7 +81,7 @@ func run() error {
 	// being killed halfway through a scan that reports nothing useful.
 	timeout := 60 * time.Second
 	switch args[0] {
-	case "fsck", "gc":
+	case "fsck", "gc", "migrate-blobs":
 		timeout = 6 * time.Hour
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), timeout)
