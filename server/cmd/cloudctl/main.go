@@ -24,6 +24,7 @@ import (
 	"fmt"
 	"log/slog"
 	"os"
+	"strconv"
 	"strings"
 	"text/tabwriter"
 	"time"
@@ -407,6 +408,69 @@ func gcCommand(ctx context.Context, database *db.DB, log *slog.Logger) error {
 		res.UploadsExpired, res.StagingFreed)
 	fmt.Printf("freed %d manifest(s), %d chunk(s), %s\n",
 		res.ManifestsFreed, res.ChunksFreed, humanBytes(res.ChunkBytesFreed))
+	return nil
+}
+
+// migrateCommand drains Phase 1 whole-file blobs into content-addressed chunks.
+//
+// Operator-driven on purpose: a storage rewrite is exactly when a fresh backup
+// should exist first (see docs/phase-2-design.md §0), so this is a command the
+// admin runs deliberately rather than something the server does on its own.
+// One bounded batch by default; --all repeats until the backlog is drained.
+func migrateCommand(ctx context.Context, database *db.DB, log *slog.Logger, args []string) error {
+	limit := 100
+	all := false
+	for _, a := range args {
+		switch {
+		case a == "--all":
+			all = true
+		case strings.HasPrefix(a, "--limit="):
+			n, err := strconv.Atoi(strings.TrimPrefix(a, "--limit="))
+			if err != nil || n <= 0 {
+				return fmt.Errorf("--limit must be a positive integer")
+			}
+			limit = n
+		default:
+			return fmt.Errorf("usage: cloudctl migrate-blobs [--limit=N] [--all]")
+		}
+	}
+
+	svc, err := filesService(database, log)
+	if err != nil {
+		return err
+	}
+
+	var total files.MigrateResult
+	for {
+		res, err := svc.MigrateBlobs(ctx, limit)
+		if err != nil {
+			return err
+		}
+		total.VersionsMigrated += res.VersionsMigrated
+		total.BytesWritten += res.BytesWritten
+		total.Deduped += res.Deduped
+		total.Skipped += res.Skipped
+		total.Failed += res.Failed
+
+		// Stop when a batch makes no forward progress. That both ends the single
+		// -batch run and guarantees --all terminates: versions that only ever fail
+		// (missing bytes, size disagreement) stay blob-backed and would otherwise
+		// reappear every batch forever.
+		if !all || res.VersionsMigrated == 0 {
+			break
+		}
+	}
+
+	fmt.Printf("migrated %d version(s), wrote %s of new chunks\n",
+		total.VersionsMigrated, humanBytes(total.BytesWritten))
+	fmt.Printf("deduped %d, skipped %d (raced), failed %d\n",
+		total.Deduped, total.Skipped, total.Failed)
+	if total.Failed > 0 {
+		// Non-zero exit so a wrapper notices without parsing text: a failure here
+		// is a version whose bytes are missing or disagree with their row — an
+		// integrity anomaly for fsck, not a transient the next run clears.
+		return fmt.Errorf("%d version(s) could not be migrated; run cloudctl fsck", total.Failed)
+	}
 	return nil
 }
 
