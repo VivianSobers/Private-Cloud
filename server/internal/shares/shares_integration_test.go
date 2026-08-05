@@ -326,3 +326,60 @@ func TestDownloadCapHoldsUnderConcurrency(t *testing.T) {
 		t.Errorf("%d downloads were served against a cap of %d", granted, capN)
 	}
 }
+
+func hasEntry(entries []shares.Entry, name string) bool {
+	for _, e := range entries {
+		if e.Name == name {
+			return true
+		}
+	}
+	return false
+}
+
+func TestFolderShareListsAndConfines(t *testing.T) {
+	f := newFixture(t)
+	// A sibling OUTSIDE the shared folder — the thing a traversal would try to reach.
+	f.upload(f.root, "outside.txt", "not shared")
+	dir := f.mkdir(f.root, "shared")
+	f.upload(dir.ID, "inside.txt", "shared content")
+	sub := f.mkdir(dir.ID, "sub")
+	f.upload(sub.ID, "deep.txt", "deep content")
+
+	_, token, err := f.shares.Create(f.ctx, f.user, dir.ID, shares.CreateOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// The root listing shows the folder's own children, by name only.
+	view, err := f.shares.View(f.ctx, token, "", "")
+	if err != nil || view.Kind != "folder" {
+		t.Fatalf("folder view: %+v (err %v)", view, err)
+	}
+	if !hasEntry(view.Entries, "inside.txt") || !hasEntry(view.Entries, "sub") {
+		t.Errorf("root listing missing entries: %+v", view.Entries)
+	}
+
+	// Navigation into a subfolder, and download of a file within the subtree.
+	sv, err := f.shares.View(f.ctx, token, "", "sub")
+	if err != nil || !hasEntry(sv.Entries, "deep.txt") {
+		t.Errorf("subfolder view: %+v (err %v)", sv, err)
+	}
+	_, rc, err := f.shares.OpenContent(f.ctx, token, "", "sub/deep.txt")
+	if err != nil {
+		t.Fatalf("download within share: %v", err)
+	}
+	if got := f.readAll(rc); got != "deep content" {
+		t.Errorf("served %q", got)
+	}
+
+	// Escaping the subtree is refused, however the path is spelled.
+	for _, esc := range []string{"../outside.txt", "sub/../../outside.txt", "/../outside.txt"} {
+		if _, _, err := f.shares.OpenContent(f.ctx, token, "", esc); !errors.Is(err, shares.ErrNotFound) {
+			t.Errorf("traversal %q = %v, want ErrNotFound", esc, err)
+		}
+	}
+	// And a folder path is not downloadable content.
+	if _, _, err := f.shares.OpenContent(f.ctx, token, "", "sub"); !errors.Is(err, shares.ErrNotAFile) {
+		t.Errorf("downloading a folder = %v, want ErrNotAFile", err)
+	}
+}
