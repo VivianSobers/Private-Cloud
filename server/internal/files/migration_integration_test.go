@@ -204,3 +204,29 @@ func TestMigrateIsIdempotent(t *testing.T) {
 		t.Errorf("second pass migrated %d, want 0", second.VersionsMigrated)
 	}
 }
+
+func TestMigratePreservesQuota(t *testing.T) {
+	// Quota counts logical bytes — the file as its owner understands it — never
+	// physical chunks. Migration changes only the physical representation, so the
+	// number a user sees must not move even a byte when their file is chunked.
+	f := newFixture(t)
+	f.uploadBytes("q.bin", uniqueData(80<<10, 5))
+
+	before, err := f.store.Usage(f.ctx, f.user)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	f.enableCAS(t)
+	if _, err := f.svc.MigrateBlobs(f.ctx, 100); err != nil {
+		t.Fatalf("MigrateBlobs: %v", err)
+	}
+
+	after, err := f.store.Usage(f.ctx, f.user)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if after.LiveBytes != before.LiveBytes {
+		t.Errorf("live bytes moved across migration: %d -> %d", before.LiveBytes, after.LiveBytes)
+	}
+}
