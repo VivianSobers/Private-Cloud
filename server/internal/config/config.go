@@ -219,9 +219,11 @@ func (c *Config) Redacted() map[string]any {
 		"db_max_conns":     c.DBMaxConns,
 		"log_level":        c.LogLevel,
 		"log_format":       c.LogFormat,
-		"blob_path":        c.BlobPath,
-		"trash_retention":  c.TrashRetention.String(),
-		"migrate_on_start": c.MigrateOnStart,
+		"blob_path":             c.BlobPath,
+		"trash_retention":       c.TrashRetention.String(),
+		"migrate_on_start":      c.MigrateOnStart,
+		"blob_migrate_interval": c.BlobMigrateInterval.String(),
+		"blob_migrate_batch":    c.BlobMigrateBatch,
 	}
 }
 
