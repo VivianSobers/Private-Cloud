@@ -172,6 +172,26 @@ func (st *Store) ListForOwner(ctx context.Context, ownerID uuid.UUID) ([]OwnerSh
 	return out, rows.Err()
 }
 
+// DeleteStale hard-removes shares that have been revoked or expired for longer
+// than grace, bounded per pass. The grace keeps a just-revoked link visible in
+// the owner's list for a while — "revoked 2 minutes ago" is more reassuring than
+// a link that silently vanishes — before the row is finally reclaimed.
+func (st *Store) DeleteStale(ctx context.Context, grace time.Duration, limit int) (int64, error) {
+	tag, err := st.pool.Exec(ctx, `
+		DELETE FROM shares
+		WHERE id IN (
+			SELECT id FROM shares
+			WHERE (revoked_at IS NOT NULL AND revoked_at < now() - $1::interval)
+			   OR (expires_at IS NOT NULL AND expires_at < now() - $1::interval)
+			ORDER BY created_at
+			LIMIT $2
+		)`, grace.String(), limit)
+	if err != nil {
+		return 0, err
+	}
+	return tag.RowsAffected(), nil
+}
+
 // Share is one public link to one file.
 type Share struct {
 	ID      uuid.UUID
