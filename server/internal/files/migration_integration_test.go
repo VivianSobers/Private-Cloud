@@ -300,3 +300,30 @@ func TestMigrateSkipsMissingBlob(t *testing.T) {
 		t.Error("version was repointed to a manifest built from missing bytes")
 	}
 }
+
+func TestMigrateRespectsBatchLimit(t *testing.T) {
+	// The drain is bounded per pass so one tick cannot monopolise a small box.
+	// Three candidates, a limit of two: the pass takes two and leaves one for the
+	// next.
+	f := newFixture(t)
+	for i := 0; i < 3; i++ {
+		f.uploadBytes(uuid.NewString()+".bin", uniqueData(16<<10, int64(200+i)))
+	}
+	f.enableCAS(t)
+
+	first, err := f.svc.MigrateBlobs(f.ctx, 2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if first.VersionsMigrated != 2 {
+		t.Fatalf("bounded pass migrated %d, want 2", first.VersionsMigrated)
+	}
+
+	second, err := f.svc.MigrateBlobs(f.ctx, 2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if second.VersionsMigrated != 1 {
+		t.Errorf("follow-up pass migrated %d, want the remaining 1", second.VersionsMigrated)
+	}
+}
