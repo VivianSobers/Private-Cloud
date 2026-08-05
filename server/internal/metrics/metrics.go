@@ -31,6 +31,12 @@ type Metrics struct {
 	// a dashboard instead of by reading logs.
 	GCBlobsFreed prometheus.Counter
 	GCBytesFreed prometheus.Counter
+
+	// Background migration of Phase 1 whole-file blobs into chunks. The counters
+	// answer "is the drain making progress" and "how close to done" — a monotonic
+	// count that stops climbing is the signal the backlog is cleared.
+	MigratedVersions prometheus.Counter
+	MigratedBytes    prometheus.Counter
 }
 
 // New builds a dedicated registry rather than using the global default. A
