@@ -69,6 +69,50 @@ func (s *Store) ListVersions(ctx context.Context, ownerID, nodeID uuid.UUID) ([]
 	return out, nil
 }
 
+// VersionContent locates one version's stored bytes, in whichever format it was
+// written. Exactly one of BlobKey / ManifestID is set — the same blob-XOR-
+// manifest invariant every read path relies on.
+type VersionContent struct {
+	BlobKey     string
+	ManifestID  *uuid.UUID
+	MIME        string
+	Size        int64
+	ContentHash []byte
+	CreatedAt   time.Time
+	// Name is the file's current name, for the download filename — a version has
+	// no name of its own, it is a snapshot of content.
+	Name string
+}
+
+// FindVersionContent resolves a specific version for download, scoped to owner
+// and node so a version id alone cannot address another user's content.
+func (s *Store) FindVersionContent(ctx context.Context, ownerID, nodeID, versionID uuid.UUID) (*VersionContent, error) {
+	var (
+		vc  VersionContent
+		key *string
+	)
+	err := s.pool.QueryRow(ctx, `
+		SELECT b.storage_key, v.manifest_id, v.mime, v.size,
+		       coalesce(b.sha256, m.content_hash), v.created_at, n.name
+		FROM file_versions v
+		JOIN nodes n           ON n.id = v.node_id
+		LEFT JOIN blobs b      ON b.id = v.blob_id
+		LEFT JOIN manifests m  ON m.id = v.manifest_id
+		WHERE v.id = $1 AND v.node_id = $2 AND n.owner_id = $3 AND n.trashed_at IS NULL`,
+		versionID, nodeID, ownerID).
+		Scan(&key, &vc.ManifestID, &vc.MIME, &vc.Size, &vc.ContentHash, &vc.CreatedAt, &vc.Name)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil, ErrNotFound
+	}
+	if err != nil {
+		return nil, err
+	}
+	if key != nil {
+		vc.BlobKey = *key
+	}
+	return &vc, nil
+}
+
 // RestoreVersion makes an old version current by adding a NEW version that
 // points at the same content — never by deleting the versions in between.
 //
