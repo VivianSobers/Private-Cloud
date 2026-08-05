@@ -12,6 +12,8 @@ package files_test
 import (
 	"testing"
 
+	"github.com/google/uuid"
+
 	"github.com/guru-bharadwaj20/private-cloud/server/internal/cas"
 )
 
@@ -76,5 +78,34 @@ func TestMigrateRepointsToManifest(t *testing.T) {
 	}
 	if out := f.readBack(node.ID); string(out) != string(data) {
 		t.Error("content changed across migration")
+	}
+}
+
+func TestMigratePreservesContentAcrossSizes(t *testing.T) {
+	// A single chunk, a boundary case, and a many-chunk file: reassembly after
+	// migration must be byte-exact at every size, because a mismatch is silent
+	// corruption of a file the user never touched.
+	f := newFixture(t)
+
+	type item struct {
+		id   uuid.UUID
+		data []byte
+	}
+	var items []item
+	for i, size := range []int{2 << 10, 64 << 10, (1 << 20) + 7} {
+		data := uniqueData(size, int64(100+i))
+		n := f.uploadBytes(uuid.NewString()+".bin", data)
+		items = append(items, item{n.ID, data})
+	}
+
+	f.enableCAS(t)
+	if _, err := f.svc.MigrateBlobs(f.ctx, 100); err != nil {
+		t.Fatalf("MigrateBlobs: %v", err)
+	}
+
+	for _, it := range items {
+		if got := f.readBack(it.id); string(got) != string(it.data) {
+			t.Errorf("%d-byte file changed across migration", len(it.data))
+		}
 	}
 }
