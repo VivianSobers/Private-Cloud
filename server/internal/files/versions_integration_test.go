@@ -243,3 +243,46 @@ func TestPruneDropsAgedExcess(t *testing.T) {
 		t.Errorf("surviving head reads %q, want v3", got)
 	}
 }
+
+func TestPruneNeverDropsHead(t *testing.T) {
+	// The head is protected by id, not just by rank — so even a head made older
+	// than a sibling (which normal operations never produce, but a corrupt
+	// created_at could) survives. Backdate the head PAST a non-head version and
+	// past the window, then prune to a single kept version: the head must remain.
+	f := newFixture(t)
+	f.overwrite("h.txt", "before")
+	node := f.overwrite("h.txt", "after")
+
+	versions, err := f.store.ListVersions(f.ctx, f.user, node.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, v := range versions {
+		if v.IsHead {
+			f.backdate(t, v.ID, 300*24*time.Hour) // older than its sibling
+		} else {
+			f.backdate(t, v.ID, 100*24*time.Hour)
+		}
+	}
+
+	if _, err := f.store.PruneVersions(f.ctx, 1, 90*24*time.Hour, 1000); err != nil {
+		t.Fatalf("PruneVersions: %v", err)
+	}
+
+	after, err := f.store.ListVersions(f.ctx, f.user, node.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var headSeen bool
+	for _, v := range after {
+		if v.IsHead {
+			headSeen = true
+		}
+	}
+	if !headSeen {
+		t.Error("the head was pruned despite being older than a sibling")
+	}
+	if got := string(f.readBack(node.ID)); got != "after" {
+		t.Errorf("head content = %q, want after", got)
+	}
+}
