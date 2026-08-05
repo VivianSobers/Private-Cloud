@@ -24,7 +24,6 @@ import (
 // a caller learns "no" and, at most, "you need the password", never anything
 // that distinguishes a revoked link from one that never existed.
 var (
-	ErrNotFound        = errors.New("share not found")
 	ErrGone            = errors.New("share is no longer available")
 	ErrPasswordNeeded  = errors.New("share requires a password")
 	ErrWrongPassword   = errors.New("incorrect password")
