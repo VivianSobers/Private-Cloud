@@ -85,6 +85,17 @@ func (st *Store) Create(ctx context.Context, in CreateInput) (*Share, error) {
 	return sh, nil
 }
 
+// FindByTokenHash resolves the hash of a presented token to its share.
+//
+// This is the only lookup the public plane makes, and it deliberately does no
+// validity filtering: whether a share is revoked, expired or spent is decided by
+// the service against a single clock reading, so the reasons can be reported
+// precisely rather than collapsed into one "not found" that also hides typos.
+func (st *Store) FindByTokenHash(ctx context.Context, tokenHash []byte) (*Share, error) {
+	return scanShare(st.pool.QueryRow(ctx,
+		`SELECT `+shareCols+` FROM shares WHERE token_hash = $1`, tokenHash))
+}
+
 // Share is one public link to one file.
 type Share struct {
 	ID      uuid.UUID
