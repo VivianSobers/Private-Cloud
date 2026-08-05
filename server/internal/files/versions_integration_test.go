@@ -286,3 +286,49 @@ func TestPruneNeverDropsHead(t *testing.T) {
 		t.Errorf("head content = %q, want after", got)
 	}
 }
+
+func TestPrunedVersionBlobReclaimedByGC(t *testing.T) {
+	// The whole chain in one pass: GC prunes an aged version, its blob falls to
+	// refcount zero via the trigger, and the same GC run reclaims the bytes —
+	// which is exactly why pruning is ordered before the blob sweep.
+	f := newFixture(t)
+	f.overwrite("recycle.txt", "old bytes to reclaim")
+	node := f.overwrite("recycle.txt", "current bytes")
+
+	versions, err := f.store.ListVersions(f.ctx, f.user, node.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	old := versions[len(versions)-1]
+	vc, err := f.store.FindVersionContent(f.ctx, f.user, node.ID, old.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	oldKey := vc.BlobKey
+	if oldKey == "" {
+		t.Fatal("old version is not blob-backed; test assumes the whole-file path")
+	}
+	f.backdate(t, old.ID, 200*24*time.Hour)
+
+	// A GC configured to prune to the head and reclaim immediately.
+	f.svc.KeepVersions = 1
+	f.svc.VersionRetention = 90 * 24 * time.Hour
+	f.svc.BlobGCGrace = 0
+
+	res, err := f.svc.CollectGarbage(f.ctx)
+	if err != nil {
+		t.Fatalf("CollectGarbage: %v", err)
+	}
+	if res.VersionsPruned < 1 {
+		t.Errorf("VersionsPruned = %d, want at least 1", res.VersionsPruned)
+	}
+
+	var exists bool
+	if err := f.store.Pool().QueryRow(f.ctx,
+		`SELECT EXISTS(SELECT 1 FROM blobs WHERE storage_key = $1)`, oldKey).Scan(&exists); err != nil {
+		t.Fatal(err)
+	}
+	if exists {
+		t.Error("the pruned version's blob row survived GC")
+	}
+}
