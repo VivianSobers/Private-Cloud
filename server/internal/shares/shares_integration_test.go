@@ -222,3 +222,50 @@ func TestPasswordGatesContent(t *testing.T) {
 		t.Errorf("served %q", got)
 	}
 }
+
+// expire backdates a share's expiry so a test does not wait it out.
+func (f *fixture) expire(t *testing.T, id uuid.UUID) {
+	t.Helper()
+	if _, err := f.db.Pool.Exec(f.ctx,
+		`UPDATE shares SET expires_at = now() - interval '1 hour' WHERE id = $1`, id); err != nil {
+		t.Fatalf("expire share: %v", err)
+	}
+}
+
+func TestExpiredShareDenied(t *testing.T) {
+	f := newFixture(t)
+	node := f.upload(f.root, "temp.txt", "expires soon")
+	share, token, err := f.shares.Create(f.ctx, f.user, node.ID, shares.CreateOptions{ExpiresIn: time.Hour})
+	if err != nil {
+		t.Fatal(err)
+	}
+	f.expire(t, share.ID)
+
+	if _, err := f.shares.View(f.ctx, token, "", ""); !errors.Is(err, shares.ErrGone) {
+		t.Errorf("view of expired share = %v, want ErrGone", err)
+	}
+	if _, _, err := f.shares.OpenContent(f.ctx, token, "", ""); !errors.Is(err, shares.ErrGone) {
+		t.Errorf("content of expired share = %v, want ErrGone", err)
+	}
+}
+
+func TestRevokedShareLooksLikeNotFound(t *testing.T) {
+	// Revocation is immediate, and to a probe it is indistinguishable from a
+	// token that never existed — a revoked link must not confirm it once was real.
+	f := newFixture(t)
+	node := f.upload(f.root, "gone.txt", "revoke me")
+	share, token, err := f.shares.Create(f.ctx, f.user, node.ID, shares.CreateOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if ok, err := f.shares.Revoke(f.ctx, f.user, share.ID); err != nil || !ok {
+		t.Fatalf("Revoke: ok=%v err=%v", ok, err)
+	}
+	if _, err := f.shares.View(f.ctx, token, "", ""); !errors.Is(err, shares.ErrNotFound) {
+		t.Errorf("view of revoked share = %v, want ErrNotFound", err)
+	}
+	if _, _, err := f.shares.OpenContent(f.ctx, token, "", ""); !errors.Is(err, shares.ErrNotFound) {
+		t.Errorf("content of revoked share = %v, want ErrNotFound", err)
+	}
+}
