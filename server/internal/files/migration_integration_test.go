@@ -14,6 +14,7 @@ import (
 
 	"github.com/google/uuid"
 
+	"github.com/guru-bharadwaj20/private-cloud/server/internal/blob"
 	"github.com/guru-bharadwaj20/private-cloud/server/internal/cas"
 )
 
@@ -262,5 +263,40 @@ func TestMigrateDedupsIdenticalBlobs(t *testing.T) {
 	}
 	if na.ManifestID == nil || nb.ManifestID == nil || *na.ManifestID != *nb.ManifestID {
 		t.Error("identical blobs did not converge on one manifest after migration")
+	}
+}
+
+func TestMigrateSkipsMissingBlob(t *testing.T) {
+	// If the bytes are already gone, migration cannot invent them and must never
+	// repoint the version at a manifest it could not build. It counts the version
+	// as failed and leaves it blob-backed, where fsck reports the loss against the
+	// format the operator can still reason about.
+	f := newFixture(t)
+	node := f.uploadBytes("gone.bin", uniqueData(40<<10, 7))
+
+	// Delete the blob's bytes behind the database's back.
+	fs := f.svc.Blobs().(*blob.FSStore)
+	if err := fs.Delete(f.ctx, node.BlobKey); err != nil {
+		t.Fatal(err)
+	}
+
+	f.enableCAS(t)
+	res, err := f.svc.MigrateBlobs(f.ctx, 100)
+	if err != nil {
+		t.Fatalf("MigrateBlobs must not abort the pass on one missing blob: %v", err)
+	}
+	if res.Failed != 1 {
+		t.Errorf("failed = %d, want 1", res.Failed)
+	}
+	if res.VersionsMigrated != 0 {
+		t.Errorf("migrated %d despite missing bytes, want 0", res.VersionsMigrated)
+	}
+
+	got, err := f.store.Get(f.ctx, f.user, node.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.ManifestID != nil {
+		t.Error("version was repointed to a manifest built from missing bytes")
 	}
 }
