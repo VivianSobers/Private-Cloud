@@ -109,3 +109,44 @@ func TestMigratePreservesContentAcrossSizes(t *testing.T) {
 		}
 	}
 }
+
+func TestMigrateDropsOldBlobToZeroThenGC(t *testing.T) {
+	// The reason migration 00008 exists. The in-place UPDATE moves the reference
+	// off the blob; the AFTER UPDATE trigger must decrement it to zero, or GC —
+	// which only reclaims blobs at zero — would leak the bytes forever, in the
+	// phase whose entire point is to store less.
+	f := newFixture(t)
+
+	node := f.uploadBytes("leaky.bin", uniqueData(48<<10, 2))
+	key := node.BlobKey
+	if rc := f.blobRefcount(t, key); rc != 1 {
+		t.Fatalf("blob refcount before migration = %d, want 1", rc)
+	}
+
+	f.enableCAS(t)
+	if _, err := f.svc.MigrateBlobs(f.ctx, 100); err != nil {
+		t.Fatalf("MigrateBlobs: %v", err)
+	}
+	if rc := f.blobRefcount(t, key); rc != 0 {
+		t.Fatalf("blob refcount after migration = %d, want 0 — the UPDATE trigger did not fire", rc)
+	}
+
+	// With the reference gone, GC must reclaim the row and the bytes.
+	f.svc.BlobGCGrace = 0
+	gc, err := f.svc.CollectGarbage(f.ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if gc.BlobsFreed == 0 {
+		t.Error("GC freed no blobs after migration unreferenced one")
+	}
+
+	var exists bool
+	if err := f.store.Pool().QueryRow(f.ctx,
+		`SELECT EXISTS(SELECT 1 FROM blobs WHERE storage_key = $1)`, key).Scan(&exists); err != nil {
+		t.Fatal(err)
+	}
+	if exists {
+		t.Error("old blob row survived GC after migration")
+	}
+}
