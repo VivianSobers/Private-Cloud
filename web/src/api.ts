@@ -43,6 +43,19 @@ export interface SearchHit extends Node {
   matched_path: boolean;
 }
 
+/** One entry in a file's history. The id addresses immutable content, so it is
+ *  exposed (unlike a node's storage detail): restore and download name it. */
+export interface Version {
+  id: string;
+  size: number;
+  mime: string;
+  created_at: string;
+  created_by?: string;
+  is_head: boolean;
+  sha256?: string;
+  blake3?: string;
+}
+
 export interface User {
   id: string;
   username: string;
@@ -227,6 +240,18 @@ export const api = {
   // stream a video straight into <video>, none of which a blob in memory does.
   downloadUrl: (id: string, forceDownload = false) =>
     `/api/v1/nodes/${id}/content${forceDownload ? "?download=1" : ""}`,
+
+  // --- versions -------------------------------------------------------------
+
+  versions: (id: string) => request<{ versions: Version[] }>(`/api/v1/nodes/${id}/versions`),
+
+  restoreVersion: (id: string, versionId: string) =>
+    request<{ node: Node }>(`/api/v1/nodes/${id}/versions/${versionId}/restore`, { method: "POST" }),
+
+  // A plain link, like downloadUrl, so the browser streams the past version
+  // straight to disk or a player.
+  versionDownloadUrl: (id: string, versionId: string, forceDownload = false) =>
+    `/api/v1/nodes/${id}/versions/${versionId}/content${forceDownload ? "?download=1" : ""}`,
 };
 
 // --- formatting -------------------------------------------------------------
