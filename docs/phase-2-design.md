@@ -186,6 +186,29 @@ Same discipline as Phase 1: each slice ends green, committed, and useful.
   all the way to its bytes: version rows → manifests → (cascade + trigger) →
   chunk rows → chunk bytes.
 
+**Slice 2 migration notes, recorded where the next reader will look:**
+
+- Migration is an **in-place UPDATE** of the version row — `blob_id` → NULL,
+  `manifest_id` set — never a new version. "Only what it points at changes"
+  (00003), so history stays untouched and the API cannot tell a migrated file
+  from one uploaded straight to CAS.
+- The refcount trigger from 00003 fired on INSERT/DELETE only. Migration 00008
+  teaches it **UPDATE**, or the in-place switch would move the reference off the
+  old blob without decrementing it, and GC — which only reclaims blobs at zero —
+  would leak every migrated blob forever. This is the one subtlety that makes the
+  slice work; `TestMigrateDropsOldBlobToZeroThenGC` pins it.
+- Ordering is the same crash-safety contract as every write path: chunks and
+  manifest durable **before** the switch, old blob left for GC rather than
+  deleted inline. `Store.SwitchToManifest` guards on `blob_id = $old AND
+  manifest_id IS NULL`, so a concurrent overwrite, purge, or second worker lands
+  as a no-op and the freshly built manifest is dropped as an orphan.
+- A version whose bytes are already gone is **failed, never repointed** — you
+  cannot build a manifest from content that is missing, and a size disagreement
+  aborts that one file rather than the whole pass. Those surface through `fsck`.
+- Operator-driven by default (`cloudctl migrate-blobs [--all]`), because a
+  storage rewrite is exactly when §0's backup should already exist. The
+  background loop is opt-in via `PC_BLOB_MIGRATE_INTERVAL`.
+
 **Slice 2's checker landed before slice 1b on purpose.** `fsck` walks the blob
 directory and deletes anything the database does not name. Chunks live in that
 same directory under the same `ab/cd/hash` layout but are recorded in `chunks`,
