@@ -232,6 +232,45 @@ func (s *Service) Open(ctx context.Context, ownerID, id uuid.UUID) (*Node, io.Re
 	return node, rc, nil
 }
 
+// OpenVersion returns the content of one specific version — not necessarily the
+// head — reassembling from chunks when that version is manifest-backed. It is
+// what lets the UI preview or download an old version without restoring it
+// first. Both readers seek, so http.ServeContent answers Range requests either
+// way, exactly as for the head.
+func (s *Service) OpenVersion(ctx context.Context, ownerID, nodeID, versionID uuid.UUID) (*VersionContent, io.ReadSeekCloser, error) {
+	vc, err := s.store.FindVersionContent(ctx, ownerID, nodeID, versionID)
+	if err != nil {
+		return nil, nil, err
+	}
+
+	if vc.ManifestID != nil {
+		if s.cas == nil {
+			return nil, nil, fmt.Errorf("version %s is content-addressed but CAS is not configured", versionID)
+		}
+		rc, err := s.cas.Open(ctx, *vc.ManifestID)
+		if err != nil {
+			return nil, nil, err
+		}
+		return vc, rc, nil
+	}
+
+	if vc.BlobKey == "" {
+		return nil, nil, fmt.Errorf("version %s has no content", versionID)
+	}
+	rc, err := s.blobs.Open(ctx, vc.BlobKey)
+	if errors.Is(err, blob.ErrNotFound) {
+		// The row survived but the bytes did not: database and disk have diverged,
+		// and fsck is the tool that reconciles them.
+		s.log.Error("blob missing for existing version",
+			"version_id", versionID, "blob_key", vc.BlobKey)
+		return nil, nil, fmt.Errorf("content for version %s is missing from storage", versionID)
+	}
+	if err != nil {
+		return nil, nil, err
+	}
+	return vc, rc, nil
+}
+
 // FinishStaged turns a completed staging file into a stored file, choosing the
 // storage format: CAS chunks at or above cas.WholeFileThreshold, a whole-file
 // blob below it. Both the resumable-upload finish and WebDAV's write handle end
