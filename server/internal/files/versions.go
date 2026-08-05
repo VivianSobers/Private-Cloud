@@ -2,9 +2,12 @@ package files
 
 import (
 	"context"
+	"errors"
+	"fmt"
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5"
 )
 
 // Version is one immutable snapshot of a file's content.
@@ -64,4 +67,86 @@ func (s *Store) ListVersions(ctx context.Context, ownerID, nodeID uuid.UUID) ([]
 		return nil, ErrNotFound
 	}
 	return out, nil
+}
+
+// RestoreVersion makes an old version current by adding a NEW version that
+// points at the same content — never by deleting the versions in between.
+//
+// Undoing a mistake by destroying the history after it is how one mistake
+// becomes two: the versions a user rolled past are exactly the ones they may
+// want back. So this is an append, and it reuses the target's blob or manifest
+// rather than copying bytes — the refcount trigger credits the shared content on
+// INSERT, and a restore of a 4 GB file costs one row.
+func (s *Store) RestoreVersion(ctx context.Context, ownerID, nodeID, versionID uuid.UUID) (*Node, error) {
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return nil, err
+	}
+	defer tx.Rollback(ctx) //nolint:errcheck // no-op after commit
+
+	// The node must be ours, live and a file. Ownership here is the authorisation
+	// for the whole operation.
+	var kind string
+	var headSize int64
+	err = tx.QueryRow(ctx, `
+		SELECT n.kind, coalesce(v.size, 0)
+		FROM nodes n
+		LEFT JOIN file_versions v ON v.id = n.head_version_id
+		WHERE n.id = $1 AND n.owner_id = $2 AND n.trashed_at IS NULL`,
+		nodeID, ownerID).Scan(&kind, &headSize)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil, ErrNotFound
+	}
+	if err != nil {
+		return nil, err
+	}
+	if kind != KindFile {
+		return nil, ErrNotAFile
+	}
+
+	// The target version, scoped to this node so a version id from another file
+	// cannot be grafted on. Reusing its content pointers is what makes restore
+	// free.
+	var (
+		blobID, manifestID *uuid.UUID
+		size               int64
+		mime               string
+	)
+	err = tx.QueryRow(ctx, `
+		SELECT blob_id, manifest_id, size, mime
+		FROM file_versions WHERE id = $1 AND node_id = $2`,
+		versionID, nodeID).Scan(&blobID, &manifestID, &size, &mime)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil, ErrNotFound
+	}
+	if err != nil {
+		return nil, err
+	}
+
+	// Only the growth is charged: quota counts the head version, and restore
+	// swaps one head size for another. A restore that shrinks the file, or leaves
+	// it the same, never fails on quota.
+	if size > headSize {
+		if err := checkQuota(ctx, tx, ownerID, size-headSize); err != nil {
+			return nil, err
+		}
+	}
+
+	var newVersionID uuid.UUID
+	if err := tx.QueryRow(ctx, `
+		INSERT INTO file_versions (node_id, blob_id, manifest_id, size, mime, created_by)
+		VALUES ($1,$2,$3,$4,$5,$6) RETURNING id`,
+		nodeID, blobID, manifestID, size, mime, ownerID).Scan(&newVersionID); err != nil {
+		return nil, fmt.Errorf("create restore version: %w", err)
+	}
+	if _, err := tx.Exec(ctx, `
+		UPDATE nodes SET head_version_id = $2, updated_at = now() WHERE id = $1`,
+		nodeID, newVersionID); err != nil {
+		return nil, fmt.Errorf("set head version: %w", err)
+	}
+
+	if err := tx.Commit(ctx); err != nil {
+		return nil, err
+	}
+	return s.Get(ctx, ownerID, nodeID)
 }
