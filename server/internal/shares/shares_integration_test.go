@@ -17,6 +17,7 @@ import (
 	"log/slog"
 	"os"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -267,5 +268,61 @@ func TestRevokedShareLooksLikeNotFound(t *testing.T) {
 	}
 	if _, _, err := f.shares.OpenContent(f.ctx, token, "", ""); !errors.Is(err, shares.ErrNotFound) {
 		t.Errorf("content of revoked share = %v, want ErrNotFound", err)
+	}
+}
+
+func TestDownloadCapDeniesPastLimit(t *testing.T) {
+	f := newFixture(t)
+	node := f.upload(f.root, "capped.txt", "limited")
+	_, token, err := f.shares.Create(f.ctx, f.user, node.ID, shares.CreateOptions{MaxDownloads: 2})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	for i := 0; i < 2; i++ {
+		_, rc, err := f.shares.OpenContent(f.ctx, token, "", "")
+		if err != nil {
+			t.Fatalf("download %d = %v, want success", i+1, err)
+		}
+		rc.Close()
+	}
+	if _, _, err := f.shares.OpenContent(f.ctx, token, "", ""); !errors.Is(err, shares.ErrGone) {
+		t.Errorf("download past the cap = %v, want ErrGone", err)
+	}
+}
+
+func TestDownloadCapHoldsUnderConcurrency(t *testing.T) {
+	// The cap is enforced in a single atomic UPDATE, so many simultaneous
+	// downloads racing the last permitted one cannot over-serve: exactly the cap
+	// succeeds, no more.
+	f := newFixture(t)
+	node := f.upload(f.root, "race.txt", "one at most")
+	const capN = 3
+	_, token, err := f.shares.Create(f.ctx, f.user, node.ID, shares.CreateOptions{MaxDownloads: capN})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	var (
+		wg      sync.WaitGroup
+		mu      sync.Mutex
+		granted int
+	)
+	for i := 0; i < 20; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			_, rc, err := f.shares.OpenContent(f.ctx, token, "", "")
+			if err == nil {
+				rc.Close()
+				mu.Lock()
+				granted++
+				mu.Unlock()
+			}
+		}()
+	}
+	wg.Wait()
+	if granted != capN {
+		t.Errorf("%d downloads were served against a cap of %d", granted, capN)
 	}
 }
