@@ -162,6 +162,14 @@ func run() error {
 	go runCleanup(ctx, authSvc, log)
 	go runGC(ctx, filesSvc, m, cfg.BlobGCInterval, log)
 
+	// Off unless an interval is configured: draining Phase 1 blobs is a rewrite
+	// the operator schedules after a backup, not a deploy-time surprise.
+	if cfg.BlobMigrateInterval > 0 {
+		go runMigration(ctx, filesSvc, m, cfg.BlobMigrateInterval, cfg.BlobMigrateBatch, log)
+		log.Info("background blob migration enabled",
+			"interval", cfg.BlobMigrateInterval.String(), "batch", cfg.BlobMigrateBatch)
+	}
+
 	srv := &http.Server{
 		Addr: cfg.HTTPAddr,
 		Handler: httpapi.NewServer(log, database, m, authSvc, filesSvc, httpapi.Options{
