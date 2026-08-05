@@ -8,6 +8,15 @@ package files_test
 // changing by a single byte, without touching quota, and without leaking the old
 // blob. Both formats coexist, so a reader must not be able to tell which path a
 // file took.
+//
+// MigrateBlobs operates on the WHOLE database — that is the production contract,
+// not a test convenience — and the integration database is shared across
+// fixtures and across concurrently running package binaries. So these tests
+// scope every assertion to their OWN nodes and never to a global return count:
+// another fixture's blob (whose bytes live on a different temp dir) legitimately
+// shows up as a Failed candidate here, and the oldest-first batch would exclude
+// this test's newest file. migrateAllLimit sidesteps the second problem; owner-
+// scoped assertions sidestep the first.
 
 import (
 	"io"
@@ -18,6 +27,11 @@ import (
 	"github.com/guru-bharadwaj20/private-cloud/server/internal/blob"
 	"github.com/guru-bharadwaj20/private-cloud/server/internal/cas"
 )
+
+// migrateAllLimit is large enough that a single pass processes every candidate
+// in the shared database, so a test's own file is always reached no matter how
+// many unrelated blob-backed versions other fixtures have left lying around.
+const migrateAllLimit = 1 << 20
 
 // enableCAS turns on content-addressing AFTER blob-backed files already exist,
 // which is the whole point — casFixture attaches it before anything is written,
@@ -45,6 +59,17 @@ func (f *fixture) blobRefcount(t *testing.T, storageKey string) int64 {
 	return n
 }
 
+// manifestID returns a live node's manifest id, or nil if it is still
+// blob-backed — the single fact almost every migration assertion turns on.
+func (f *fixture) manifestID(t *testing.T, id uuid.UUID) *uuid.UUID {
+	t.Helper()
+	n, err := f.store.Get(f.ctx, f.user, id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return n.ManifestID
+}
+
 func TestMigrateRepointsToManifest(t *testing.T) {
 	f := newFixture(t)
 
@@ -59,12 +84,12 @@ func TestMigrateRepointsToManifest(t *testing.T) {
 	}
 
 	f.enableCAS(t)
-	res, err := f.svc.MigrateBlobs(f.ctx, 100)
+	res, err := f.svc.MigrateBlobs(f.ctx, migrateAllLimit)
 	if err != nil {
 		t.Fatalf("MigrateBlobs: %v", err)
 	}
-	if res.VersionsMigrated != 1 {
-		t.Fatalf("migrated %d version(s), want 1", res.VersionsMigrated)
+	if res.VersionsMigrated < 1 {
+		t.Fatalf("migrated %d version(s), want at least this file's one", res.VersionsMigrated)
 	}
 
 	// The node now reads as content-addressed, and the bytes survive the switch.
@@ -101,11 +126,14 @@ func TestMigratePreservesContentAcrossSizes(t *testing.T) {
 	}
 
 	f.enableCAS(t)
-	if _, err := f.svc.MigrateBlobs(f.ctx, 100); err != nil {
+	if _, err := f.svc.MigrateBlobs(f.ctx, migrateAllLimit); err != nil {
 		t.Fatalf("MigrateBlobs: %v", err)
 	}
 
 	for _, it := range items {
+		if f.manifestID(t, it.id) == nil {
+			t.Errorf("%d-byte file was not migrated", len(it.data))
+		}
 		if got := f.readBack(it.id); string(got) != string(it.data) {
 			t.Errorf("%d-byte file changed across migration", len(it.data))
 		}
@@ -126,21 +154,17 @@ func TestMigrateDropsOldBlobToZeroThenGC(t *testing.T) {
 	}
 
 	f.enableCAS(t)
-	if _, err := f.svc.MigrateBlobs(f.ctx, 100); err != nil {
+	if _, err := f.svc.MigrateBlobs(f.ctx, migrateAllLimit); err != nil {
 		t.Fatalf("MigrateBlobs: %v", err)
 	}
 	if rc := f.blobRefcount(t, key); rc != 0 {
 		t.Fatalf("blob refcount after migration = %d, want 0 — the UPDATE trigger did not fire", rc)
 	}
 
-	// With the reference gone, GC must reclaim the row and the bytes.
+	// With the reference gone, GC must reclaim this row and its bytes.
 	f.svc.BlobGCGrace = 0
-	gc, err := f.svc.CollectGarbage(f.ctx)
-	if err != nil {
+	if _, err := f.svc.CollectGarbage(f.ctx); err != nil {
 		t.Fatal(err)
-	}
-	if gc.BlobsFreed == 0 {
-		t.Error("GC freed no blobs after migration unreferenced one")
 	}
 
 	var exists bool
@@ -165,45 +189,38 @@ func TestMigrateSkipsSmallFiles(t *testing.T) {
 	}
 
 	f.enableCAS(t)
-	res, err := f.svc.MigrateBlobs(f.ctx, 100)
-	if err != nil {
+	if _, err := f.svc.MigrateBlobs(f.ctx, migrateAllLimit); err != nil {
 		t.Fatalf("MigrateBlobs: %v", err)
 	}
-	if res.VersionsMigrated != 0 {
-		t.Errorf("migrated %d sub-threshold file(s), want 0", res.VersionsMigrated)
-	}
 
-	got, err := f.store.Get(f.ctx, f.user, node.ID)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if got.ManifestID != nil {
+	if f.manifestID(t, node.ID) != nil {
 		t.Error("a sub-threshold file was chunked by migration")
 	}
 }
 
 func TestMigrateIsIdempotent(t *testing.T) {
-	// A second pass must find nothing: already-chunked versions are not
-	// candidates, so re-running the drain — or a background loop overlapping a
-	// manual run — is a no-op, never a double rewrite.
+	// A second pass must not touch an already-chunked version: chunked versions
+	// are not candidates, so re-running the drain — or a background loop
+	// overlapping a manual run — leaves the file on the exact manifest it already
+	// had, never rewriting it.
 	f := newFixture(t)
-	f.uploadBytes("once.bin", uniqueData(32<<10, 4))
+	node := f.uploadBytes("once.bin", uniqueData(32<<10, 4))
 	f.enableCAS(t)
 
-	first, err := f.svc.MigrateBlobs(f.ctx, 100)
-	if err != nil {
+	if _, err := f.svc.MigrateBlobs(f.ctx, migrateAllLimit); err != nil {
 		t.Fatal(err)
 	}
-	if first.VersionsMigrated != 1 {
-		t.Fatalf("first pass migrated %d, want 1", first.VersionsMigrated)
+	first := f.manifestID(t, node.ID)
+	if first == nil {
+		t.Fatal("file was not migrated on the first pass")
 	}
 
-	second, err := f.svc.MigrateBlobs(f.ctx, 100)
-	if err != nil {
+	if _, err := f.svc.MigrateBlobs(f.ctx, migrateAllLimit); err != nil {
 		t.Fatal(err)
 	}
-	if second.VersionsMigrated != 0 {
-		t.Errorf("second pass migrated %d, want 0", second.VersionsMigrated)
+	second := f.manifestID(t, node.ID)
+	if second == nil || *second != *first {
+		t.Errorf("a second pass moved the file off its manifest: %v -> %v", first, second)
 	}
 }
 
@@ -220,7 +237,7 @@ func TestMigratePreservesQuota(t *testing.T) {
 	}
 
 	f.enableCAS(t)
-	if _, err := f.svc.MigrateBlobs(f.ctx, 100); err != nil {
+	if _, err := f.svc.MigrateBlobs(f.ctx, migrateAllLimit); err != nil {
 		t.Fatalf("MigrateBlobs: %v", err)
 	}
 
@@ -243,26 +260,17 @@ func TestMigrateDedupsIdenticalBlobs(t *testing.T) {
 	b := f.uploadBytes("b.bin", data)
 
 	f.enableCAS(t)
-	res, err := f.svc.MigrateBlobs(f.ctx, 100)
+	res, err := f.svc.MigrateBlobs(f.ctx, migrateAllLimit)
 	if err != nil {
 		t.Fatalf("MigrateBlobs: %v", err)
 	}
-	if res.VersionsMigrated != 2 {
-		t.Fatalf("migrated %d, want 2", res.VersionsMigrated)
-	}
-	if res.Deduped != 1 {
-		t.Errorf("deduped %d, want 1 — the second blob should have reused the first's manifest", res.Deduped)
+	if res.Deduped < 1 {
+		t.Errorf("deduped %d, want at least the second identical blob", res.Deduped)
 	}
 
-	na, err := f.store.Get(f.ctx, f.user, a.ID)
-	if err != nil {
-		t.Fatal(err)
-	}
-	nb, err := f.store.Get(f.ctx, f.user, b.ID)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if na.ManifestID == nil || nb.ManifestID == nil || *na.ManifestID != *nb.ManifestID {
+	na := f.manifestID(t, a.ID)
+	nb := f.manifestID(t, b.ID)
+	if na == nil || nb == nil || *na != *nb {
 		t.Error("identical blobs did not converge on one manifest after migration")
 	}
 }
@@ -282,50 +290,56 @@ func TestMigrateSkipsMissingBlob(t *testing.T) {
 	}
 
 	f.enableCAS(t)
-	res, err := f.svc.MigrateBlobs(f.ctx, 100)
+	res, err := f.svc.MigrateBlobs(f.ctx, migrateAllLimit)
 	if err != nil {
 		t.Fatalf("MigrateBlobs must not abort the pass on one missing blob: %v", err)
 	}
-	if res.Failed != 1 {
-		t.Errorf("failed = %d, want 1", res.Failed)
-	}
-	if res.VersionsMigrated != 0 {
-		t.Errorf("migrated %d despite missing bytes, want 0", res.VersionsMigrated)
+	if res.Failed < 1 {
+		t.Errorf("failed = %d, want at least this file's one", res.Failed)
 	}
 
-	got, err := f.store.Get(f.ctx, f.user, node.ID)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if got.ManifestID != nil {
+	// The version stays blob-backed: it was never repointed at a manifest built
+	// from bytes that do not exist.
+	if f.manifestID(t, node.ID) != nil {
 		t.Error("version was repointed to a manifest built from missing bytes")
 	}
 }
 
-func TestMigrateRespectsBatchLimit(t *testing.T) {
-	// The drain is bounded per pass so one tick cannot monopolise a small box.
-	// Three candidates, a limit of two: the pass takes two and leaves one for the
-	// next.
+func TestMigratableVersionsHonoursLimit(t *testing.T) {
+	// Batch bounding lives in the candidate query's LIMIT — asserted here at the
+	// store level, because the pass's own return count is global and unstable in
+	// a shared database. Three of this fixture's own blobs guarantee the pool has
+	// at least two candidates; a limit of two must never return more.
 	f := newFixture(t)
+
+	mine := map[uuid.UUID]bool{}
 	for i := 0; i < 3; i++ {
-		f.uploadBytes(uuid.NewString()+".bin", uniqueData(16<<10, int64(200+i)))
+		n := f.uploadBytes(uuid.NewString()+".bin", uniqueData(16<<10, int64(200+i)))
+		mine[*n.HeadVersionID] = true
 	}
-	f.enableCAS(t)
 
-	first, err := f.svc.MigrateBlobs(f.ctx, 2)
+	two, err := f.store.MigratableVersions(f.ctx, cas.WholeFileThreshold, 2)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if first.VersionsMigrated != 2 {
-		t.Fatalf("bounded pass migrated %d, want 2", first.VersionsMigrated)
+	if len(two) != 2 {
+		t.Errorf("limit=2 returned %d candidate(s), want exactly 2", len(two))
 	}
 
-	second, err := f.svc.MigrateBlobs(f.ctx, 2)
+	// And an unbounded listing must contain all three of this fixture's blobs —
+	// proof the query selects blob-backed versions, not just that it caps them.
+	all, err := f.store.MigratableVersions(f.ctx, cas.WholeFileThreshold, migrateAllLimit)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if second.VersionsMigrated != 1 {
-		t.Errorf("follow-up pass migrated %d, want the remaining 1", second.VersionsMigrated)
+	found := 0
+	for _, v := range all {
+		if mine[v.VersionID] {
+			found++
+		}
+	}
+	if found != 3 {
+		t.Errorf("unbounded listing found %d of this fixture's 3 blobs", found)
 	}
 }
 
@@ -338,8 +352,11 @@ func TestMigratedFileSeeksForRange(t *testing.T) {
 	node := f.uploadBytes("clip.bin", data)
 
 	f.enableCAS(t)
-	if _, err := f.svc.MigrateBlobs(f.ctx, 100); err != nil {
+	if _, err := f.svc.MigrateBlobs(f.ctx, migrateAllLimit); err != nil {
 		t.Fatalf("MigrateBlobs: %v", err)
+	}
+	if f.manifestID(t, node.ID) == nil {
+		t.Fatal("file was not migrated")
 	}
 
 	_, rc, err := f.svc.Open(f.ctx, f.user, node.ID)
