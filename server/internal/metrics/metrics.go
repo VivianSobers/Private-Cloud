@@ -117,6 +117,10 @@ func New(version, commit string, poolStats func() float64) *Metrics {
 			Name: "privatecloud_migrated_bytes_total",
 			Help: "New chunk bytes written by background migration, after dedup and compression.",
 		}),
+		VersionsPruned: prometheus.NewCounter(prometheus.CounterOpts{
+			Name: "privatecloud_versions_pruned_total",
+			Help: "Old file versions removed by the retention policy.",
+		}),
 	}
 
 	m.DBPoolAcquired = prometheus.NewGaugeFunc(
@@ -140,6 +144,7 @@ func New(version, commit string, poolStats func() float64) *Metrics {
 		m.GCBytesFreed,
 		m.MigratedVersions,
 		m.MigratedBytes,
+		m.VersionsPruned,
 		// Go runtime and process metrics: GC pressure, goroutine count, open
 		// FDs. The first two are how you spot a leak before it becomes an
 		// outage.
