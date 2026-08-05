@@ -83,3 +83,40 @@ func (s *Server) handleRestoreVersion(w http.ResponseWriter, r *http.Request) {
 	}
 	writeJSON(w, r, http.StatusOK, map[string]any{"node": nodeJSON(node)})
 }
+
+// handleDownloadVersion serves one past version's bytes. It carries the same
+// sandboxing headers as the live download — a stored HTML or SVG version is just
+// as capable of same-origin XSS as the current one — and leans on ServeContent
+// for Range, If-Range and 304 handling. The modtime is the version's own
+// created_at, so caches key on the snapshot rather than the file's latest edit.
+func (s *Server) handleDownloadVersion(w http.ResponseWriter, r *http.Request) {
+	id, ok := s.nodeIDParam(w, r)
+	if !ok {
+		return
+	}
+	versionID, ok := s.versionIDParam(w, r)
+	if !ok {
+		return
+	}
+
+	vc, content, err := s.files.OpenVersion(r.Context(), CurrentUser(r.Context()).ID, id, versionID)
+	if err != nil {
+		s.writeFilesError(w, r, "open version", err)
+		return
+	}
+	defer content.Close()
+
+	if len(vc.ContentHash) > 0 {
+		w.Header().Set("ETag", `"`+hex.EncodeToString(vc.ContentHash)+`"`)
+	}
+	w.Header().Set("Content-Type", vc.MIME)
+	w.Header().Set("Cache-Control", "private, max-age=0, must-revalidate")
+	w.Header().Set("X-Content-Type-Options", "nosniff")
+	w.Header().Set("Content-Security-Policy", "default-src 'none'; sandbox")
+	w.Header().Set("Content-Disposition", contentDisposition(vc.Name, r.URL.Query().Get("download") != ""))
+	w.Header().Set("Accept-Ranges", "bytes")
+
+	counter := &countingWriter{ResponseWriter: w}
+	http.ServeContent(counter, r, vc.Name, vc.CreatedAt, content)
+	s.metrics.DownloadBytes.Add(float64(counter.n))
+}
