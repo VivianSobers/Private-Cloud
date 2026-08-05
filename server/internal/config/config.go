@@ -115,6 +115,11 @@ func Load() (*Config, error) {
 		UploadTTL:      envDuration("PC_UPLOAD_TTL", 48*time.Hour),
 
 		MigrateOnStart: envBool("PC_MIGRATE_ON_START", true),
+
+		// Off by default: the operator drains Phase 1 blobs deliberately, after a
+		// backup, rather than having a deploy start rewriting storage on its own.
+		BlobMigrateInterval: envDuration("PC_BLOB_MIGRATE_INTERVAL", 0),
+		BlobMigrateBatch:    envInt("PC_BLOB_MIGRATE_BATCH", 100),
 	}
 
 	if err := c.validate(); err != nil {
