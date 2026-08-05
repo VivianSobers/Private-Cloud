@@ -24,6 +24,7 @@ import (
 	"github.com/guru-bharadwaj20/private-cloud/server/internal/files"
 	"github.com/guru-bharadwaj20/private-cloud/server/internal/httpapi"
 	"github.com/guru-bharadwaj20/private-cloud/server/internal/metrics"
+	"github.com/guru-bharadwaj20/private-cloud/server/internal/shares"
 )
 
 // End-to-end tests over the real router, middleware, auth and store.
@@ -80,9 +81,10 @@ func newAPIFixture(t *testing.T) *apiFixture {
 		t.Fatalf("blob store: %v", err)
 	}
 	filesSvc := files.NewService(files.NewStore(database.Pool), blobs, log)
+	sharesSvc := shares.NewService(shares.NewStore(database.Pool), filesSvc, log)
 
 	m := metrics.New("test", "test", func() float64 { return 0 })
-	srv := httpapi.NewServer(log, database, m, authSvc, filesSvc, httpapi.Options{
+	srv := httpapi.NewServer(log, database, m, authSvc, filesSvc, sharesSvc, httpapi.Options{
 		Version: "test", Commit: "test", CookieName: "pc_session",
 	})
 

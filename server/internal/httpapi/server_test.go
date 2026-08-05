@@ -21,7 +21,7 @@ func newTestServer(t *testing.T) http.Handler {
 	t.Helper()
 	log := slog.New(slog.NewTextHandler(io.Discard, nil))
 	m := metrics.New("test", "abc123", func() float64 { return 0 })
-	return NewServer(log, nil, m, nil, nil, Options{Version: "test", Commit: "abc123"}).Handler()
+	return NewServer(log, nil, m, nil, nil, nil, Options{Version: "test", Commit: "abc123"}).Handler()
 }
 
 func TestHealthzIsOKWithoutDatabase(t *testing.T) {
@@ -193,7 +193,7 @@ func TestUnmatchedRoutesShareOneLabel(t *testing.T) {
 func TestPanicIsRecovered(t *testing.T) {
 	log := slog.New(slog.NewTextHandler(io.Discard, nil))
 	m := metrics.New("test", "abc", func() float64 { return 0 })
-	s := NewServer(log, nil, m, nil, nil, Options{Version: "test", Commit: "abc"})
+	s := NewServer(log, nil, m, nil, nil, nil, Options{Version: "test", Commit: "abc"})
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /boom", func(http.ResponseWriter, *http.Request) {
