@@ -199,6 +199,13 @@ func (c *Config) validate() error {
 	if c.UploadTTL <= 0 {
 		return fmt.Errorf("PC_UPLOAD_TTL must be positive")
 	}
+	// The interval is allowed to be zero — that is how the background drain is
+	// disabled — but an enabled loop with a non-positive batch would list zero
+	// candidates every tick and never make progress, a silent no-op worse than
+	// an error.
+	if c.BlobMigrateInterval > 0 && c.BlobMigrateBatch <= 0 {
+		return fmt.Errorf("PC_BLOB_MIGRATE_BATCH must be positive when PC_BLOB_MIGRATE_INTERVAL is set")
+	}
 	return nil
 }
 
