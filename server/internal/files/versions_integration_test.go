@@ -180,3 +180,27 @@ func TestOpenVersionServesHistoricalBytes(t *testing.T) {
 		t.Errorf("seeked read = %q, want %q", tail, old[4:12])
 	}
 }
+
+func TestPruneKeepsVersionsWithinRetention(t *testing.T) {
+	// Anything younger than the retention window survives whatever its rank: a
+	// burst of edits in one afternoon is not history to throw away, even past the
+	// keep-count. Fresh versions here, an aggressive keepN, a real window — none
+	// should be pruned. Scoped to this file's own history, because PruneVersions
+	// is global and the shared database holds other fixtures' versions.
+	f := newFixture(t)
+	f.overwrite("live.txt", "a")
+	f.overwrite("live.txt", "b")
+	node := f.overwrite("live.txt", "c")
+
+	if _, err := f.store.PruneVersions(f.ctx, 1, 90*24*time.Hour, 1000); err != nil {
+		t.Fatalf("PruneVersions: %v", err)
+	}
+
+	after, err := f.store.ListVersions(f.ctx, f.user, node.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(after) != 3 {
+		t.Errorf("recent history pruned: %d versions remain, want 3", len(after))
+	}
+}
