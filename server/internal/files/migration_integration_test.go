@@ -179,3 +179,28 @@ func TestMigrateSkipsSmallFiles(t *testing.T) {
 		t.Error("a sub-threshold file was chunked by migration")
 	}
 }
+
+func TestMigrateIsIdempotent(t *testing.T) {
+	// A second pass must find nothing: already-chunked versions are not
+	// candidates, so re-running the drain — or a background loop overlapping a
+	// manual run — is a no-op, never a double rewrite.
+	f := newFixture(t)
+	f.uploadBytes("once.bin", uniqueData(32<<10, 4))
+	f.enableCAS(t)
+
+	first, err := f.svc.MigrateBlobs(f.ctx, 100)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if first.VersionsMigrated != 1 {
+		t.Fatalf("first pass migrated %d, want 1", first.VersionsMigrated)
+	}
+
+	second, err := f.svc.MigrateBlobs(f.ctx, 100)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if second.VersionsMigrated != 0 {
+		t.Errorf("second pass migrated %d, want 0", second.VersionsMigrated)
+	}
+}
