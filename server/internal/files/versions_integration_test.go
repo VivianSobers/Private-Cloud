@@ -204,3 +204,42 @@ func TestPruneKeepsVersionsWithinRetention(t *testing.T) {
 		t.Errorf("recent history pruned: %d versions remain, want 3", len(after))
 	}
 }
+
+func TestPruneDropsAgedExcess(t *testing.T) {
+	// A version pruned only when it fails BOTH tests: beyond the keep-count AND
+	// older than the window. Backdate the two non-head versions past the window,
+	// keep just one, and they go — the head, newest and within the window, stays.
+	f := newFixture(t)
+	f.overwrite("old.txt", "v1")
+	f.overwrite("old.txt", "v2")
+	node := f.overwrite("old.txt", "v3")
+
+	versions, err := f.store.ListVersions(f.ctx, f.user, node.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, v := range versions {
+		if !v.IsHead {
+			f.backdate(t, v.ID, 200*24*time.Hour)
+		}
+	}
+
+	pruned, err := f.store.PruneVersions(f.ctx, 1, 90*24*time.Hour, 1000)
+	if err != nil {
+		t.Fatalf("PruneVersions: %v", err)
+	}
+	if pruned < 2 {
+		t.Errorf("pruned %d, want at least this file's 2 aged versions", pruned)
+	}
+
+	after, err := f.store.ListVersions(f.ctx, f.user, node.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(after) != 1 || !after[0].IsHead {
+		t.Fatalf("want only the head left, got %d versions", len(after))
+	}
+	if got := string(f.readBack(node.ID)); got != "v3" {
+		t.Errorf("surviving head reads %q, want v3", got)
+	}
+}
