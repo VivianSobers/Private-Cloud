@@ -19,6 +19,7 @@ import (
 	"github.com/guru-bharadwaj20/private-cloud/server/internal/db"
 	"github.com/guru-bharadwaj20/private-cloud/server/internal/files"
 	"github.com/guru-bharadwaj20/private-cloud/server/internal/metrics"
+	"github.com/guru-bharadwaj20/private-cloud/server/internal/shares"
 )
 
 type Server struct {
@@ -27,6 +28,7 @@ type Server struct {
 	metrics *metrics.Metrics
 	auth    *auth.Service
 	files   *files.Service
+	shares  *shares.Service
 	version string
 	commit  string
 	started time.Time
@@ -46,7 +48,7 @@ type Options struct {
 	CookieSecure bool
 }
 
-func NewServer(log *slog.Logger, database *db.DB, m *metrics.Metrics, authSvc *auth.Service, filesSvc *files.Service, opts Options) *Server {
+func NewServer(log *slog.Logger, database *db.DB, m *metrics.Metrics, authSvc *auth.Service, filesSvc *files.Service, sharesSvc *shares.Service, opts Options) *Server {
 	if opts.CookieName == "" {
 		opts.CookieName = "pc_session"
 	}
@@ -56,6 +58,7 @@ func NewServer(log *slog.Logger, database *db.DB, m *metrics.Metrics, authSvc *a
 		metrics:      m,
 		auth:         authSvc,
 		files:        filesSvc,
+		shares:       sharesSvc,
 		version:      opts.Version,
 		commit:       opts.Commit,
 		started:      time.Now(),
@@ -160,6 +163,20 @@ func (s *Server) Handler() http.Handler {
 
 	mux.HandleFunc("GET /api/v1/usage", s.requireAuth(s.handleUsage))
 	mux.HandleFunc("GET /api/v1/search", s.requireAuth(s.handleSearch))
+
+	// --- shares: management (authenticated) ----------------------------------
+	mux.HandleFunc("POST /api/v1/nodes/{id}/shares", s.requireAuth(s.handleCreateShare))
+	mux.HandleFunc("GET /api/v1/shares", s.requireAuth(s.handleListShares))
+	mux.HandleFunc("DELETE /api/v1/shares/{id}", s.requireAuth(s.handleRevokeShare))
+
+	// --- shares: public plane (UNAUTHENTICATED, rate limited) ----------------
+	// The only routes reachable without a session. Rate limited because they are
+	// internet-facing and password unlock is a guessing target; each is its own
+	// surface, and Caddy's share site block exposes ONLY these under /api.
+	mux.HandleFunc("GET /api/v1/s/{token}", rl(s.handleShareView))
+	mux.HandleFunc("POST /api/v1/s/{token}/unlock", rl(s.handleShareUnlock))
+	mux.HandleFunc("GET /api/v1/s/{token}/content", rl(s.handleShareContent))
+	mux.HandleFunc("HEAD /api/v1/s/{token}/content", rl(s.handleShareContent))
 
 	// App passwords: credentials for clients that cannot run a WebAuthn
 	// ceremony. Managed through the session-authenticated API, never through
