@@ -127,6 +127,8 @@ func run() error {
 		return fsckCommand(ctx, database, log, args[1:])
 	case "gc":
 		return gcCommand(ctx, database, log)
+	case "migrate-blobs":
+		return migrateCommand(ctx, database, log, args[1:])
 	case "help", "-h", "--help":
 		usage()
 		return nil
