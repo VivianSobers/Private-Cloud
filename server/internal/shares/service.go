@@ -8,6 +8,7 @@ import (
 	"crypto/subtle"
 	"encoding/base64"
 	"errors"
+	"io"
 	"log/slog"
 	"path"
 	"strings"
@@ -226,6 +227,65 @@ func (s *Service) View(ctx context.Context, token, proof, relPath string) (*Publ
 		pv.Entries = append(pv.Entries, Entry{Name: c.Name, Kind: c.Kind, Size: c.Size})
 	}
 	return pv, nil
+}
+
+// Content is the metadata the download handler needs to serve a shared file
+// safely — and nothing it does not. No path, no owner, no ids.
+type Content struct {
+	Name        string
+	MIME        string
+	ContentHash []byte
+	ModTime     time.Time
+}
+
+// OpenContent serves one file's bytes through a share. The download cap is
+// charged FIRST, in a single atomic statement, so two visitors racing the last
+// permitted download cannot both be served; only then are the bytes opened. A
+// folder path that resolves to a subdirectory is refused — there is no
+// "download a folder", and no public WebDAV to make one.
+func (s *Service) OpenContent(ctx context.Context, token, proof, relPath string) (*Content, io.ReadSeekCloser, error) {
+	sh, err := s.lookup(ctx, token)
+	if err != nil {
+		return nil, nil, err
+	}
+	if err := checkValidity(sh, time.Now()); err != nil {
+		return nil, nil, err
+	}
+	if sh.HasPassword() && !validUnlock(sh, proof) {
+		return nil, nil, ErrPasswordNeeded
+	}
+
+	node, err := s.resolveNode(ctx, sh, relPath)
+	if err != nil {
+		return nil, nil, err
+	}
+	if !node.IsFile() {
+		return nil, nil, ErrNotAFile
+	}
+
+	// Charge the cap before serving. If this returns false the share was revoked,
+	// expired, or spent between the check above and now — the byte stream must not
+	// start.
+	ok, err := s.store.TryIncrementDownload(ctx, sh.ID)
+	if err != nil {
+		return nil, nil, err
+	}
+	if !ok {
+		return nil, nil, ErrGone
+	}
+
+	fnode, rc, err := s.files.Open(ctx, sh.OwnerID, node.ID)
+	if err != nil {
+		// The file vanished between resolve and open. The download was already
+		// counted; over-counting by one favours the cap holding, the safe side.
+		return nil, nil, ErrNotFound
+	}
+	return &Content{
+		Name:        fnode.Name,
+		MIME:        fnode.MIME,
+		ContentHash: fnode.ContentHash,
+		ModTime:     fnode.UpdatedAt,
+	}, rc, nil
 }
 
 // hashToken hashes a URL token for lookup. SHA-256 is right here for the same
