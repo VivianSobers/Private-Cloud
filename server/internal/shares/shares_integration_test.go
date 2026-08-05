@@ -383,3 +383,66 @@ func TestFolderShareListsAndConfines(t *testing.T) {
 		t.Errorf("downloading a folder = %v, want ErrNotAFile", err)
 	}
 }
+
+func TestTrashedTargetDenied(t *testing.T) {
+	// Trashing a shared file does not delete the share row (only purging does), so
+	// serving must re-check the target is live — a share must never resurrect a
+	// trashed file into public view.
+	f := newFixture(t)
+	node := f.upload(f.root, "willtrash.txt", "content")
+	_, token, err := f.shares.Create(f.ctx, f.user, node.ID, shares.CreateOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.files.Store().Trash(f.ctx, f.user, node.ID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.shares.View(f.ctx, token, "", ""); !errors.Is(err, shares.ErrNotFound) {
+		t.Errorf("view of a trashed target = %v, want ErrNotFound", err)
+	}
+	if _, _, err := f.shares.OpenContent(f.ctx, token, "", ""); !errors.Is(err, shares.ErrNotFound) {
+		t.Errorf("content of a trashed target = %v, want ErrNotFound", err)
+	}
+}
+
+func TestForeignCannotRevoke(t *testing.T) {
+	f := newFixture(t)
+	node := f.upload(f.root, "mine.txt", "content")
+	share, _, err := f.shares.Create(f.ctx, f.user, node.ID, shares.CreateOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ok, err := f.shares.Revoke(f.ctx, uuid.New(), share.ID); err != nil || ok {
+		t.Errorf("a stranger revoked the share: ok=%v err=%v", ok, err)
+	}
+	if ok, _ := f.shares.Revoke(f.ctx, f.user, share.ID); !ok {
+		t.Error("the owner could not revoke their own share")
+	}
+}
+
+func TestUnlockProofIsPerShare(t *testing.T) {
+	// The unlock proof is an HMAC over a per-share key, so a proof earned on one
+	// link cannot open another — even when both use the same password.
+	f := newFixture(t)
+	n1 := f.upload(f.root, "one.txt", "first")
+	n2 := f.upload(f.root, "two.txt", "second")
+	_, t1, err := f.shares.Create(f.ctx, f.user, n1.ID, shares.CreateOptions{Password: "same"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, t2, err := f.shares.Create(f.ctx, f.user, n2.ID, shares.CreateOptions{Password: "same"})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	proof1, err := f.shares.Unlock(f.ctx, t1, "same")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if v, err := f.shares.View(f.ctx, t2, proof1, ""); err != nil || v.Unlocked {
+		t.Errorf("share one's proof unlocked share two: %+v (err %v)", v, err)
+	}
+	if _, _, err := f.shares.OpenContent(f.ctx, t2, proof1, ""); !errors.Is(err, shares.ErrPasswordNeeded) {
+		t.Errorf("cross-share proof served content: %v", err)
+	}
+}
