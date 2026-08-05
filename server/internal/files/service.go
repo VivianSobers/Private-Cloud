@@ -47,6 +47,14 @@ type Service struct {
 	BlobGCGrace time.Duration
 	// UploadTTL bounds how long an abandoned resumable upload occupies disk.
 	UploadTTL time.Duration
+
+	// KeepVersions is how many of a file's newest versions survive pruning
+	// regardless of age. VersionRetention keeps anything younger than it whatever
+	// its rank. A version is pruned only when it fails BOTH tests — the forgiving
+	// default the design asks for, cheap because with CAS an unchanged file saved
+	// many times costs manifest rows and no chunks.
+	KeepVersions     int
+	VersionRetention time.Duration
 }
 
 func NewService(store *Store, blobs blob.Store, log *slog.Logger) *Service {
@@ -54,9 +62,11 @@ func NewService(store *Store, blobs blob.Store, log *slog.Logger) *Service {
 		store:          store,
 		blobs:          blobs,
 		log:            log,
-		TrashRetention: 30 * 24 * time.Hour,
-		BlobGCGrace:    time.Hour,
-		UploadTTL:      defaultUploadTTL,
+		TrashRetention:   30 * 24 * time.Hour,
+		BlobGCGrace:      time.Hour,
+		UploadTTL:        defaultUploadTTL,
+		KeepVersions:     25,
+		VersionRetention: 90 * 24 * time.Hour,
 	}
 	if st, ok := blobs.(blob.Stager); ok {
 		s.stager = st
