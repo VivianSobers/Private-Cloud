@@ -132,6 +132,32 @@ func (s *Service) Revoke(ctx context.Context, ownerID, id uuid.UUID) (bool, erro
 	return s.store.Revoke(ctx, ownerID, id)
 }
 
+// lookup resolves a presented token to its share, collapsing a missing row into
+// ErrNotFound so the public surface answers typos and revocations identically.
+func (s *Service) lookup(ctx context.Context, token string) (*Share, error) {
+	if token == "" {
+		return nil, ErrNotFound
+	}
+	return s.store.FindByTokenHash(ctx, hashToken(token))
+}
+
+// Unlock verifies a password and returns the proof the content endpoint will
+// require. For a passwordless share it succeeds trivially — the link alone is
+// the credential — so a client can call it uniformly without branching.
+func (s *Service) Unlock(ctx context.Context, token, password string) (string, error) {
+	sh, err := s.lookup(ctx, token)
+	if err != nil {
+		return "", err
+	}
+	if err := checkValidity(sh, time.Now()); err != nil {
+		return "", err
+	}
+	if sh.HasPassword() && !auth.VerifySecret(password, sh.PasswordHash) {
+		return "", ErrWrongPassword
+	}
+	return unlockProof(sh), nil
+}
+
 // hashToken hashes a URL token for lookup. SHA-256 is right here for the same
 // reason it is for session tokens: the token is 256 bits of CSPRNG output, so
 // there is no low-entropy secret to slow an attacker over, and hashing at rest
