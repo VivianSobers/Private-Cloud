@@ -24,6 +24,7 @@ import (
 	"github.com/guru-bharadwaj20/private-cloud/server/internal/files"
 	"github.com/guru-bharadwaj20/private-cloud/server/internal/httpapi"
 	"github.com/guru-bharadwaj20/private-cloud/server/internal/metrics"
+	"github.com/guru-bharadwaj20/private-cloud/server/internal/shares"
 )
 
 // Injected at build time via -ldflags; see the Dockerfile and Makefile.
@@ -158,11 +159,15 @@ func run() error {
 	}
 	filesSvc.SetCAS(casStore)
 
+	// The public share plane. It depends on files (serving a share opens the
+	// owner's content), never the reverse.
+	sharesSvc := shares.NewService(shares.NewStore(database.Pool), filesSvc, log)
+
 	// Expired sessions and abandoned ceremonies would otherwise accumulate
 	// forever. Cheap enough to run in-process rather than adding a job queue
 	// for a single periodic DELETE.
 	go runCleanup(ctx, authSvc, log)
-	go runGC(ctx, filesSvc, m, cfg.BlobGCInterval, log)
+	go runGC(ctx, filesSvc, sharesSvc, m, cfg.BlobGCInterval, log)
 
 	// Off unless an interval is configured: draining Phase 1 blobs is a rewrite
 	// the operator schedules after a backup, not a deploy-time surprise.
@@ -174,7 +179,7 @@ func run() error {
 
 	srv := &http.Server{
 		Addr: cfg.HTTPAddr,
-		Handler: httpapi.NewServer(log, database, m, authSvc, filesSvc, httpapi.Options{
+		Handler: httpapi.NewServer(log, database, m, authSvc, filesSvc, sharesSvc, httpapi.Options{
 			Version:      version,
 			Commit:       commit,
 			CookieName:   cfg.CookieName,
@@ -259,7 +264,7 @@ func runCleanup(ctx context.Context, svc *auth.Service, log *slog.Logger) {
 // Deliberately not run at startup: a restart loop would otherwise turn into a
 // tight deletion loop, and there is nothing urgent about reclaiming space that
 // has already been unreferenced for hours.
-func runGC(ctx context.Context, svc *files.Service, m *metrics.Metrics, interval time.Duration, log *slog.Logger) {
+func runGC(ctx context.Context, svc *files.Service, sharesSvc *shares.Service, m *metrics.Metrics, interval time.Duration, log *slog.Logger) {
 	ticker := time.NewTicker(interval)
 	defer ticker.Stop()
 
@@ -268,6 +273,14 @@ func runGC(ctx context.Context, svc *files.Service, m *metrics.Metrics, interval
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
+			// Share rows first: revoked and expired links are cheap to reap and
+			// belong to the same housekeeping pass.
+			if n, err := sharesSvc.CollectStale(ctx); err != nil {
+				log.Warn("share cleanup failed", "error", err)
+			} else if n > 0 {
+				log.Info("stale shares reclaimed", "count", n)
+			}
+
 			res, err := svc.CollectGarbage(ctx)
 			if err != nil {
 				log.Warn("garbage collection failed", "error", err)
