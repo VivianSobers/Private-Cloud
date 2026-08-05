@@ -37,6 +37,10 @@ type Metrics struct {
 	// count that stops climbing is the signal the backlog is cleared.
 	MigratedVersions prometheus.Counter
 	MigratedBytes    prometheus.Counter
+
+	// Old versions retired by the retention policy. Watching it climb confirms
+	// history is actually being bounded rather than accumulating unnoticed.
+	VersionsPruned prometheus.Counter
 }
 
 // New builds a dedicated registry rather than using the global default. A
