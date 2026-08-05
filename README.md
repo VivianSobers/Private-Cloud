@@ -116,7 +116,7 @@ are documented, deliberate exceptions to the isolation rules, not oversights.
 |---|---|---|
 | 0 | Storage, network, monitoring, backups, runbooks | **complete** — the three `sudo` restore gates in [docs/phase-1-design.md](docs/phase-1-design.md) §0 are the operator's to tick |
 | 1 | MVP: auth (passkeys), upload/download, resumable uploads, web UI, WebDAV, search | **complete** — all 7 slices |
-| **2** | CAS storage engine, versioning, dedup, share links | **in progress** — slices 1–2 complete: uploads chunk through FastCDC+BLAKE3+zstd with cross-user dedup, GC/fsck/refcount audit hold, and Phase 1 blobs migrate into chunks in the background; versioning and share links next |
+| **2** | CAS storage engine, versioning, dedup, share links | **in progress** — slices 1–3 complete: uploads chunk through FastCDC+BLAKE3+zstd with cross-user dedup, Phase 1 blobs migrate into chunks in the background, and version history is real — list, restore (as an append), download any past version, retention pruning through GC; share links next |
 | 3 | Sync engine: change journal, Go client, conflict resolution | not started |
 | 4 | ML: OCR, semantic search, tagging; OIDC; hardening | not started |
 
