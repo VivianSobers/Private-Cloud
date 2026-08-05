@@ -72,6 +72,17 @@ type Config struct {
 	// single-node deployment; would be wrong with multiple replicas racing to
 	// migrate, which is why it is a flag rather than unconditional.
 	MigrateOnStart bool
+
+	// BlobMigrateInterval is how often the background pass rewrites Phase 1
+	// whole-file blobs into content-addressed chunks. Zero disables it — the
+	// default, because a storage rewrite is exactly when a fresh backup should be
+	// taken first, so draining the backlog is a deliberate operator act
+	// (`cloudctl migrate-blobs`), not something that fires unbidden on deploy.
+	BlobMigrateInterval time.Duration
+	// BlobMigrateBatch bounds how many versions one pass rewrites, so the drain
+	// stays incremental and a single tick cannot monopolise disk and CPU on a
+	// small box for an unbounded time.
+	BlobMigrateBatch int
 }
 
 func Load() (*Config, error) {
