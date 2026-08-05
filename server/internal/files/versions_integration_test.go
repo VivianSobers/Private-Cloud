@@ -86,3 +86,55 @@ func TestListVersionsRejectsForeignOwner(t *testing.T) {
 		t.Errorf("ListVersions as a foreign owner = %v, want ErrNotFound", err)
 	}
 }
+
+func TestRestoreVersionAppendsNewHead(t *testing.T) {
+	// Restore rolls content back by ADDING a version, never by deleting the ones
+	// in between — so the rollback is itself undoable.
+	f := newFixture(t)
+	f.overwrite("note.txt", "first draft")
+	node := f.overwrite("note.txt", "second draft")
+
+	versions, err := f.store.ListVersions(f.ctx, f.user, node.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// versions[1] is the older "first draft".
+	oldest := versions[len(versions)-1]
+
+	restored, err := f.store.RestoreVersion(f.ctx, f.user, node.ID, oldest.ID)
+	if err != nil {
+		t.Fatalf("RestoreVersion: %v", err)
+	}
+
+	// The head now serves the old content...
+	if got := string(f.readBack(restored.ID)); got != "first draft" {
+		t.Errorf("restored head reads %q, want %q", got, "first draft")
+	}
+	// ...and history GREW rather than shrank: the two originals plus the restore.
+	after, err := f.store.ListVersions(f.ctx, f.user, node.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(after) != 3 {
+		t.Errorf("history has %d versions after restore, want 3 (nothing deleted)", len(after))
+	}
+	if !after[0].IsHead {
+		t.Error("the restore did not become the head")
+	}
+}
+
+func TestRestoreRejectsForeignVersion(t *testing.T) {
+	// A version id belonging to another file must not be graftable onto this one:
+	// the restore query is scoped to (version, node) together.
+	f := newFixture(t)
+	a := f.overwrite("a.txt", "aaa")
+	b := f.overwrite("b.txt", "bbb")
+
+	bVersions, err := f.store.ListVersions(f.ctx, f.user, b.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.store.RestoreVersion(f.ctx, f.user, a.ID, bVersions[0].ID); !errors.Is(err, files.ErrNotFound) {
+		t.Errorf("restoring another file's version = %v, want ErrNotFound", err)
+	}
+}
