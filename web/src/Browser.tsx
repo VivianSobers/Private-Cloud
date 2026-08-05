@@ -2,6 +2,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 
 import { ApiError, api, formatBytes, formatDate, type Node, type SearchHit, type Usage } from "./api";
 import { Trash } from "./Trash";
+import { Versions } from "./Versions";
 import { upload, type UploadHandle } from "./upload";
 
 /** Below this, the server refuses the query rather than scan the whole tree. */
@@ -27,6 +28,8 @@ export function Browser() {
   const [transfers, setTransfers] = useState<Transfer[]>([]);
   const [dragOver, setDragOver] = useState(false);
   const [showTrash, setShowTrash] = useState(false);
+  // The file whose version history is open, or null. A file, never a folder.
+  const [versionsFor, setVersionsFor] = useState<Node | null>(null);
 
   const [query, setQuery] = useState("");
   const [hits, setHits] = useState<SearchHit[] | null>(null);
@@ -132,6 +135,13 @@ export function Browser() {
 
   return (
     <div className="stack">
+      {versionsFor && (
+        <Versions
+          node={versionsFor}
+          onClose={() => setVersionsFor(null)}
+          onRestored={() => void load(folder?.id)}
+        />
+      )}
       <div className="row">
         <Breadcrumbs folder={folder} onNavigate={(id) => void load(id)} />
         <span style={{ flex: 1 }} />
@@ -301,6 +311,7 @@ export function Browser() {
                     await api.trashNode(n.id);
                   })
                 }
+                onVersions={() => setVersionsFor(n)}
               />
             ))}
           </tbody>
@@ -374,12 +385,14 @@ function Row({
   onRename,
   onMove,
   onTrash,
+  onVersions,
 }: {
   node: Node;
   onOpen: () => void;
   onRename: () => void;
   onMove: () => void;
   onTrash: () => void;
+  onVersions: () => void;
 }) {
   return (
     <tr>
@@ -403,6 +416,11 @@ function Row({
             Download
           </a>
         )}{" "}
+        {node.kind === "file" && (
+          <button className="link" onClick={onVersions}>
+            History
+          </button>
+        )}
         <button className="link" onClick={onRename}>
           Rename
         </button>
