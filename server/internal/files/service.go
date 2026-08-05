@@ -518,6 +518,39 @@ type MigrateResult struct {
 	Failed int
 }
 
+// MigrateBlobs rewrites up to limit whole-file versions as content-addressed
+// chunks, deduplicating them against everything already stored.
+//
+// Incremental and interruptible by design: each pass takes a bounded batch, and
+// a version that is never migrated costs nothing by staying whole — so this can
+// run a little at a time, or never, without leaving the store in a half-state.
+// Both formats coexist permanently; the reader already handles either.
+//
+// A migration is exactly when a backup should have been taken (a storage rewrite
+// with no rollback of the old bytes until GC runs), which is why the operator
+// drives it — `cloudctl migrate-blobs`, or the opt-in background loop — rather
+// than it firing unbidden on deploy.
+func (s *Service) MigrateBlobs(ctx context.Context, limit int) (MigrateResult, error) {
+	var res MigrateResult
+	if s.cas == nil {
+		return res, nil
+	}
+
+	candidates, err := s.store.MigratableVersions(ctx, cas.WholeFileThreshold, limit)
+	if err != nil {
+		return res, fmt.Errorf("list migratable versions: %w", err)
+	}
+	for _, v := range candidates {
+		if err := s.migrateOne(ctx, v, &res); err != nil {
+			// A systemic failure — the chunk store or database is unwell — aborts
+			// the pass so the next tick retries rather than churning. Per-version
+			// integrity anomalies never reach here; they are counted as Failed.
+			return res, err
+		}
+	}
+	return res, nil
+}
+
 // migrateOne chunks one blob-backed version and repoints it at the manifest.
 //
 // The order is the same crash-safety contract as every other write path: the
