@@ -136,6 +136,13 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("HEAD /api/v1/nodes/{id}/content", s.requireAuth(s.handleDownload))
 	mux.HandleFunc("POST /api/v1/upload", s.requireAuth(s.handleUpload))
 
+	// Version history: list, restore a past version as a new head, and fetch one
+	// past version's bytes without restoring it first.
+	mux.HandleFunc("GET /api/v1/nodes/{id}/versions", s.requireAuth(s.handleListVersions))
+	mux.HandleFunc("POST /api/v1/nodes/{id}/versions/{versionId}/restore", s.requireAuth(s.handleRestoreVersion))
+	mux.HandleFunc("GET /api/v1/nodes/{id}/versions/{versionId}/content", s.requireAuth(s.handleDownloadVersion))
+	mux.HandleFunc("HEAD /api/v1/nodes/{id}/versions/{versionId}/content", s.requireAuth(s.handleDownloadVersion))
+
 	// --- resumable uploads (tus 1.0.0) ---------------------------------------
 	// OPTIONS is unauthenticated: it advertises protocol support and nothing
 	// else, and tus clients send it before they have anywhere to put
