@@ -690,6 +690,16 @@ func (s *Store) AllBlobKeys(ctx context.Context) (map[string]BlobRef, error) {
 	return out, rows.Err()
 }
 
+// --- blob → manifest migration ----------------------------------------------
+
+// MigratableVersion is a whole-file version large enough to be worth chunking.
+type MigratableVersion struct {
+	VersionID  uuid.UUID
+	BlobID     uuid.UUID
+	StorageKey string
+	Size       int64
+}
+
 // --- helpers ----------------------------------------------------------------
 
 // likePrefix escapes the LIKE metacharacters so a folder genuinely named
