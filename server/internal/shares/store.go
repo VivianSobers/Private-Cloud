@@ -96,6 +96,25 @@ func (st *Store) FindByTokenHash(ctx context.Context, tokenHash []byte) (*Share,
 		`SELECT `+shareCols+` FROM shares WHERE token_hash = $1`, tokenHash))
 }
 
+// TryIncrementDownload counts one download, but ONLY if the share is still
+// serveable at this instant. The whole validity test lives inside the UPDATE's
+// WHERE clause so the cap is enforced atomically: two downloads racing the last
+// remaining count cannot both succeed, because the row is checked and bumped in
+// one statement. Returns false when the share has just been revoked, expired, or
+// spent — in which case the caller must not serve the bytes.
+func (st *Store) TryIncrementDownload(ctx context.Context, id uuid.UUID) (bool, error) {
+	tag, err := st.pool.Exec(ctx, `
+		UPDATE shares SET download_count = download_count + 1
+		WHERE id = $1
+		  AND revoked_at IS NULL
+		  AND (expires_at IS NULL OR expires_at > now())
+		  AND (max_downloads IS NULL OR download_count < max_downloads)`, id)
+	if err != nil {
+		return false, err
+	}
+	return tag.RowsAffected() > 0, nil
+}
+
 // Share is one public link to one file.
 type Share struct {
 	ID      uuid.UUID
