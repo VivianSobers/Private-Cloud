@@ -132,6 +132,14 @@ func (s *Service) Revoke(ctx context.Context, ownerID, id uuid.UUID) (bool, erro
 	return s.store.Revoke(ctx, ownerID, id)
 }
 
+// CollectStale removes shares revoked or expired longer ago than StaleGrace,
+// bounded per pass. Kept out of files' GC deliberately: shares depend on files,
+// not the reverse, so the share plane sweeps itself rather than inverting that
+// direction.
+func (s *Service) CollectStale(ctx context.Context) (int64, error) {
+	return s.store.DeleteStale(ctx, s.StaleGrace, 1000)
+}
+
 // lookup resolves a presented token to its share, collapsing a missing row into
 // ErrNotFound so the public surface answers typos and revocations identically.
 func (s *Service) lookup(ctx context.Context, token string) (*Share, error) {
