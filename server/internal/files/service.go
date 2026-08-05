@@ -497,6 +497,27 @@ func (s *Service) collectExpiredUploads(ctx context.Context) (expired, swept int
 	return expired, swept, nil
 }
 
+// --- background migration ---------------------------------------------------
+
+// MigrateResult reports what one migration pass did.
+type MigrateResult struct {
+	// VersionsMigrated were repointed from a blob to a manifest.
+	VersionsMigrated int
+	// BytesWritten is new chunk bytes that actually reached disk, after dedup and
+	// compression — what the migration COST, not what it reclaimed.
+	BytesWritten int64
+	// Deduped is the subset of migrated versions whose content was already stored
+	// as chunks, so they reused an existing manifest and wrote no new bytes.
+	Deduped int
+	// Skipped is versions that changed underneath the pass — overwritten, purged,
+	// or migrated by a concurrent worker between listing and switching. Benign.
+	Skipped int
+	// Failed is versions the pass could not migrate: the blob's bytes are missing,
+	// or the manifest did not reassemble to the size the version promises. These
+	// are integrity anomalies for fsck, not reasons to halt the whole pass.
+	Failed int
+}
+
 // --- fsck -------------------------------------------------------------------
 
 // FsckReport describes disagreements between the database and the disk.
