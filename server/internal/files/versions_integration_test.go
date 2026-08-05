@@ -9,6 +9,7 @@ package files_test
 // history by both count and age while never touching the head.
 
 import (
+	"errors"
 	"testing"
 	"time"
 
@@ -62,5 +63,26 @@ func TestListVersionsNewestFirstHeadFlagged(t *testing.T) {
 		if versions[i].CreatedAt.After(versions[i-1].CreatedAt) {
 			t.Error("versions are not ordered newest-first")
 		}
+	}
+}
+
+func TestListVersionsUnknownNodeNotFound(t *testing.T) {
+	// A file always has at least one version, so an empty history means the node
+	// does not exist — reported as not-found, not an empty list a client would
+	// misread as "a file with no versions".
+	f := newFixture(t)
+	if _, err := f.store.ListVersions(f.ctx, f.user, uuid.New()); !errors.Is(err, files.ErrNotFound) {
+		t.Errorf("ListVersions of a missing node = %v, want ErrNotFound", err)
+	}
+}
+
+func TestListVersionsRejectsForeignOwner(t *testing.T) {
+	// Ownership is in the WHERE clause: another user's id must not turn a node id
+	// into a cross-tenant history dump.
+	f := newFixture(t)
+	node := f.overwrite("secret.txt", "mine")
+
+	if _, err := f.store.ListVersions(f.ctx, uuid.New(), node.ID); !errors.Is(err, files.ErrNotFound) {
+		t.Errorf("ListVersions as a foreign owner = %v, want ErrNotFound", err)
 	}
 }
