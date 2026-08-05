@@ -280,6 +280,41 @@ func runGC(ctx context.Context, svc *files.Service, m *metrics.Metrics, interval
 	}
 }
 
+// runMigration drains Phase 1 whole-file blobs into content-addressed chunks, a
+// bounded batch per tick.
+//
+// Opt-in (interval zero disables it) and never at startup, for the same reason
+// as GC: a restart loop must not become a tight rewrite loop, and there is
+// nothing urgent about re-encoding bytes that have sat as whole files for
+// months. When the backlog is drained a pass finds nothing and costs one query.
+func runMigration(ctx context.Context, svc *files.Service, m *metrics.Metrics, interval time.Duration, batch int, log *slog.Logger) {
+	ticker := time.NewTicker(interval)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			res, err := svc.MigrateBlobs(ctx, batch)
+			if err != nil {
+				log.Warn("blob migration failed", "error", err)
+				continue
+			}
+			m.MigratedVersions.Add(float64(res.VersionsMigrated))
+			m.MigratedBytes.Add(float64(res.BytesWritten))
+			if res.VersionsMigrated > 0 || res.Failed > 0 {
+				log.Info("blobs migrated",
+					"versions", res.VersionsMigrated,
+					"bytes_written", res.BytesWritten,
+					"deduped", res.Deduped,
+					"skipped", res.Skipped,
+					"failed", res.Failed)
+			}
+		}
+	}
+}
+
 func newLogger(cfg *config.Config) *slog.Logger {
 	var level slog.Level
 	switch strings.ToLower(cfg.LogLevel) {
