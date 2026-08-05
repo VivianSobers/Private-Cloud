@@ -733,6 +733,29 @@ func (s *Store) MigratableVersions(ctx context.Context, minSize int64, limit int
 	return out, rows.Err()
 }
 
+// SwitchToManifest repoints a version from its blob to a manifest, in place.
+//
+// The guard is the whole correctness story. `blob_id = $2 AND manifest_id IS
+// NULL` means the switch applies only if the version STILL points at the exact
+// blob we chunked and nothing else has migrated it — so a concurrent pass, an
+// overwrite that replaced the head, or a purge that deleted the row all land as
+// a no-op (rows affected 0) rather than clobbering a newer state. The AFTER
+// UPDATE trigger drops the old blob's refcount as the reference moves off it;
+// GC reclaims the bytes on a later pass, the same single reclaimer every path
+// defers to. Returns false when the version changed underneath, leaving the
+// freshly written manifest orphaned for the caller to drop.
+func (s *Store) SwitchToManifest(ctx context.Context, versionID, blobID, manifestID uuid.UUID) (bool, error) {
+	tag, err := s.pool.Exec(ctx, `
+		UPDATE file_versions
+		SET blob_id = NULL, manifest_id = $3
+		WHERE id = $1 AND blob_id = $2 AND manifest_id IS NULL`,
+		versionID, blobID, manifestID)
+	if err != nil {
+		return false, err
+	}
+	return tag.RowsAffected() > 0, nil
+}
+
 // --- helpers ----------------------------------------------------------------
 
 // likePrefix escapes the LIKE metacharacters so a folder genuinely named
