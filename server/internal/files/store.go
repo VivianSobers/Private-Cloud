@@ -700,6 +700,39 @@ type MigratableVersion struct {
 	Size       int64
 }
 
+// MigratableVersions lists blob-backed file versions eligible for background
+// migration to content-addressed storage.
+//
+// minSize excludes the files that must stay whole-file blobs permanently: below
+// the chunker's threshold a manifest row plus a chunk row to describe a few
+// hundred bytes is pure overhead, so migrating them would cost more than it
+// saves and never dedup against anything. blob_id NOT NULL is implied — the
+// storage CHECK makes manifest_id IS NULL equivalent to blob-backed — and the
+// JOIN drops anything already migrated.
+func (s *Store) MigratableVersions(ctx context.Context, minSize int64, limit int) ([]MigratableVersion, error) {
+	rows, err := s.pool.Query(ctx, `
+		SELECT v.id, v.blob_id, b.storage_key, v.size
+		FROM file_versions v
+		JOIN blobs b ON b.id = v.blob_id
+		WHERE v.manifest_id IS NULL AND v.size >= $1
+		ORDER BY v.created_at
+		LIMIT $2`, minSize, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var out []MigratableVersion
+	for rows.Next() {
+		var v MigratableVersion
+		if err := rows.Scan(&v.VersionID, &v.BlobID, &v.StorageKey, &v.Size); err != nil {
+			return nil, err
+		}
+		out = append(out, v)
+	}
+	return out, rows.Err()
+}
+
 // --- helpers ----------------------------------------------------------------
 
 // likePrefix escapes the LIKE metacharacters so a folder genuinely named
