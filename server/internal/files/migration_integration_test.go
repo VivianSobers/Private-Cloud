@@ -150,3 +150,32 @@ func TestMigrateDropsOldBlobToZeroThenGC(t *testing.T) {
 		t.Error("old blob row survived GC after migration")
 	}
 }
+
+func TestMigrateSkipsSmallFiles(t *testing.T) {
+	// Below the chunker threshold a file stays a whole-file blob permanently: a
+	// manifest row plus a chunk row to describe a few hundred bytes is pure
+	// overhead. Migration must leave those exactly as they are.
+	f := newFixture(t)
+
+	node := f.uploadBytes("tiny.txt", uniqueData(200, 3))
+	if node.BlobKey == "" {
+		t.Fatal("small file was not stored as a blob")
+	}
+
+	f.enableCAS(t)
+	res, err := f.svc.MigrateBlobs(f.ctx, 100)
+	if err != nil {
+		t.Fatalf("MigrateBlobs: %v", err)
+	}
+	if res.VersionsMigrated != 0 {
+		t.Errorf("migrated %d sub-threshold file(s), want 0", res.VersionsMigrated)
+	}
+
+	got, err := f.store.Get(f.ctx, f.user, node.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.ManifestID != nil {
+		t.Error("a sub-threshold file was chunked by migration")
+	}
+}
