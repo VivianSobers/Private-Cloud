@@ -134,6 +134,8 @@ func New(version, commit string, poolStats func() float64) *Metrics {
 		m.DownloadBytes,
 		m.GCBlobsFreed,
 		m.GCBytesFreed,
+		m.MigratedVersions,
+		m.MigratedBytes,
 		// Go runtime and process metrics: GC pressure, goroutine count, open
 		// FDs. The first two are how you spot a leak before it becomes an
 		// outage.
