@@ -10,6 +10,7 @@ package files_test
 // file took.
 
 import (
+	"io"
 	"testing"
 
 	"github.com/google/uuid"
@@ -325,5 +326,37 @@ func TestMigrateRespectsBatchLimit(t *testing.T) {
 	}
 	if second.VersionsMigrated != 1 {
 		t.Errorf("follow-up pass migrated %d, want the remaining 1", second.VersionsMigrated)
+	}
+}
+
+func TestMigratedFileSeeksForRange(t *testing.T) {
+	// A blob served Range requests by seeking an *os.File; the chunked reader must
+	// too, or migrating a video would break scrubbing that worked before. Prove a
+	// mid-file read returns the right bytes after migration.
+	f := newFixture(t)
+	data := uniqueData(300<<10, 8)
+	node := f.uploadBytes("clip.bin", data)
+
+	f.enableCAS(t)
+	if _, err := f.svc.MigrateBlobs(f.ctx, 100); err != nil {
+		t.Fatalf("MigrateBlobs: %v", err)
+	}
+
+	_, rc, err := f.svc.Open(f.ctx, f.user, node.ID)
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	defer rc.Close()
+
+	const off, n = 128 << 10, 4096
+	if _, err := rc.Seek(off, 0); err != nil {
+		t.Fatalf("Seek: %v", err)
+	}
+	got := make([]byte, n)
+	if _, err := io.ReadFull(rc, got); err != nil {
+		t.Fatalf("ReadFull: %v", err)
+	}
+	if string(got) != string(data[off:off+n]) {
+		t.Error("seeked read of a migrated file returned the wrong bytes")
 	}
 }
