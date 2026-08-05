@@ -105,6 +105,14 @@ func New(version, commit string, poolStats func() float64) *Metrics {
 			Name: "privatecloud_gc_bytes_freed_total",
 			Help: "Bytes reclaimed by garbage collection.",
 		}),
+		MigratedVersions: prometheus.NewCounter(prometheus.CounterOpts{
+			Name: "privatecloud_migrated_versions_total",
+			Help: "Whole-file versions rewritten into content-addressed chunks.",
+		}),
+		MigratedBytes: prometheus.NewCounter(prometheus.CounterOpts{
+			Name: "privatecloud_migrated_bytes_total",
+			Help: "New chunk bytes written by background migration, after dedup and compression.",
+		}),
 	}
 
 	m.DBPoolAcquired = prometheus.NewGaugeFunc(
