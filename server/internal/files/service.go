@@ -55,6 +55,11 @@ type Service struct {
 	// many times costs manifest rows and no chunks.
 	KeepVersions     int
 	VersionRetention time.Duration
+
+	// ChangeRetention bounds how long the sync journal keeps its tail. A client
+	// offline longer than this re-syncs from scratch — signalled by the changes
+	// endpoint's reset flag — rather than the journal growing without limit.
+	ChangeRetention time.Duration
 }
 
 func NewService(store *Store, blobs blob.Store, log *slog.Logger) *Service {
@@ -67,6 +72,7 @@ func NewService(store *Store, blobs blob.Store, log *slog.Logger) *Service {
 		UploadTTL:        defaultUploadTTL,
 		KeepVersions:     25,
 		VersionRetention: 90 * 24 * time.Hour,
+		ChangeRetention:  30 * 24 * time.Hour,
 	}
 	if st, ok := blobs.(blob.Stager); ok {
 		s.stager = st
@@ -360,6 +366,7 @@ type GCResult struct {
 	StagingFreed   int
 
 	VersionsPruned int64
+	ChangesPruned  int64
 
 	ManifestsFreed  int
 	ChunksFreed     int
@@ -396,6 +403,13 @@ func (s *Service) CollectGarbage(ctx context.Context) (GCResult, error) {
 		return res, fmt.Errorf("prune versions: %w", err)
 	}
 	res.VersionsPruned = pruned
+
+	// The sync journal's tail: old cursor entries no client will ask for again.
+	changesPruned, err := s.store.PruneChanges(ctx, s.ChangeRetention, 5000)
+	if err != nil {
+		return res, fmt.Errorf("prune changes: %w", err)
+	}
+	res.ChangesPruned = changesPruned
 
 	// Bounded per pass so a large cleanup cannot hold resources for an
 	// unbounded time; the next tick picks up where this one stopped.
