@@ -243,7 +243,7 @@ fully working with the worker turned off.
 
 | Slice | Contents | Status |
 |---|---|---|
-| **1** | Job queue (`jobs` table, `SKIP LOCKED` claim, retry/backoff) + `pcworker` process | ⬜ |
+| **1** | Job queue (`jobs` table, `SKIP LOCKED` claim, retry/backoff) + `pcworker` process | ✅ transactional claim so two workers never share a job; unique-pending index dedups per (kind, node); exponential backoff to a dead-letter state; a reaper returns a crashed worker's job to the queue; `pcworker` is a separate process that idles harmlessly with no handlers registered |
 | **2** | OCR / text extraction into `doc_text`, folded into the existing trigram search | ⬜ |
 | **3** | Semantic search (embeddings + pgvector-or-brute-force KNN, hybrid ranking) and cheap auto-tagging | ⬜ |
 | **4** | OIDC login alongside passkeys, opt-in and non-weakening | ⬜ |
