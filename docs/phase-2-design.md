@@ -165,7 +165,7 @@ Same discipline as Phase 1: each slice ends green, committed, and useful.
 | **1b** | Route the upload path through the chunker; quota still counts logical bytes | ✅ all three write paths (direct, resumable, WebDAV) converge on `Service.FinishStaged`/`uploadViaCAS`; files ≥ 2 KiB chunk, smaller stay whole-file blobs permanently; identical uploads reuse a live manifest; downloads reassemble with seek |
 | **2** | Chunk GC, refcount recomputation, `fsck` for CAS, background migration of Phase 1 blobs, dedup statistics | ✅ GC (manifests → chunks → bytes), fsck and refcount audit, `cas.Stats`, and in-place background migration of Phase 1 blobs — `cloudctl migrate-blobs` or the opt-in `PC_BLOB_MIGRATE_INTERVAL` loop |
 | **3** | Version history: list, restore, retention policy, UI | ✅ list newest-first with the head flagged; restore appends a new head (history preserved); download any past version; retention prunes by count AND age during GC, never the head; UI history modal |
-| **4** | Share links: public plane, tokens, expiry, rate limits, UI | ⬜ next |
+| **4** | Share links: public plane, tokens, expiry, rate limits, UI | ✅ file AND folder links on a separate Caddy plane; 256-bit tokens stored hashed; optional argon2id password (unlock via per-share HMAC, no server session); optional expiry and atomic download cap; instant row-based revocation; folder shares confined to their subtree; responses leak no owner, path, or neighbouring content; management + public UI |
 
 **Slice 1b notes, recorded where the next reader will look:**
 
@@ -226,6 +226,34 @@ Same discipline as Phase 1: each slice ends green, committed, and useful.
 - `OpenVersion` mirrors `Open` for a non-head version, so the UI previews or
   downloads history without restoring first; both readers seek, so Range works
   against a past version too.
+
+**Slice 4 share-link notes, recorded where the next reader will look:**
+
+- A share is a **row**, never a signed token, because revocation must be
+  immediate: deleting or revoking the row kills the link on the next request,
+  with no window where a still-valid signature outlives the owner's decision.
+- The URL token is 256 bits and stored **hashed** (SHA-256, not argon2 — it is
+  full-entropy). A database leak yields no working links. The token is returned
+  exactly once, at creation; it cannot be looked up again.
+- Password unlock keeps **no server session**. Verifying the argon2id password
+  returns an HMAC over a per-share `unlock_key` (never sent to a client); the
+  content request carries that HMAC back. A proof for one share cannot open
+  another (`TestUnlockProofIsPerShare`), and the cookie is path-scoped to its
+  share so it is never even transmitted elsewhere.
+- The download cap is enforced in the **increment**, not a prior read: a single
+  `UPDATE ... WHERE download_count < max_downloads` charges and checks atomically,
+  so concurrent downloads racing the last slot cannot both win
+  (`TestDownloadCapHoldsUnderConcurrency`).
+- Folder shares resolve a path relative to the shared root and are confined to
+  it twice over — `GetByPath` is owner-scoped, and a prefix check rejects
+  anything outside the subtree, with `path.Join` collapsing `../` first
+  (`TestFolderShareListsAndConfines`).
+- Serving re-checks the target is **live** (`GetLive`), so trashing a shared file
+  takes its link down without purging; and the public surface answers a revoked
+  link identically to one that never existed, leaking not even the filename.
+- The public plane is a **separate Caddy site block** (`SHARE_HOSTNAME`) that
+  proxies only `/api/v1/s/*` and the SPA — every other API path is refused there,
+  so a private-plane bug is unreachable through the public host.
 
 **Slice 2's checker landed before slice 1b on purpose.** `fsck` walks the blob
 directory and deletes anything the database does not name. Chunks live in that
