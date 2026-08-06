@@ -7,8 +7,9 @@
 # Routes, in the order they are matched: /api (the JSON API), /dav (WebDAV),
 # /grafana, /ntfy, /prometheus, /alertmanager, and everything else to the SPA.
 #
-# The public plane (share links, public WebDAV) arrives in Phase 2 as a
-# SEPARATE site block with its own rate limits. Do not add public routes here.
+# The public plane (share links) lives in a SEPARATE site block at the bottom of
+# this file — a different hostname, exposing ONLY /api/v1/s/* and the SPA. Do not
+# add public routes to the tailnet block below.
 {
 	# No ACME account needed — see the tls directive below.
 	admin off
@@ -130,6 +131,63 @@
 
 		# SPA fallback: client-side routes have no file on disk, so anything
 		# that isn't a real file gets index.html and the app routes it.
+		try_files {path} /index.html
+		file_server
+	}
+}
+
+# ---- PUBLIC PLANE: share links -----------------------------------------------
+# The one site reachable from the internet, and deliberately the smallest surface
+# that can be: it proxies ONLY the public share endpoints and serves the SPA for
+# the /s/{token} landing page. Every other API path — the authenticated tree,
+# WebDAV, the admin routes — is refused here, so a bug in the private plane can
+# never be reached through the public hostname.
+#
+# SHARE_HOSTNAME is the public domain (e.g. share.example.com). It defaults to
+# share.localhost so the config is always valid in dev; in production set it and
+# swap `tls internal` for automatic ACME by removing that line.
+{$SHARE_HOSTNAME:share.localhost} {
+	tls internal
+
+	encode zstd gzip
+
+	header {
+		Strict-Transport-Security "max-age=31536000; includeSubDomains"
+		X-Content-Type-Options "nosniff"
+		# Deny framing outright: a shared file must not be embeddable into another
+		# site that then dresses it up as its own.
+		X-Frame-Options "DENY"
+		Referrer-Policy "no-referrer"
+		-Server
+	}
+
+	# The public share API, and nothing else under /api. The API rate-limits these
+	# endpoints itself (password unlock is a guessing target); Caddy just routes.
+	handle /api/v1/s/* {
+		reverse_proxy api:8080 {
+			transport http {
+				read_timeout 1h
+				write_timeout 1h
+			}
+		}
+	}
+
+	# Everything else under /api — the authenticated plane — is invisible here.
+	handle /api/* {
+		respond 404
+	}
+	# No public WebDAV, as promised in the design.
+	handle /dav* {
+		respond 404
+	}
+
+	# The SPA, for the /s/{token} landing page. Same bundle as the private plane;
+	# the app shows only the share view when it is loaded on this host.
+	handle {
+		root * /srv/web
+		@assets path /assets/*
+		header @assets Cache-Control "public, max-age=31536000, immutable"
+		header /index.html Cache-Control "no-cache"
 		try_files {path} /index.html
 		file_server
 	}
