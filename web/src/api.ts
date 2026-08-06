@@ -56,6 +56,51 @@ export interface Version {
   blake3?: string;
 }
 
+/** A share as its owner manages it. The token is absent — it is never stored,
+ *  so it can only be shown once, at creation. */
+export interface ShareInfo {
+  id: string;
+  file_name: string;
+  path: string;
+  created_at: string;
+  has_password: boolean;
+  download_count: number;
+  revoked: boolean;
+  expired: boolean;
+  file_trashed: boolean;
+  active: boolean;
+  expires_at?: string;
+  max_downloads?: number;
+}
+
+/** The one-time result of creating a share, including the token to copy now. */
+export interface CreatedShare {
+  id: string;
+  token: string;
+  path: string;
+  has_password: boolean;
+  expires_at?: string;
+  max_downloads?: number;
+}
+
+export interface ShareEntry {
+  name: string;
+  kind: "file" | "folder";
+  size?: number;
+}
+
+/** The public, leak-free view of a share. When locked, only has_password is set. */
+export interface ShareView {
+  has_password: boolean;
+  unlocked: boolean;
+  name?: string;
+  kind?: "file" | "folder";
+  size?: number;
+  mime?: string;
+  path?: string;
+  entries?: ShareEntry[];
+}
+
 export interface User {
   id: string;
   username: string;
@@ -252,6 +297,47 @@ export const api = {
   // straight to disk or a player.
   versionDownloadUrl: (id: string, versionId: string, forceDownload = false) =>
     `/api/v1/nodes/${id}/versions/${versionId}/content${forceDownload ? "?download=1" : ""}`,
+
+  // --- shares: management ---------------------------------------------------
+
+  createShare: (
+    nodeId: string,
+    opts: { password?: string; expiresInHours?: number; maxDownloads?: number } = {},
+  ) =>
+    request<{ share: CreatedShare }>(`/api/v1/nodes/${nodeId}/shares`, {
+      method: "POST",
+      body: JSON.stringify({
+        password: opts.password ?? "",
+        expires_in_hours: opts.expiresInHours ?? 0,
+        max_downloads: opts.maxDownloads ?? 0,
+      }),
+    }),
+
+  shares: () => request<{ shares: ShareInfo[] }>("/api/v1/shares"),
+
+  revokeShare: (id: string) =>
+    request<{ status: string }>(`/api/v1/shares/${id}`, { method: "DELETE" }),
+
+  // --- shares: public plane (no session) ------------------------------------
+
+  shareView: (token: string, path = "") =>
+    request<ShareView>(`/api/v1/s/${token}${path ? `?path=${encodeURIComponent(path)}` : ""}`),
+
+  unlockShare: (token: string, password: string) =>
+    request<{ unlocked: boolean }>(`/api/v1/s/${token}/unlock`, {
+      method: "POST",
+      body: JSON.stringify({ password }),
+    }),
+
+  // A plain link so the browser streams a shared file straight to disk or a
+  // player, carrying the unlock cookie automatically.
+  shareContentUrl: (token: string, path = "", forceDownload = false) => {
+    const params = new URLSearchParams();
+    if (path) params.set("path", path);
+    if (forceDownload) params.set("download", "1");
+    const q = params.toString();
+    return `/api/v1/s/${token}/content${q ? `?${q}` : ""}`;
+  },
 };
 
 // --- formatting -------------------------------------------------------------
