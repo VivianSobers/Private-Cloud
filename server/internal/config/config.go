@@ -90,6 +90,10 @@ type Config struct {
 	// default: with CAS, keeping history of an unchanged file is nearly free.
 	KeepVersions     int
 	VersionRetention time.Duration
+
+	// ChangeRetention bounds the sync journal's tail. A client offline longer than
+	// this re-syncs from scratch instead of resuming from a cursor.
+	ChangeRetention time.Duration
 }
 
 func Load() (*Config, error) {
@@ -130,6 +134,7 @@ func Load() (*Config, error) {
 
 		KeepVersions:     envInt("PC_KEEP_VERSIONS", 25),
 		VersionRetention: envDuration("PC_VERSION_RETENTION", 90*24*time.Hour),
+		ChangeRetention:  envDuration("PC_CHANGE_RETENTION", 30*24*time.Hour),
 	}
 
 	if err := c.validate(); err != nil {
@@ -225,6 +230,9 @@ func (c *Config) validate() error {
 	if c.VersionRetention <= 0 {
 		return fmt.Errorf("PC_VERSION_RETENTION must be positive")
 	}
+	if c.ChangeRetention <= 0 {
+		return fmt.Errorf("PC_CHANGE_RETENTION must be positive")
+	}
 	return nil
 }
 
@@ -245,6 +253,7 @@ func (c *Config) Redacted() map[string]any {
 		"blob_migrate_batch":    c.BlobMigrateBatch,
 		"keep_versions":         c.KeepVersions,
 		"version_retention":     c.VersionRetention.String(),
+		"change_retention":      c.ChangeRetention.String(),
 	}
 }
 
