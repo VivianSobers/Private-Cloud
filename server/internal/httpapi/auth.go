@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/google/uuid"
@@ -69,6 +70,17 @@ func (s *Server) requireAuth(next http.HandlerFunc) http.HandlerFunc {
 			return
 		}
 
+		// A device session is minted from an app password, which deliberately
+		// cannot mint another credential. So the token exchanged from one must not
+		// reach credential management either — otherwise the exchange would be a
+		// privilege escalation that hands an app password the very power it was
+		// denied. The file and sync planes are all it needs.
+		if sess.Kind == auth.SessionKindDevice && !isDeviceAllowedPath(r.URL.Path) {
+			writeError(w, r, http.StatusForbidden, "device_session_limited",
+				"a device session cannot manage account credentials")
+			return
+		}
+
 		// Cheap freshness for the "last seen" column; not worth a write on
 		// every single request.
 		if time.Since(sess.LastSeenAt) > 5*time.Minute {
@@ -90,6 +102,22 @@ func isRecoveryAllowedPath(path string) bool {
 		"/api/v1/auth/me",
 		"/api/v1/auth/logout",
 		"/api/v1/auth/recovery/regenerate":
+		return true
+	}
+	return false
+}
+
+// isDeviceAllowedPath gates a device (sync) session. Everything outside
+// /api/v1/auth/ — the file tree, the change journal, the delta protocol — is
+// allowed; within auth, only identifying itself and signing out. Anything that
+// creates, lists or revokes credentials is refused, which is what keeps a device
+// token from doing what its originating app password cannot.
+func isDeviceAllowedPath(path string) bool {
+	if !strings.HasPrefix(path, "/api/v1/auth/") {
+		return true
+	}
+	switch path {
+	case "/api/v1/auth/me", "/api/v1/auth/logout":
 		return true
 	}
 	return false
@@ -535,6 +563,59 @@ func (s *Server) handleCreateAppPassword(w http.ResponseWriter, r *http.Request)
 		// stored, so there is no way to display it again.
 		"password": plaintext,
 		"notice":   "Copy this now — it is shown once and cannot be retrieved. Mount /dav with your username and this password.",
+	})
+}
+
+// handleCreateDeviceToken exchanges an app password for a device session token.
+//
+// The sync client cannot run a WebAuthn ceremony and the rest of /api takes a
+// session token, not Basic auth — deliberately, so no route inherits Basic auth
+// by accident. So there is exactly one endpoint that accepts an app password and
+// hands back a bearer token: this one. It is rate limited like every other
+// credential-verifying path, and it mints a SessionKindDevice session, which
+// requireAuth confines away from credential management — an app password cannot
+// mint another credential, and neither may a token exchanged from one.
+func (s *Server) handleCreateDeviceToken(w http.ResponseWriter, r *http.Request) {
+	username, password, ok := r.BasicAuth()
+	if !ok {
+		w.Header().Set("WWW-Authenticate", `Basic realm="private cloud — use an app password", charset="UTF-8"`)
+		writeError(w, r, http.StatusUnauthorized, "unauthenticated", "an app password is required")
+		return
+	}
+
+	user, err := s.auth.Store().VerifyAppPassword(r.Context(), password)
+	if err != nil {
+		// Uniform for a malformed value, a wrong secret and a disabled account
+		// alike, exactly as WebDAV Basic auth is.
+		s.log.Warn("device token exchange failed", "error", err, "remote", clientIP(r))
+		w.Header().Set("WWW-Authenticate", `Basic realm="private cloud — use an app password", charset="UTF-8"`)
+		writeError(w, r, http.StatusUnauthorized, "unauthenticated", "invalid app password")
+		return
+	}
+	// The username, when supplied, must match the credential's account — a client
+	// configured with one person's username and another's app password should
+	// fail loudly rather than operate on the wrong tree. Empty is allowed.
+	if username != "" && !strings.EqualFold(username, user.Username) {
+		w.Header().Set("WWW-Authenticate", `Basic realm="private cloud — use an app password", charset="UTF-8"`)
+		writeError(w, r, http.StatusUnauthorized, "unauthenticated", "invalid app password")
+		return
+	}
+
+	agent := r.UserAgent()
+	if agent == "" {
+		agent = "device"
+	}
+	token, expires, err := s.auth.NewSessionToken(r.Context(), user, auth.SessionKindDevice, agent)
+	if err != nil {
+		s.serverError(w, r, "create device session", err)
+		return
+	}
+
+	s.log.Info("device token issued", "user", user.Username, "agent", agent)
+	writeJSON(w, r, http.StatusOK, map[string]any{
+		"token":      token,
+		"expires_at": expires,
+		"user":       userJSON(user),
 	})
 }
 
