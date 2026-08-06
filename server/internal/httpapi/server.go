@@ -113,6 +113,11 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /api/v1/auth/recovery/redeem", rl(s.handleRecoveryRedeem))
 	mux.HandleFunc("POST /api/v1/auth/logout", s.handleLogout)
 
+	// The sync client's way in: an app password (Basic auth) exchanged for a
+	// device bearer token. Rate limited — it verifies a secret, the one online
+	// guessing surface a headless client opens.
+	mux.HandleFunc("POST /api/v1/auth/token", rl(s.handleCreateDeviceToken))
+
 	// --- auth: authenticated -------------------------------------------------
 	mux.HandleFunc("GET /api/v1/auth/me", s.requireAuth(s.handleMe))
 	mux.HandleFunc("GET /api/v1/auth/credentials", s.requireAuth(s.handleListCredentials))
