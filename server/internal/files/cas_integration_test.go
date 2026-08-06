@@ -394,54 +394,57 @@ func TestReadDetectsCorruptedChunk(t *testing.T) {
 func TestStatsReportSavings(t *testing.T) {
 	f, store := casFixture(t)
 
-	// Stats are server-wide by design — they answer "what is this pool holding",
-	// not "what did this test do". So assert on the DELTA across the writes;
-	// sibling tests share the database and have written manifests of their own.
 	before, err := store.Stats(f.ctx)
 	if err != nil {
 		t.Fatal(err)
 	}
 
 	// Highly compressible, uploaded twice so dedup has something to show, and
-	// seeded uniquely per run. The test database persists across runs, so
-	// fixed content would already be stored — the second run would dedup
-	// against the first and measure a saving of zero.
+	// seeded uniquely per run. The test database persists across runs, so fixed
+	// content would already be stored and the second write would measure a saving
+	// of zero.
 	data := bytes.Repeat([]byte(uuid.NewString()+" the same line over and over\n"), 20000)
-	if _, err := store.Write(f.ctx, bytes.NewReader(data)); err != nil {
+	first, err := store.Write(f.ctx, bytes.NewReader(data))
+	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := store.Write(f.ctx, bytes.NewReader(data)); err != nil {
-		t.Fatal(err)
-	}
-
-	after, err := store.Stats(f.ctx)
+	second, err := store.Write(f.ctx, bytes.NewReader(data))
 	if err != nil {
 		t.Fatal(err)
 	}
 
-	if got := after.Manifests - before.Manifests; got != 2 {
-		t.Errorf("manifests grew by %d, want 2", got)
+	// The savings are asserted from the WRITE RESULTS, not from global Stats
+	// deltas: Stats is server-wide, and once concurrent packages also write
+	// manifests, a before/after subtraction is no longer this test's alone. The
+	// per-call result reports exactly what each write cost.
+	if first.NewChunks == 0 || first.NewBytes == 0 {
+		t.Error("the first write of fresh content stored nothing")
+	}
+	// Compression: what actually hit disk is below the logical size for this
+	// highly compressible content.
+	if first.NewBytes >= int64(len(data)) {
+		t.Errorf("stored %d bytes for %d logical — compression did not help", first.NewBytes, len(data))
+	}
+	// Dedup: the second, identical write added nothing at all.
+	if second.NewChunks != 0 || second.NewBytes != 0 {
+		t.Errorf("re-uploading identical content added %d chunk(s), %d byte(s), want 0",
+			second.NewChunks, second.NewBytes)
+	}
+	if second.Manifest.ID == first.Manifest.ID {
+		t.Error("the second upload reused the first manifest row rather than its own")
 	}
 
-	// Two files' worth of logical bytes...
-	logical := after.LogicalBytes - before.LogicalBytes
-	if logical != int64(2*len(data)) {
-		t.Errorf("logical bytes grew by %d, want %d", logical, 2*len(data))
+	// Stats is still exercised, but only for the property it can guarantee under
+	// concurrency: it moved forward and includes this test's two manifests.
+	after, err := store.Stats(f.ctx)
+	if err != nil {
+		t.Fatal(err)
 	}
-
-	// ...but only one file's worth of unique chunks, because the second upload
-	// deduplicated entirely against the first.
-	unique := after.UniqueBytes - before.UniqueBytes
-	if unique == 0 || unique > int64(len(data)) {
-		t.Errorf("unique bytes grew by %d, want (0, %d] — the second upload should "+
-			"have added nothing", unique, len(data))
+	if after.Manifests-before.Manifests < 2 {
+		t.Errorf("Stats manifests grew by %d, want at least this test's 2", after.Manifests-before.Manifests)
 	}
-
-	// And compression means what actually hit the disk is smaller again.
-	physical := after.PhysicalBytes - before.PhysicalBytes
-	if physical >= unique {
-		t.Errorf("physical growth %d should be below unique growth %d for "+
-			"highly compressible content", physical, unique)
+	if after.LogicalBytes-before.LogicalBytes < int64(2*len(data)) {
+		t.Errorf("Stats logical bytes grew by %d, want at least %d", after.LogicalBytes-before.LogicalBytes, 2*len(data))
 	}
 }
 
