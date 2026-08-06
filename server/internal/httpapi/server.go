@@ -164,6 +164,9 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /api/v1/usage", s.requireAuth(s.handleUsage))
 	mux.HandleFunc("GET /api/v1/search", s.requireAuth(s.handleSearch))
 
+	// --- sync: the change journal cursor -------------------------------------
+	mux.HandleFunc("GET /api/v1/changes", s.requireAuth(s.handleChanges))
+
 	// --- shares: management (authenticated) ----------------------------------
 	mux.HandleFunc("POST /api/v1/nodes/{id}/shares", s.requireAuth(s.handleCreateShare))
 	mux.HandleFunc("GET /api/v1/shares", s.requireAuth(s.handleListShares))
