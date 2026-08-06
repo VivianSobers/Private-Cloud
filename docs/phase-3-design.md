@@ -1,6 +1,6 @@
 # Phase 3 — Sync Engine Design
 
-**Status: in progress — slice 1.** Written before any code, the same discipline
+**Status: in progress — slice 1 built.** Written before any code, the same discipline
 that carried Phases 1 and 2: make the expensive decisions deliberately, and keep
 the document as the record of *why*. Where the code later diverges, the section
 says so inline rather than being retconned.
@@ -164,7 +164,7 @@ Same discipline as before: each slice ends green, committed, and useful.
 
 | Slice | Contents | Status |
 |---|---|---|
-| **1** | Change journal: `sync_state` counter, `changes` table + trigger, `GET /changes` with cursor/reset, retention in GC | 🟡 in progress |
+| **1** | Change journal: `sync_state` counter, `changes` table + trigger, `GET /changes` with cursor/reset, retention in GC | ✅ per-owner counter gives gap-free commit-order seqs; trigger records upsert/delete on path/head/trash changes; endpoint embeds node state and signals `latest`/`reset`/`has_more`; GC prunes the tail |
 | **2** | Delta protocol: manifest fetch, chunk `have` query, verified chunk upload, manifest commit | ⬜ |
 | **3** | Go sync client: local state DB, initial sync, fsnotify + rescan, apply/push loops | ⬜ |
 | **4** | Conflict resolution: base-version tracking, lineage detection, conflict copies | ⬜ |
