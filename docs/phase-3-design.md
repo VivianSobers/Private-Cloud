@@ -162,6 +162,33 @@ A headless daemon, one synced root, configured by a file.
 
 ---
 
+**Slice 3 client notes, recorded where the next reader will look:**
+
+- The client is a **separate Go module** (`client/`), not a package under
+  `server/`. It ships to laptops, so it must build with no CGO and must not drag
+  in pgx, the blob store or WebAuthn. It cannot import the server's `internal`
+  packages across the module boundary, which is the right boundary: the FastCDC +
+  BLAKE3 parameters are re-declared in `client/internal/chunk` to match the
+  server, because a protocol is a contract, not shared code.
+- A headless client cannot run a WebAuthn ceremony, and `/api/v1/*` takes a
+  session token, not Basic auth — deliberately, so no route inherits Basic auth
+  by accident. So there is exactly one endpoint that bridges the two:
+  `POST /api/v1/auth/token` exchanges an app password (Basic) for a device bearer
+  token (`SessionKindDevice`). `requireAuth` confines a device session away from
+  credential management, because an app password cannot mint another credential
+  and a token exchanged from one must not either.
+- Two hashes per file in the local state DB, because the two sides address content
+  differently: the client's own whole-file BLAKE3 (the baseline a local edit is
+  judged against) and the server's reported hash — blake3 for chunked, sha256 for
+  a small whole-file blob (the baseline a remote change is judged against). Local
+  change detection gates on size+mtime and only re-hashes when they move, so an
+  untouched tree costs a stat per file, not a read.
+- Pull before push each pass. Applying the server first means the local scan
+  pushes against a fresh baseline. Where both sides moved, the pull declines to
+  overwrite the local edit and the push uploads it as a new version — the server
+  keeps the remote edit in history (Phase 2 versioning), so slice 3 already loses
+  no data; slice 4 makes the conflict visible rather than history-only.
+
 ## 6. Conflict resolution (slice 4)
 
 The one thing the sync engine must never do is lose an edit.
@@ -187,8 +214,8 @@ Same discipline as before: each slice ends green, committed, and useful.
 |---|---|---|
 | **1** | Change journal: `sync_state` counter, `changes` table + trigger, `GET /changes` with cursor/reset, retention in GC | ✅ per-owner counter gives gap-free commit-order seqs; trigger records upsert/delete on path/head/trash changes; endpoint embeds node state and signals `latest`/`reset`/`has_more`; GC prunes the tail |
 | **2** | Delta protocol: manifest fetch, chunk `have` query, verified chunk upload, manifest commit | ✅ `GET /nodes/{id}/manifest`, `POST /chunks/have`, `PUT /chunks/{hash}` (BLAKE3-verified), `GET /chunks/{hash}` (scoped to referencing users), `POST /manifests`; server owns offsets and compression, quota charged at commit |
-| **3** | Go sync client: local state DB, initial sync, fsnotify + rescan, apply/push loops | ⬜ |
-| **4** | Conflict resolution: base-version tracking, lineage detection, conflict copies | ⬜ |
+| **3** | Go sync client: local state DB, initial sync, fsnotify + rescan, apply/push loops | ✅ a separate pure-Go module (`client/`, `pcsync`): SQLite state DB keyed by path, initial tree reconcile, incremental journal replay, delta upload/verified download, fsnotify + poll + rescan loops; app password exchanged for a confined device token |
+| **4** | Conflict resolution: base-version tracking, lineage detection, conflict copies | ⬜ (slice 3 already declines to overwrite a both-sides edit — keeps local, server keeps the remote in history — which slice 4 upgrades to a visible conflict copy) |
 
 ---
 
