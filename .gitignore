@@ -31,6 +31,14 @@ server/bin/
 server/coverage.out
 server/coverage.html
 
+# ---- sync client (Phase 3) ----
+# Built binary and a real filled-in config; the .example is tracked.
+client/pcsync
+client/cmd/pcsync/pcsync
+client/config.json
+# The client's own state directory, if someone syncs a folder inside the repo.
+.pcsync/
+
 # ---- editor / OS ----
 .DS_Store
 Thumbs.db
