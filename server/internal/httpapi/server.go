@@ -167,6 +167,15 @@ func (s *Server) Handler() http.Handler {
 	// --- sync: the change journal cursor -------------------------------------
 	mux.HandleFunc("GET /api/v1/changes", s.requireAuth(s.handleChanges))
 
+	// --- sync: the delta protocol --------------------------------------------
+	// Block-level transfer: fetch a file's manifest, negotiate which chunks are
+	// missing, move only those, and commit a manifest into a file.
+	mux.HandleFunc("GET /api/v1/nodes/{id}/manifest", s.requireAuth(s.handleFileManifest))
+	mux.HandleFunc("POST /api/v1/chunks/have", s.requireAuth(s.handleHaveChunks))
+	mux.HandleFunc("GET /api/v1/chunks/{hash}", s.requireAuth(s.handleGetChunk))
+	mux.HandleFunc("PUT /api/v1/chunks/{hash}", s.requireAuth(s.handlePutChunk))
+	mux.HandleFunc("POST /api/v1/manifests", s.requireAuth(s.handleCommitManifest))
+
 	// --- shares: management (authenticated) ----------------------------------
 	mux.HandleFunc("POST /api/v1/nodes/{id}/shares", s.requireAuth(s.handleCreateShare))
 	mux.HandleFunc("GET /api/v1/shares", s.requireAuth(s.handleListShares))
