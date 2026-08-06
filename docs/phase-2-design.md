@@ -1,6 +1,6 @@
 # Phase 2 — Storage Engine Design
 
-**Status: in progress — slice 1 partial.** Written before any code, so the
+**Status: complete — all four slices.** Written before any code, so the
 expensive decisions get made deliberately — the same discipline that made
 Phase 1's schema survive first contact. See §7 for what is actually built.
 
