@@ -57,6 +57,23 @@ func TestPutGetDelete(t *testing.T) {
 	}
 }
 
+func TestGetByNodeID(t *testing.T) {
+	s := openTemp(t)
+	if err := s.Put(Entry{Path: "/old.txt", NodeID: "node-7", Kind: "file", Hash: "h", RemoteHash: "r"}); err != nil {
+		t.Fatal(err)
+	}
+	got, ok, err := s.GetByNodeID("node-7")
+	if err != nil || !ok {
+		t.Fatalf("lookup by node id: ok=%v err=%v", ok, err)
+	}
+	if got.Path != "/old.txt" || got.RemoteHash != "r" {
+		t.Errorf("wrong entry by node id: %+v", got)
+	}
+	if _, ok, _ := s.GetByNodeID("missing"); ok {
+		t.Error("found an entry for a missing node id")
+	}
+}
+
 func TestListOrderedAndEmpty(t *testing.T) {
 	s := openTemp(t)
 
