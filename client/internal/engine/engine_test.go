@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 
 	"github.com/guru-bharadwaj20/private-cloud/client/internal/state"
 )
@@ -160,31 +161,91 @@ func TestRemoteDeletePropagates(t *testing.T) {
 	}
 }
 
-// When a file changed on both sides, slice 3 must not lose the local edit: the
-// pull declines to overwrite it, and the push uploads it as the new head. The
-// server keeps the remote edit in version history.
-func TestBothChangedKeepsLocalEdit(t *testing.T) {
+// pinConflictNaming makes conflict copy names deterministic for assertions.
+func pinConflictNaming(e *Engine) {
+	e.hostname = "host"
+	e.clock = func() time.Time { return time.Date(2026, 8, 6, 0, 0, 0, 0, time.UTC) }
+}
+
+const conflictSuffix = " (conflict from host 2026-08-06)"
+
+// When a file changed on both sides, the resolution is a conflict copy, not an
+// overwrite: the server's version takes the original name, the local edit is set
+// aside under a conflict name, and both end up on the server and on disk. Nothing
+// is lost and nothing is silently merged.
+func TestConflictCopyOnBothChanged(t *testing.T) {
 	f := newFake()
 	f.seedWhole(t, "/c.txt", []byte("base"))
 	e, root := newTestEngine(t, f)
+	pinConflictNaming(e)
 	ctx := context.Background()
 	if err := e.Sync(ctx); err != nil {
 		t.Fatal(err)
 	}
 
-	// Both sides move independently.
+	// Both sides move independently past the synced base.
 	f.seedWhole(t, "/c.txt", []byte("REMOTE VERSION"))
-	if err := os.WriteFile(filepath.Join(root, "c.txt"), []byte("LOCAL EDIT WINS"), 0o644); err != nil {
+	if err := os.WriteFile(filepath.Join(root, "c.txt"), []byte("LOCAL EDIT"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-
 	if err := e.Sync(ctx); err != nil {
 		t.Fatalf("sync: %v", err)
 	}
-	if got := readLocal(t, root, "c.txt"); !bytes.Equal(got, []byte("LOCAL EDIT WINS")) {
-		t.Errorf("local edit was overwritten by the remote version: %q", got)
+
+	// Original name holds the server's version, on disk and on the server.
+	if got := readLocal(t, root, "c.txt"); !bytes.Equal(got, []byte("REMOTE VERSION")) {
+		t.Errorf("original name did not take the server version: %q", got)
 	}
-	if got, _ := f.content("/c.txt"); !bytes.Equal(got, []byte("LOCAL EDIT WINS")) {
-		t.Errorf("local edit was not pushed as the new head: %q", got)
+	if got, _ := f.content("/c.txt"); !bytes.Equal(got, []byte("REMOTE VERSION")) {
+		t.Errorf("server head is not its own version: %q", got)
+	}
+
+	// The local edit survives as a conflict copy, on disk and pushed to the server.
+	copyRel := "c" + conflictSuffix + ".txt"
+	if got := readLocal(t, root, copyRel); !bytes.Equal(got, []byte("LOCAL EDIT")) {
+		t.Errorf("conflict copy content wrong: %q", got)
+	}
+	if got, ok := f.content("/" + copyRel); !ok || !bytes.Equal(got, []byte("LOCAL EDIT")) {
+		t.Errorf("conflict copy not pushed to server: ok=%v got=%q", ok, got)
+	}
+}
+
+// A file deleted on the server but edited locally must not be honoured into
+// oblivion: the edit resurfaces as a conflict copy rather than disappearing.
+func TestConflictCopyOnDeleteVsEdit(t *testing.T) {
+	f := newFake()
+	f.seedWhole(t, "/d.txt", []byte("base"))
+	e, root := newTestEngine(t, f)
+	pinConflictNaming(e)
+	ctx := context.Background()
+	if err := e.Sync(ctx); err != nil {
+		t.Fatal(err)
+	}
+
+	// Edited here, deleted there.
+	if err := os.WriteFile(filepath.Join(root, "d.txt"), []byte("EDITED LOCALLY"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := f.Trash(ctx, f.liveByPath("/d.txt").id); err != nil {
+		t.Fatal(err)
+	}
+	if err := e.Sync(ctx); err != nil {
+		t.Fatalf("sync: %v", err)
+	}
+
+	// The original name is gone (the delete is honoured for that name)...
+	if _, err := os.Stat(filepath.Join(root, "d.txt")); !os.IsNotExist(err) {
+		t.Errorf("original name should be gone: err=%v", err)
+	}
+	if !f.isTrashed("/d.txt") {
+		t.Error("server node should remain trashed")
+	}
+	// ...but the edit lives on as a conflict copy, on disk and on the server.
+	copyRel := "d" + conflictSuffix + ".txt"
+	if got := readLocal(t, root, copyRel); !bytes.Equal(got, []byte("EDITED LOCALLY")) {
+		t.Errorf("conflict copy content wrong: %q", got)
+	}
+	if got, ok := f.content("/" + copyRel); !ok || !bytes.Equal(got, []byte("EDITED LOCALLY")) {
+		t.Errorf("conflict copy not pushed: ok=%v got=%q", ok, got)
 	}
 }
