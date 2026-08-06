@@ -1,0 +1,183 @@
+# Phase 3 — Sync Engine Design
+
+**Status: in progress — slice 1.** Written before any code, the same discipline
+that carried Phases 1 and 2: make the expensive decisions deliberately, and keep
+the document as the record of *why*. Where the code later diverges, the section
+says so inline rather than being retconned.
+
+**Exit criterion:** a folder on your laptop and the same folder on your desktop
+hold the same files without you thinking about it. Edit on one, it appears on the
+other within seconds. Edit the same file on both while offline, and reconnecting
+produces a *conflict copy* — never a silent overwrite, never a lost edit. A 4 GB
+file that changed by one block transfers one block, not four gigabytes.
+
+That last clause is the whole reason this phase sits after Phase 2: the sync
+engine is the client that finally cashes in content-addressed storage. Without
+chunking, "sync" is just repeated whole-file upload; with it, sync is a diff.
+
+---
+
+## 0. What gates the start
+
+Phase 2 is complete and verified: chunking, dedup, versioning and share links all
+land green. Two things must be true before a sync client writes:
+
+- [ ] The CAS delta primitives exist and are reviewed (slice 2). A client that
+      uploads chunks by hash is a new write path into the blob store, and it must
+      verify content against its address before trusting a byte — an unverified
+      chunk-upload endpoint is how one client corrupts everyone's dedup.
+- [ ] A backup is current. Sync multiplies write volume and introduces deletes
+      that propagate across devices; the first time a bug deletes the wrong file,
+      it deletes it *everywhere*. The restore path is the safety net under that.
+
+---
+
+## 1. Scope
+
+### In
+
+| | |
+|---|---|
+| **Change journal** | A per-user, monotonic log of tree changes, with a stable cursor a client resumes from |
+| **Delta protocol** | Fetch a file's manifest, ask which chunks the server already has, upload only the new ones, commit a manifest — block-level sync in both directions |
+| **Go sync client** | A daemon: local state DB, initial sync, filesystem watching, apply-remote and push-local reconciliation |
+| **Conflict resolution** | Base-version tracking, conflict detection, conflict copies, never data loss |
+
+### Explicitly out
+
+Real-time collaborative editing, selective/partial sync of subtrees (a later
+refinement), LAN peer-to-peer transfer, mobile clients, and any GUI. The daemon
+is a headless agent configured by a file; a tray app is Phase 4+ polish.
+
+---
+
+## 2. The shape
+
+```
+server tree  ──(change journal)──►  client         push:  client chunks locally,
+     ▲                                  │                  asks "have?", uploads new,
+     └──────────(delta upload)──────────┘                  commits a manifest
+```
+
+The server stays authoritative. A client never talks to another client; it
+reconciles its local folder against the server, and the server's journal is the
+single ordering of truth. Two clients converge because they both converge on the
+server, not on each other — which is what keeps the protocol a two-party problem
+instead of an n-party consensus one.
+
+---
+
+## 3. The change journal (slice 1)
+
+A client that has been offline asks one question: *what changed since I last
+looked?* The journal answers it with a cursor.
+
+- Every sync-relevant change to a node — created, new version, moved, renamed,
+  trashed, restored, purged — appends a row: `(owner, seq, node_id, kind)` where
+  `kind` is `upsert` (the node is live at its current state) or `delete` (it is
+  gone from the live tree). The row is minimal on purpose: it is an *invalidation*,
+  not a snapshot. The client re-fetches the node's current state, so a change that
+  is immediately superseded is self-healing rather than stale.
+- `seq` is a **per-owner counter**, not a global `bigserial`. A bigserial assigns
+  numbers at insert time, so a transaction holding seq 9 can commit *after* one
+  holding seq 10 — and a reader that advanced its cursor to 10 would never see 9.
+  A counter bumped inside the writing transaction (an `UPDATE ... RETURNING` on a
+  per-owner `sync_state` row) serialises assignment behind that row's lock, so
+  `seq` order equals commit order and a client that sees `seq` N is guaranteed
+  every lower `seq` is already visible. The cost is that one user's concurrent
+  writes serialise on their own counter — negligible for a personal cloud, and
+  the correct trade for a cursor that cannot skip.
+- Population is a **trigger** on `nodes`, for the same reason refcounts are: moves
+  rewrite descendant paths in one statement and cascades delete rows no Go code
+  names, so service-layer journaling would drift the first time a new write path
+  appeared. The trigger fires only when `path`, `head_version_id` or `trashed_at`
+  actually change — an `updated_at`-only touch is not a sync event.
+- `GET /api/v1/changes?since=N` returns the owner's rows past `N`, each with the
+  node's current state embedded for `upsert`s, plus `latest` (the head cursor) and
+  `reset` (the client's cursor predates retained history, or the server was
+  restored behind it — do a full re-sync). Retention prunes the journal's tail in
+  GC; a client offline longer than the window re-syncs from scratch, which `reset`
+  is what tells it to do.
+
+---
+
+## 4. The delta protocol (slice 2)
+
+Both sides speak chunks, so a change transfers a diff.
+
+- **Download:** the client fetches a file's manifest — the ordered list of chunk
+  hashes and offsets — diffs it against the chunks it already holds locally, and
+  pulls only the missing ones. Reassembly is the client's, byte-verified against
+  each chunk's address exactly as the server verifies on read.
+- **Upload:** the client chunks the local file with the *same* FastCDC + BLAKE3
+  parameters (they are protocol, now, not an implementation detail), asks the
+  server which of those hashes it already has, uploads only the new chunks, then
+  commits a manifest referencing all of them.
+- **The dangerous part** is the chunk-upload endpoint: it is the first path where
+  a client writes raw addressed content. The server MUST recompute BLAKE3 over the
+  received bytes and reject any mismatch — a chunk stored under the wrong address
+  corrupts every file that later dedups against it, across users. "The client said
+  so" is never sufficient for content addressing.
+- Quota is charged on the committed manifest's logical size, as ever; a client
+  cannot inflate its allowance by uploading chunks it never commits (those are
+  unreferenced and GC reclaims them).
+
+---
+
+## 5. The client (slice 3)
+
+A headless daemon, one synced root, configured by a file.
+
+- A **local state database** (SQLite) records, per path, the version identity it
+  last synced, the file's chunk list, size and mtime. This is the base against
+  which both local edits and remote changes are judged — never the filesystem
+  mtime alone, which lies across restores and clock changes.
+- **Initial sync** walks the server tree, materialises it locally, and records the
+  journal head as the starting cursor.
+- **Steady state** is two loops: apply remote changes pulled from the journal, and
+  push local changes detected by watching the filesystem (fsnotify) and by a
+  periodic rescan that catches what the watcher missed. Both reconcile through the
+  local state DB, so an edit already applied is a no-op rather than a fight.
+
+---
+
+## 6. Conflict resolution (slice 4)
+
+The one thing the sync engine must never do is lose an edit.
+
+- A conflict is detected by **lineage, not clocks**: the client synced a file at
+  base version B. If the server's head has moved past B *and* the local file has
+  changed since B, both sides edited independently — a conflict.
+- The resolution is a **conflict copy**: the local edit is preserved as
+  `name (conflict from HOST, DATE).ext` and uploaded as its own file, while the
+  server's version takes the original name. Nothing is overwritten; the user
+  resolves by choosing, which is a decision they can make and a merge is not.
+- Deletes conflict too: a file edited on one device and deleted on another
+  resurfaces as a conflict copy rather than honouring the delete, because a delete
+  that destroys an unseen edit is the same data loss by another name.
+
+---
+
+## 7. Slices
+
+Same discipline as before: each slice ends green, committed, and useful.
+
+| Slice | Contents | Status |
+|---|---|---|
+| **1** | Change journal: `sync_state` counter, `changes` table + trigger, `GET /changes` with cursor/reset, retention in GC | 🟡 in progress |
+| **2** | Delta protocol: manifest fetch, chunk `have` query, verified chunk upload, manifest commit | ⬜ |
+| **3** | Go sync client: local state DB, initial sync, fsnotify + rescan, apply/push loops | ⬜ |
+| **4** | Conflict resolution: base-version tracking, lineage detection, conflict copies | ⬜ |
+
+---
+
+## 8. Risks
+
+| Risk | Mitigation |
+|---|---|
+| A missed change diverges two devices permanently | Journal populated by a trigger inside the writing transaction; the per-owner counter makes the cursor gap-free so no change is skipped |
+| A client uploads garbage under a valid chunk hash | The server recomputes BLAKE3 and rejects any address mismatch before the byte is trusted |
+| A propagated delete destroys an unseen edit | Deletes conflict against local edits and resurface as conflict copies; never a silent removal |
+| Conflict detection fooled by clock skew | Detection is by version lineage, never by comparing timestamps |
+| Journal grows without bound | Retention prunes the tail in GC; `reset` tells a too-old client to full-resync |
+| The watcher misses a filesystem event | A periodic rescan reconciles against real file hashes, so a missed inotify event is caught, not lost |
