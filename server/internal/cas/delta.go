@@ -1,12 +1,17 @@
 package cas
 
 import (
+	"bytes"
 	"context"
 	"errors"
+	"fmt"
 	"io"
+	"sync"
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
+	"github.com/klauspost/compress/zstd"
+	"github.com/zeebo/blake3"
 
 	"github.com/guru-bharadwaj20/private-cloud/server/internal/blob"
 )
@@ -131,4 +136,162 @@ func (s *Store) HasChunks(ctx context.Context, hashes [][32]byte) (map[[32]byte]
 		present[key] = true
 	}
 	return present, rows.Err()
+}
+
+// encoderPool reuses zstd encoders across single-chunk uploads. Each is created
+// with concurrency 1 and used serially per Get/Put, so there is no sharing to
+// race — and no per-chunk encoder allocation, which would dominate the cost of
+// compressing 16 KiB.
+var encoderPool = sync.Pool{
+	New: func() any {
+		e, _ := zstd.NewWriter(nil,
+			zstd.WithEncoderLevel(zstd.SpeedDefault),
+			zstd.WithEncoderConcurrency(1))
+		return e
+	},
+}
+
+// compressChunk applies the same policy as the chunker: keep compression only
+// when it wins by a clear margin, so already-compressed content is stored as-is
+// rather than paying decompression on every read to save nothing.
+func compressChunk(plain []byte) ([]byte, string) {
+	enc := encoderPool.Get().(*zstd.Encoder)
+	defer encoderPool.Put(enc)
+	if c := enc.EncodeAll(plain, nil); len(c) < len(plain)*9/10 {
+		return c, CompressionZstd
+	}
+	return bytes.Clone(plain), CompressionNone
+}
+
+// PutChunk stores one client-supplied plaintext chunk, addressed by hash.
+//
+// This is the endpoint the whole phase is careful about: the first path where a
+// client writes content the server will address and dedup. So the server
+// recomputes BLAKE3 and REFUSES any mismatch — a chunk stored under the wrong
+// address corrupts every file that later dedups against it, across users, and
+// "the client said so" is never sufficient for content addressing. Bytes land
+// before the row, as everywhere; a crash between leaves an orphan fsck reclaims.
+// Returns whether the chunk was newly stored (false means it was already present
+// — the ordinary case once dedup is working).
+func (s *Store) PutChunk(ctx context.Context, expected [32]byte, plain []byte) (bool, error) {
+	if len(plain) == 0 || len(plain) > MaxChunkSize {
+		return false, ErrChunkTooLarge
+	}
+	if blake3.Sum256(plain) != expected {
+		return false, ErrHashMismatch
+	}
+
+	stored, compression := compressChunk(plain)
+	key := StorageKey(expected)
+	if _, err := s.putter.PutKeyed(ctx, key, bytes.NewReader(stored)); err != nil {
+		return false, fmt.Errorf("store chunk: %w", err)
+	}
+	tag, err := s.pool.Exec(ctx, `
+		INSERT INTO chunks (hash, size, stored_size, compression, storage_key)
+		VALUES ($1,$2,$3,$4,$5)
+		ON CONFLICT (hash) DO NOTHING`,
+		expected[:], len(plain), len(stored), compression, key)
+	if err != nil {
+		return false, fmt.Errorf("record chunk: %w", err)
+	}
+	return tag.RowsAffected() > 0, nil
+}
+
+// CommitManifest assembles an ordered list of ALREADY-STORED chunks into a
+// manifest, ready for a file version to reference.
+//
+// Offsets and total size come from the chunks' own recorded sizes, never the
+// client's claim: the client supplies the order and the whole-file hash, the
+// server owns the geometry. A referenced chunk that was never uploaded is
+// rejected up front rather than as a raw foreign-key error. An identical live
+// manifest is reused (whole-file dedup), exactly as streaming Write does.
+// Returns the manifest and whether it was reused.
+func (s *Store) CommitManifest(ctx context.Context, contentHash [32]byte, hashes [][32]byte) (*Manifest, bool, error) {
+	if len(hashes) == 0 {
+		return nil, false, ErrEmptyManifest
+	}
+
+	keys := make([][]byte, len(hashes))
+	for i, h := range hashes {
+		keys[i] = h[:]
+	}
+	rows, err := s.pool.Query(ctx, `SELECT hash, size FROM chunks WHERE hash = ANY($1)`, keys)
+	if err != nil {
+		return nil, false, err
+	}
+	sizeByHash := make(map[[32]byte]int, len(hashes))
+	for rows.Next() {
+		var (
+			h  []byte
+			sz int
+		)
+		if err := rows.Scan(&h, &sz); err != nil {
+			rows.Close()
+			return nil, false, err
+		}
+		var key [32]byte
+		copy(key[:], h)
+		sizeByHash[key] = sz
+	}
+	rows.Close()
+	if err := rows.Err(); err != nil {
+		return nil, false, err
+	}
+
+	var total int64
+	offsets := make([]int64, len(hashes))
+	for i, h := range hashes {
+		sz, ok := sizeByHash[h]
+		if !ok {
+			return nil, false, fmt.Errorf("%w: %x", ErrMissingChunk, h)
+		}
+		offsets[i] = total
+		total += int64(sz)
+	}
+	chunkCount := len(hashes)
+
+	// Reuse a live identical manifest. Only manifests a live version references
+	// are candidates — an orphan may be mid-delete by GC.
+	var existingID uuid.UUID
+	err = s.pool.QueryRow(ctx, `
+		SELECT m.id FROM manifests m
+		WHERE m.content_hash = $1 AND m.total_size = $2 AND m.chunk_count = $3
+		  AND EXISTS (SELECT 1 FROM file_versions v WHERE v.manifest_id = m.id)
+		LIMIT 1`, contentHash[:], total, chunkCount).Scan(&existingID)
+	if err == nil {
+		return &Manifest{ID: existingID, TotalSize: total, ChunkCount: chunkCount, ContentHash: contentHash}, true, nil
+	}
+	if !errors.Is(err, pgx.ErrNoRows) {
+		return nil, false, fmt.Errorf("look up existing manifest: %w", err)
+	}
+
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return nil, false, err
+	}
+	defer tx.Rollback(ctx) //nolint:errcheck // no-op after commit
+
+	var manifestID uuid.UUID
+	if err := tx.QueryRow(ctx, `
+		INSERT INTO manifests (total_size, chunk_count, content_hash)
+		VALUES ($1,$2,$3) RETURNING id`,
+		total, chunkCount, contentHash[:]).Scan(&manifestID); err != nil {
+		return nil, false, fmt.Errorf("create manifest: %w", err)
+	}
+
+	mcRows := make([][]any, len(hashes))
+	for i, h := range hashes {
+		mcRows[i] = []any{manifestID, i, h[:], offsets[i]}
+	}
+	if _, err := tx.CopyFrom(ctx,
+		pgx.Identifier{"manifest_chunks"},
+		[]string{"manifest_id", "seq", "chunk_hash", "byte_offset"},
+		pgx.CopyFromRows(mcRows)); err != nil {
+		return nil, false, fmt.Errorf("record manifest chunks: %w", err)
+	}
+
+	if err := tx.Commit(ctx); err != nil {
+		return nil, false, err
+	}
+	return &Manifest{ID: manifestID, TotalSize: total, ChunkCount: chunkCount, ContentHash: contentHash}, false, nil
 }
