@@ -46,10 +46,12 @@ func (s *Server) handleChanges(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// The next seq the client needs is since+1. If that is already gone, some
-	// changes were pruned out from under it: a partial suffix would silently skip
-	// the missing ones, so refuse the delta and tell it to re-sync.
-	reset := latest > since && earliest > since+1
+	// The next seq the client needs is since+1. If it is behind the head (latest >
+	// since) yet that next seq is already gone — the journal's earliest surviving
+	// entry is past it, or the journal is empty (earliest 0) after a full prune —
+	// then a partial suffix would silently skip the missing changes. Refuse the
+	// delta and tell it to re-sync.
+	reset := latest > since && (earliest == 0 || earliest > since+1)
 	if reset {
 		writeJSON(w, r, http.StatusOK, map[string]any{
 			"changes": []any{}, "cursor": latest, "latest": latest,
