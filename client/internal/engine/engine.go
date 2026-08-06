@@ -14,6 +14,7 @@ import (
 	"io"
 	"log/slog"
 	"os"
+	"time"
 
 	"github.com/guru-bharadwaj20/private-cloud/client/internal/api"
 	"github.com/guru-bharadwaj20/private-cloud/client/internal/state"
@@ -49,6 +50,11 @@ type Engine struct {
 	stateDir string // absolute; excluded from the synced tree
 	log      *slog.Logger
 
+	// hostname and clock name conflict copies. They are fields, not global calls,
+	// so a test can make the name deterministic.
+	hostname string
+	clock    func() time.Time
+
 	rootID string // server root node id, cached per Sync
 }
 
@@ -58,7 +64,14 @@ func New(srv Server, st *state.Store, root, stateDir string, log *slog.Logger) *
 	if log == nil {
 		log = slog.New(slog.NewTextHandler(io.Discard, nil))
 	}
-	return &Engine{srv: srv, state: st, root: root, stateDir: stateDir, log: log}
+	host, err := os.Hostname()
+	if err != nil || host == "" {
+		host = "device"
+	}
+	return &Engine{
+		srv: srv, state: st, root: root, stateDir: stateDir, log: log,
+		hostname: host, clock: time.Now,
+	}
 }
 
 // Sync runs one full reconciliation: pull remote changes, then push local ones.
