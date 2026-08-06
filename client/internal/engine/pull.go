@@ -184,14 +184,14 @@ func (e *Engine) applyFileUpsert(ctx context.Context, node api.Node) error {
 	}
 
 	// The server has a new version. Overwrite only when the local copy is the one
-	// we last synced; a local edit that also changed the file is a conflict, and
-	// slice 3 preserves it by NOT overwriting — the push uploads it as a new
-	// version and the server keeps this remote one in history. Slice 4 turns this
-	// into a visible conflict copy.
+	// we last synced. A local edit that also changed the file is a conflict by
+	// lineage — both sides moved past the recorded base — so the local edit is set
+	// aside under a conflict name and the server's version takes the original name.
+	// Nothing is overwritten, and the set-aside file is pushed as its own file.
 	if exists && changed {
-		e.log.Warn("conflict: file changed on both sides, keeping local for now",
-			"path", node.Path)
-		return nil
+		if _, err := e.conflictCopy(entry); err != nil {
+			return err
+		}
 	}
 	return e.pullDown(ctx, node)
 }
@@ -229,12 +229,12 @@ func (e *Engine) applyDelete(nodeID string) error {
 		return err
 	}
 	// A delete that would destroy an unseen local edit is the same data loss as an
-	// overwrite. Keep the local file; the push re-creates it on the server. Slice 4
-	// turns this into an explicit conflict copy.
+	// overwrite. The edited file is set aside under a conflict name — resurfacing
+	// as a copy the push uploads as a new file — rather than being honoured into
+	// oblivion. conflictCopy drops the original path's state itself.
 	if exists && changed {
-		e.log.Warn("conflict: file deleted remotely but edited locally, keeping local",
-			"path", entry.Path)
-		return e.state.Delete(entry.Path)
+		_, err := e.conflictCopy(entry)
+		return err
 	}
 	if err := os.Remove(e.localPath(entry.Path)); err != nil && !os.IsNotExist(err) {
 		return err
@@ -260,7 +260,10 @@ func (e *Engine) removeVanished(entry state.Entry) error {
 		return err
 	}
 	if exists && changed {
-		return e.state.Delete(entry.Path)
+		// Vanished on the server but edited here: preserve the edit as a conflict
+		// copy rather than deleting it, same as a delete seen through the journal.
+		_, err := e.conflictCopy(entry)
+		return err
 	}
 	if err := os.Remove(e.localPath(entry.Path)); err != nil && !os.IsNotExist(err) {
 		return err
