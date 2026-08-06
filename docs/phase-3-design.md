@@ -124,6 +124,27 @@ Both sides speak chunks, so a change transfers a diff.
 
 ---
 
+**Slice 2 delta-protocol notes, recorded where the next reader will look:**
+
+- `PUT /chunks/{hash}` is the one endpoint that must never trust its input: the
+  server recomputes BLAKE3 over the received bytes and returns 400 on any
+  mismatch (`cas.PutChunk` / `TestPutChunkVerifiesAddress`). A chunk stored under
+  the wrong address would corrupt every file that later dedups against it, across
+  users — so the client's claim is checked, not believed.
+- `GET /chunks/{hash}` is scoped by `UserReferencesChunk`: a chunk is global, but
+  a user may read one only if they already hold a live file made of it, and a
+  user who does not gets 404 — indistinguishable from the chunk not existing, so
+  it is not an existence oracle for other users' content. `have` deliberately is
+  a weaker signal (it answers "does anyone hold this exact content"), the
+  unavoidable side-channel of cross-user dedup.
+- The server owns the geometry. `CommitManifest` computes offsets and total size
+  from the chunks' own recorded sizes, not the client's claim; the client
+  supplies only the order and the whole-file hash. Quota is charged at commit on
+  the manifest's logical size, so chunks uploaded but never committed cost the
+  uploader nothing and are reclaimed by GC.
+- Both formats still coexist: `manifest` reports `kind: "whole"` for a small
+  blob, telling the client to fetch it in one piece rather than diff it.
+
 ## 5. The client (slice 3)
 
 A headless daemon, one synced root, configured by a file.
@@ -165,7 +186,7 @@ Same discipline as before: each slice ends green, committed, and useful.
 | Slice | Contents | Status |
 |---|---|---|
 | **1** | Change journal: `sync_state` counter, `changes` table + trigger, `GET /changes` with cursor/reset, retention in GC | ✅ per-owner counter gives gap-free commit-order seqs; trigger records upsert/delete on path/head/trash changes; endpoint embeds node state and signals `latest`/`reset`/`has_more`; GC prunes the tail |
-| **2** | Delta protocol: manifest fetch, chunk `have` query, verified chunk upload, manifest commit | ⬜ |
+| **2** | Delta protocol: manifest fetch, chunk `have` query, verified chunk upload, manifest commit | ✅ `GET /nodes/{id}/manifest`, `POST /chunks/have`, `PUT /chunks/{hash}` (BLAKE3-verified), `GET /chunks/{hash}` (scoped to referencing users), `POST /manifests`; server owns offsets and compression, quota charged at commit |
 | **3** | Go sync client: local state DB, initial sync, fsnotify + rescan, apply/push loops | ⬜ |
 | **4** | Conflict resolution: base-version tracking, lineage detection, conflict copies | ⬜ |
 
