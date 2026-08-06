@@ -19,17 +19,21 @@ import (
 
 // Entry records one synced node.
 //
-// Hash is the version identity: the server's blake3 (chunked) or sha256 (whole)
-// for a file, empty for a folder. Size and MtimeUnix are the local file's shape
-// at sync time, the cheap check that says "the bytes on disk are still the ones
-// we synced" without re-hashing every file on every pass.
+// Two hashes, because the two sides address content differently. Hash is the
+// client's own whole-file BLAKE3 of the synced bytes — the baseline a local edit
+// is judged against, recomputed only when size or mtime moved. RemoteHash is what
+// the server reported for that version: blake3 for a chunked file, sha256 for a
+// small whole-file blob — the baseline a remote change is judged against. A
+// folder has both empty. Size and MtimeUnix are the local file's shape at sync
+// time, the cheap check that skips re-hashing a file that has not moved.
 type Entry struct {
-	Path      string // server-relative, always begins with "/"
-	NodeID    string
-	Kind      string // "file" or "folder"
-	Size      int64
-	MtimeUnix int64
-	Hash      string
+	Path       string // server-relative, always begins with "/"
+	NodeID     string
+	Kind       string // "file" or "folder"
+	Size       int64
+	MtimeUnix  int64
+	Hash       string
+	RemoteHash string
 }
 
 // Store is the local state database.
@@ -39,13 +43,15 @@ type Store struct {
 
 const schema = `
 CREATE TABLE IF NOT EXISTS synced (
-	path       TEXT PRIMARY KEY,
-	node_id    TEXT NOT NULL,
-	kind       TEXT NOT NULL,
-	size       INTEGER NOT NULL DEFAULT 0,
-	mtime_unix INTEGER NOT NULL DEFAULT 0,
-	hash       TEXT NOT NULL DEFAULT ''
+	path        TEXT PRIMARY KEY,
+	node_id     TEXT NOT NULL,
+	kind        TEXT NOT NULL,
+	size        INTEGER NOT NULL DEFAULT 0,
+	mtime_unix  INTEGER NOT NULL DEFAULT 0,
+	hash        TEXT NOT NULL DEFAULT '',
+	remote_hash TEXT NOT NULL DEFAULT ''
 );
+CREATE INDEX IF NOT EXISTS synced_node_id ON synced(node_id);
 CREATE TABLE IF NOT EXISTS meta (
 	key   TEXT PRIMARY KEY,
 	value TEXT NOT NULL
@@ -73,12 +79,30 @@ func Open(path string) (*Store, error) {
 
 func (s *Store) Close() error { return s.db.Close() }
 
+const entryCols = `path, node_id, kind, size, mtime_unix, hash, remote_hash`
+
+func scanEntry(row interface{ Scan(...any) error }) (Entry, error) {
+	var e Entry
+	err := row.Scan(&e.Path, &e.NodeID, &e.Kind, &e.Size, &e.MtimeUnix, &e.Hash, &e.RemoteHash)
+	return e, err
+}
+
 // Get returns the recorded entry for a path, or ok=false if none.
 func (s *Store) Get(path string) (Entry, bool, error) {
-	var e Entry
-	err := s.db.QueryRow(
-		`SELECT path, node_id, kind, size, mtime_unix, hash FROM synced WHERE path = ?`, path).
-		Scan(&e.Path, &e.NodeID, &e.Kind, &e.Size, &e.MtimeUnix, &e.Hash)
+	e, err := scanEntry(s.db.QueryRow(`SELECT `+entryCols+` FROM synced WHERE path = ?`, path))
+	if errors.Is(err, sql.ErrNoRows) {
+		return Entry{}, false, nil
+	}
+	if err != nil {
+		return Entry{}, false, err
+	}
+	return e, true, nil
+}
+
+// GetByNodeID finds an entry by its server node id, the lookup a rename needs: a
+// change arrives for a node the client already holds at a different path.
+func (s *Store) GetByNodeID(nodeID string) (Entry, bool, error) {
+	e, err := scanEntry(s.db.QueryRow(`SELECT `+entryCols+` FROM synced WHERE node_id = ?`, nodeID))
 	if errors.Is(err, sql.ErrNoRows) {
 		return Entry{}, false, nil
 	}
@@ -91,12 +115,13 @@ func (s *Store) Get(path string) (Entry, bool, error) {
 // Put inserts or replaces an entry.
 func (s *Store) Put(e Entry) error {
 	_, err := s.db.Exec(`
-		INSERT INTO synced (path, node_id, kind, size, mtime_unix, hash)
-		VALUES (?, ?, ?, ?, ?, ?)
+		INSERT INTO synced (path, node_id, kind, size, mtime_unix, hash, remote_hash)
+		VALUES (?, ?, ?, ?, ?, ?, ?)
 		ON CONFLICT(path) DO UPDATE SET
 			node_id = excluded.node_id, kind = excluded.kind,
-			size = excluded.size, mtime_unix = excluded.mtime_unix, hash = excluded.hash`,
-		e.Path, e.NodeID, e.Kind, e.Size, e.MtimeUnix, e.Hash)
+			size = excluded.size, mtime_unix = excluded.mtime_unix,
+			hash = excluded.hash, remote_hash = excluded.remote_hash`,
+		e.Path, e.NodeID, e.Kind, e.Size, e.MtimeUnix, e.Hash, e.RemoteHash)
 	return err
 }
 
@@ -110,8 +135,7 @@ func (s *Store) Delete(path string) error {
 // List returns every recorded entry, ordered by path so a caller can process
 // parents before children (folders sort before their contents).
 func (s *Store) List() ([]Entry, error) {
-	rows, err := s.db.Query(
-		`SELECT path, node_id, kind, size, mtime_unix, hash FROM synced ORDER BY path`)
+	rows, err := s.db.Query(`SELECT ` + entryCols + ` FROM synced ORDER BY path`)
 	if err != nil {
 		return nil, err
 	}
@@ -119,8 +143,8 @@ func (s *Store) List() ([]Entry, error) {
 
 	var out []Entry
 	for rows.Next() {
-		var e Entry
-		if err := rows.Scan(&e.Path, &e.NodeID, &e.Kind, &e.Size, &e.MtimeUnix, &e.Hash); err != nil {
+		e, err := scanEntry(rows)
+		if err != nil {
 			return nil, err
 		}
 		out = append(out, e)

@@ -9,6 +9,7 @@ module github.com/guru-bharadwaj20/private-cloud/client
 go 1.25.0
 
 require (
+	github.com/fsnotify/fsnotify v1.10.1
 	github.com/klauspost/compress v1.19.2
 	github.com/tigerwill90/fastcdc v1.2.2
 	github.com/zeebo/blake3 v0.2.4
