@@ -20,6 +20,7 @@ import (
 
 	"github.com/guru-bharadwaj20/private-cloud/server/internal/auth"
 	"github.com/guru-bharadwaj20/private-cloud/server/internal/blob"
+	"github.com/guru-bharadwaj20/private-cloud/server/internal/cas"
 	"github.com/guru-bharadwaj20/private-cloud/server/internal/db"
 	"github.com/guru-bharadwaj20/private-cloud/server/internal/files"
 	"github.com/guru-bharadwaj20/private-cloud/server/internal/httpapi"
@@ -81,6 +82,13 @@ func newAPIFixture(t *testing.T) *apiFixture {
 		t.Fatalf("blob store: %v", err)
 	}
 	filesSvc := files.NewService(files.NewStore(database.Pool), blobs, log)
+	// CAS on, as in production: uploads at or above the threshold chunk, and the
+	// delta endpoints have a content-addressed store to talk to.
+	casStore, err := cas.NewStore(database.Pool, blobs)
+	if err != nil {
+		t.Fatalf("cas store: %v", err)
+	}
+	filesSvc.SetCAS(casStore)
 	sharesSvc := shares.NewService(shares.NewStore(database.Pool), filesSvc, log)
 
 	m := metrics.New("test", "test", func() float64 { return 0 })
