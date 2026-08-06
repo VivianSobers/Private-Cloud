@@ -1,6 +1,8 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 
 import { ApiError, api, formatBytes, formatDate, type Node, type SearchHit, type Usage } from "./api";
+import { ShareDialog } from "./ShareDialog";
+import { Shares } from "./Shares";
 import { Trash } from "./Trash";
 import { Versions } from "./Versions";
 import { upload, type UploadHandle } from "./upload";
@@ -28,8 +30,11 @@ export function Browser() {
   const [transfers, setTransfers] = useState<Transfer[]>([]);
   const [dragOver, setDragOver] = useState(false);
   const [showTrash, setShowTrash] = useState(false);
+  const [showShares, setShowShares] = useState(false);
   // The file whose version history is open, or null. A file, never a folder.
   const [versionsFor, setVersionsFor] = useState<Node | null>(null);
+  // The node being shared, or null. Files and folders both.
+  const [shareFor, setShareFor] = useState<Node | null>(null);
 
   const [query, setQuery] = useState("");
   const [hits, setHits] = useState<SearchHit[] | null>(null);
@@ -133,6 +138,10 @@ export function Browser() {
     );
   }
 
+  if (showShares) {
+    return <Shares onClose={() => setShowShares(false)} />;
+  }
+
   return (
     <div className="stack">
       {versionsFor && (
@@ -142,6 +151,7 @@ export function Browser() {
           onRestored={() => void load(folder?.id)}
         />
       )}
+      {shareFor && <ShareDialog node={shareFor} onClose={() => setShareFor(null)} />}
       <div className="row">
         <Breadcrumbs folder={folder} onNavigate={(id) => void load(id)} />
         <span style={{ flex: 1 }} />
@@ -178,6 +188,7 @@ export function Browser() {
           New folder
         </button>
         <button onClick={() => setShowTrash(true)}>Trash</button>
+        <button onClick={() => setShowShares(true)}>Shares</button>
 
         <span style={{ flex: 1 }} />
 
@@ -312,6 +323,7 @@ export function Browser() {
                   })
                 }
                 onVersions={() => setVersionsFor(n)}
+                onShare={() => setShareFor(n)}
               />
             ))}
           </tbody>
@@ -386,6 +398,7 @@ function Row({
   onMove,
   onTrash,
   onVersions,
+  onShare,
 }: {
   node: Node;
   onOpen: () => void;
@@ -393,6 +406,7 @@ function Row({
   onMove: () => void;
   onTrash: () => void;
   onVersions: () => void;
+  onShare: () => void;
 }) {
   return (
     <tr>
@@ -421,6 +435,9 @@ function Row({
             History
           </button>
         )}
+        <button className="link" onClick={onShare}>
+          Share
+        </button>
         <button className="link" onClick={onRename}>
           Rename
         </button>
