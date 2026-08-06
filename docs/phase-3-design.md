@@ -1,6 +1,6 @@
 # Phase 3 — Sync Engine Design
 
-**Status: in progress — slice 1 built.** Written before any code, the same discipline
+**Status: complete — all four slices.** Written before any code, the same discipline
 that carried Phases 1 and 2: make the expensive decisions deliberately, and keep
 the document as the record of *why*. Where the code later diverges, the section
 says so inline rather than being retconned.
@@ -204,6 +204,23 @@ The one thing the sync engine must never do is lose an edit.
   resurfaces as a conflict copy rather than honouring the delete, because a delete
   that destroys an unseen edit is the same data loss by another name.
 
+**Slice 4 conflict notes, recorded where the next reader will look:**
+
+- Detection is lineage, implemented as two comparisons against the recorded base
+  (`state.Entry`): the server's content hash no longer equals `RemoteHash` (its
+  head moved) *and* the local file's recomputed BLAKE3 no longer equals `Hash`
+  (the bytes moved). Both true is a conflict; neither timestamp is consulted, so
+  clock skew between two machines can neither fabricate nor mask one.
+- The resolution never overwrites and never merges. `conflictCopy` renames the
+  local edit to a free `name (conflict from HOST DATE).ext`, drops the original
+  path's state so the freed name can take the server's version on the next
+  `pullDown`, and leaves the renamed file stateless so the push uploads it as a
+  new file. Both files then exist on the server and on every device; the user
+  resolves by choosing, a decision a person can make and a merge cannot.
+- The same path handles a delete seen through the journal, a delete found during a
+  full reconcile (`removeVanished`), and a both-sides edit — one function, so the
+  three routes to the same hazard cannot drift apart.
+
 ---
 
 ## 7. Slices
@@ -215,7 +232,7 @@ Same discipline as before: each slice ends green, committed, and useful.
 | **1** | Change journal: `sync_state` counter, `changes` table + trigger, `GET /changes` with cursor/reset, retention in GC | ✅ per-owner counter gives gap-free commit-order seqs; trigger records upsert/delete on path/head/trash changes; endpoint embeds node state and signals `latest`/`reset`/`has_more`; GC prunes the tail |
 | **2** | Delta protocol: manifest fetch, chunk `have` query, verified chunk upload, manifest commit | ✅ `GET /nodes/{id}/manifest`, `POST /chunks/have`, `PUT /chunks/{hash}` (BLAKE3-verified), `GET /chunks/{hash}` (scoped to referencing users), `POST /manifests`; server owns offsets and compression, quota charged at commit |
 | **3** | Go sync client: local state DB, initial sync, fsnotify + rescan, apply/push loops | ✅ a separate pure-Go module (`client/`, `pcsync`): SQLite state DB keyed by path, initial tree reconcile, incremental journal replay, delta upload/verified download, fsnotify + poll + rescan loops; app password exchanged for a confined device token |
-| **4** | Conflict resolution: base-version tracking, lineage detection, conflict copies | ⬜ (slice 3 already declines to overwrite a both-sides edit — keeps local, server keeps the remote in history — which slice 4 upgrades to a visible conflict copy) |
+| **4** | Conflict resolution: base-version tracking, lineage detection, conflict copies | ✅ detection by lineage against the recorded base (RemoteHash moved *and* local Hash moved), never by clocks; the local edit is set aside as `name (conflict from HOST DATE).ext` and pushed as its own file while the server's version keeps the name; delete-vs-edit resurfaces the edit the same way rather than honouring the delete |
 
 ---
 
