@@ -74,3 +74,23 @@ func (s *Store) ChangesSince(ctx context.Context, ownerID uuid.UUID, since int64
 	}
 	return out, rows.Err()
 }
+
+// PruneChanges trims the journal's tail by age, bounded per pass. It removes only
+// the rows, never the sync_state counter, so LatestSeq stays correct and a client
+// whose cursor fell behind the surviving history is told to re-sync (via the
+// reset signal the changes endpoint computes) rather than silently missing the
+// pruned entries.
+func (s *Store) PruneChanges(ctx context.Context, retention time.Duration, limit int) (int64, error) {
+	tag, err := s.pool.Exec(ctx, `
+		DELETE FROM changes
+		WHERE ctid IN (
+			SELECT ctid FROM changes
+			WHERE at < now() - $1::interval
+			ORDER BY at
+			LIMIT $2
+		)`, retention.String(), limit)
+	if err != nil {
+		return 0, err
+	}
+	return tag.RowsAffected(), nil
+}
