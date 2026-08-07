@@ -6,10 +6,18 @@
 // budget, and stopping this process degrades the system to exactly the Phase 3
 // system — every file endpoint still works, search still works on filenames.
 //
-// Slice 1 ships the runtime: it connects, reaps jobs abandoned by a crashed
-// worker, prunes finished ones, and dispatches to whatever handlers are
-// registered. The handlers themselves — OCR, embeddings — arrive in the next
-// slices; a worker with none registered idles harmlessly.
+// It connects, reaps jobs abandoned by a crashed worker, prunes finished ones,
+// and dispatches to whatever handlers are registered. Which handlers those are
+// depends on what this box can reach, which is what makes the two-tier
+// deployment work:
+//
+//   - extract (text, PDF, OCR, tagging) registers when PC_BLOB_PATH points at the
+//     blob store, so it runs where the bytes are.
+//   - embed registers when PC_EMBED_URL points at an inference sidecar, needing
+//     only the database and that sidecar — so it can run on a GPU box that cannot
+//     see the blob store at all.
+//
+// A worker with neither configured idles harmlessly.
 package main
 
 import (

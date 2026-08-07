@@ -111,10 +111,11 @@ func NewService(store *Store, blobs blob.Store, log *slog.Logger) *Service {
 
 // SetCAS attaches a content-addressed store.
 //
-// Wiring this in is what makes fsck and GC aware that chunks exist. Uploads do
-// not yet route through it — that is the remaining half of Phase 2 slice 1 —
-// but the maintenance paths must understand the format BEFORE anything writes
-// it, not after.
+// Uploads route through it, and so do fsck and GC — which is the part that
+// matters to get wired: a checker that does not know chunks exist classifies
+// every one of them as an orphan, and --repair then deletes every deduplicated
+// byte in the system. It stays optional because whole-file blobs remain a
+// supported, permanent format for anything written before Phase 2.
 func (s *Service) SetCAS(store *cas.Store) { s.cas = store }
 
 // CAS returns the content-addressed store, or nil.

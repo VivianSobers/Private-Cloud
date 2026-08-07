@@ -1,7 +1,20 @@
 // Command api is the private-cloud HTTP server.
 //
-// Phase 1, slice 1: skeleton only — configuration, database, migrations,
-// health probes and metrics. File and auth endpoints arrive in slices 2 and 3.
+// It serves the whole API: passkey and OIDC authentication, the file tree,
+// uploads (simple and resumable), downloads, versions, trash, shares, WebDAV,
+// the sync change journal and delta protocol, search — lexical, content and
+// semantic — and tags.
+//
+// What it deliberately does NOT do is any of the expensive background work.
+// OCR, text extraction and embedding run in pcworker, a separate process, so the
+// API's memory budget on the always-on box is unaffected by them. This process
+// only ever enqueues jobs and, for a semantic query, makes one RPC to the
+// inference sidecar; it never holds a model.
+//
+// Alongside the listener it runs periodic housekeeping: expired sessions and
+// ceremonies, garbage collection of trash, blobs, chunks and derived content,
+// job-queue metrics, and an optional background migration of Phase 1 whole-file
+// blobs into content-addressed chunks.
 package main
 
 import (
@@ -155,10 +168,9 @@ func run() error {
 	filesSvc.VersionRetention = cfg.VersionRetention
 	filesSvc.ChangeRetention = cfg.ChangeRetention
 
-	// Content-addressed storage. Uploads do not route through it yet, but fsck
-	// and GC must know the format exists BEFORE anything writes it — a checker
-	// that only understands whole-file blobs would classify every chunk on disk
-	// as an orphan and delete it.
+	// Content-addressed storage. fsck and GC must be given this too, not just the
+	// upload path: a checker that only understands whole-file blobs classifies
+	// every chunk on disk as an orphan, and --repair then deletes them.
 	casStore, err := cas.NewStore(database.Pool, blobs)
 	if err != nil {
 		return fmt.Errorf("content-addressed store: %w", err)
