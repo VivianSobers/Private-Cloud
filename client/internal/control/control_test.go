@@ -34,6 +34,11 @@ func (s *stubEngine) SyncNow() {
 	s.syncs++
 	s.mu.Unlock()
 }
+func (s *stubEngine) ClearConflicts() {
+	s.mu.Lock()
+	s.snapshot.Conflicts = nil
+	s.mu.Unlock()
+}
 func (s *stubEngine) Excludes() []string {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -105,6 +110,14 @@ func TestControlRoundTrip(t *testing.T) {
 	}
 	if len(conflicts) != 1 || conflicts[0].Original != "/a.txt" {
 		t.Errorf("conflicts = %+v", conflicts)
+	}
+
+	// Clearing empties the log.
+	if err := client.ClearConflicts(ctx); err != nil {
+		t.Fatalf("clear conflicts: %v", err)
+	}
+	if after, _ := client.Conflicts(ctx); len(after) != 0 {
+		t.Errorf("conflicts not cleared: %+v", after)
 	}
 
 	// Pause / resume / sync reach the engine.

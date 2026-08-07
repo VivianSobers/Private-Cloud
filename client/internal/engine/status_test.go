@@ -143,4 +143,13 @@ func TestConflictRecordedInSnapshot(t *testing.T) {
 	if conflicts[0].At.IsZero() {
 		t.Error("conflict timestamp not set")
 	}
+
+	// Clearing dismisses the log without touching the files on disk.
+	e.ClearConflicts()
+	if got := e.Snapshot().Conflicts; len(got) != 0 {
+		t.Errorf("conflicts not cleared: %+v", got)
+	}
+	if _, err := os.Stat(filepath.Join(root, "c"+conflictSuffix+".txt")); err != nil {
+		t.Errorf("clearing the log deleted the conflict copy on disk: %v", err)
+	}
 }
