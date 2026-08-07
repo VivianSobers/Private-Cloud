@@ -124,6 +124,12 @@ DELETE FROM doc_text;
 DELETE FROM doc_embedding WHERE model = '<old-model>';
 ```
 
-Then re-enqueue extraction for existing files (a small script that inserts an
-`extract` job per live file), or simply let new uploads and edits refill it over
-time. Search degrades gracefully to filenames while it catches up.
+Then re-enqueue extraction for every existing file in one command:
+
+```bash
+PC_DATABASE_URL=... cloudctl jobs reindex      # enqueues an extract job per live file
+```
+
+It is content-addressed and idempotent, so it is safe to run any time; the worker
+drains the backlog and search degrades gracefully to filenames while it catches
+up. (Or just let new uploads and edits refill the index over time.)

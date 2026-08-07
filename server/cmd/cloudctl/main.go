@@ -35,6 +35,7 @@ import (
 	"github.com/guru-bharadwaj20/private-cloud/server/internal/blob"
 	"github.com/guru-bharadwaj20/private-cloud/server/internal/cas"
 	"github.com/guru-bharadwaj20/private-cloud/server/internal/db"
+	"github.com/guru-bharadwaj20/private-cloud/server/internal/extract"
 	"github.com/guru-bharadwaj20/private-cloud/server/internal/files"
 	"github.com/guru-bharadwaj20/private-cloud/server/internal/jobs"
 	"github.com/guru-bharadwaj20/private-cloud/server/internal/shares"
@@ -64,6 +65,7 @@ func usage() {
   jobs stats                      show background job queue depth by state
   jobs failed [--limit=N]         list dead-lettered jobs and their errors
   jobs retry                      requeue all dead-lettered jobs
+  jobs reindex                    enqueue extraction for every live file
 
 Requires PC_DATABASE_URL in the environment.
 fsck, gc and migrate-blobs also require PC_BLOB_PATH.
@@ -584,6 +586,17 @@ func jobsCommand(ctx context.Context, database *db.DB, args []string) error {
 			return err
 		}
 		fmt.Printf("requeued %d failed job(s)\n", n)
+		return nil
+
+	case "reindex":
+		// Enqueue extraction for every live file — rebuilds text (and, if the chain
+		// is on, embeddings) after an extractor or model change. Content-addressed
+		// and idempotent, so this is safe to run any time; the worker drains it.
+		n, err := store.EnqueueForAllFiles(ctx, extract.Kind)
+		if err != nil {
+			return err
+		}
+		fmt.Printf("enqueued %d extraction job(s) for re-indexing\n", n)
 		return nil
 
 	default:
