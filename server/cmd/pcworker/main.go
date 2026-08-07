@@ -93,14 +93,36 @@ func run() error {
 	return nil
 }
 
-// registerHandlers wires the extraction handler, and — when an embedding sidecar
-// is configured — the embed handler and the extract→embed chain. Without
-// PC_BLOB_PATH the worker still runs (reaping, pruning) but registers no handler,
-// so a deployment can defer intelligence by simply not pointing it at the blobs.
+// registerHandlers wires the worker's handlers by what this box can reach — the
+// heart of the two-tier design:
+//
+//   - EMBEDDING needs only the database and the sidecar, never blob content, so it
+//     registers whenever PC_EMBED_URL is set. This is what lets a GPU box (which
+//     cannot see the blob store) run an embedding-only worker.
+//   - EXTRACTION (OCR, text, tagging) needs file bytes, so it registers only when
+//     PC_BLOB_PATH points at the blobs — a co-located worker on the always-on box.
+//   - The extract→embed CHAIN (enqueue an embed job once a file has text) is gated
+//     on PC_ENABLE_SEMANTIC or the presence of a sidecar, so the co-located
+//     extractor can feed a remote GPU embedder without embedding anything itself.
 func registerHandlers(runner *jobs.Runner, store *jobs.Store, database *db.DB, log *slog.Logger) error {
+	fileStore := files.NewStore(database.Pool)
+
+	// Embedding: DB + sidecar only, so it runs anywhere the database is reachable.
+	if embedURL := os.Getenv("PC_EMBED_URL"); embedURL != "" {
+		model := envOr("PC_EMBED_MODEL", "bge-small-en-v1.5")
+		dim := envInt("PC_EMBED_DIM", 384)
+		client := embed.NewClient(embedURL, model, dim)
+		embedHandler := embed.NewHandler(fileStore, fileStore, client, log)
+		runner.Register(embed.Kind, func(ctx context.Context, j jobs.Job) error {
+			return embedHandler.Handle(ctx, j.NodeID, j.OwnerID)
+		})
+		log.Info("embedding handler registered", "sidecar", embedURL, "model", model, "dim", dim)
+	}
+
+	// Extraction: needs blob content, so only where the blob store is reachable.
 	blobPath := os.Getenv("PC_BLOB_PATH")
 	if blobPath == "" {
-		log.Warn("PC_BLOB_PATH not set; no content handlers registered")
+		log.Warn("PC_BLOB_PATH not set; extraction/OCR handler not registered (embedding may still run)")
 		return nil
 	}
 
@@ -108,7 +130,7 @@ func registerHandlers(runner *jobs.Runner, store *jobs.Store, database *db.DB, l
 	if err != nil {
 		return fmt.Errorf("blob store: %w", err)
 	}
-	filesSvc := files.NewService(files.NewStore(database.Pool), blobs, log)
+	filesSvc := files.NewService(fileStore, blobs, log)
 	casStore, err := cas.NewStore(database.Pool, blobs)
 	if err != nil {
 		return fmt.Errorf("content-addressed store: %w", err)
@@ -116,30 +138,23 @@ func registerHandlers(runner *jobs.Runner, store *jobs.Store, database *db.DB, l
 	filesSvc.SetCAS(casStore)
 
 	ex := extract.New()
-	extractHandler := extract.NewHandler(files.NewExtractOpener(filesSvc), filesSvc.Store(), ex, log)
+	extractHandler := extract.NewHandler(files.NewExtractOpener(filesSvc), fileStore, ex, log)
 	// Auto-tagging rides along with extraction: every extracted file gets its
 	// MIME-category and keyword tags in the same pass.
-	extractHandler.Tagging(filesSvc.Store())
+	extractHandler.Tagging(fileStore)
 
-	// Semantic search: an inference sidecar embeds document text. When one is
-	// configured, register the embed handler and chain extraction to enqueue an
-	// embed job once a file has text. Without it, extraction stops at searchable
-	// text and no embed jobs are created.
-	if embedURL := os.Getenv("PC_EMBED_URL"); embedURL != "" {
-		model := envOr("PC_EMBED_MODEL", "bge-small-en-v1.5")
-		dim := envInt("PC_EMBED_DIM", 384)
-		client := embed.NewClient(embedURL, model, dim)
-		embedHandler := embed.NewHandler(filesSvc.Store(), filesSvc.Store(), client, log)
-		runner.Register(embed.Kind, func(ctx context.Context, j jobs.Job) error {
-			return embedHandler.Handle(ctx, j.NodeID, j.OwnerID)
-		})
+	// Chain extraction to enqueue an embed job once a file has text — enabled by a
+	// local sidecar (this worker also embeds) or by PC_ENABLE_SEMANTIC (this worker
+	// only extracts and feeds a separate GPU embedder). The embed job that results
+	// is drained by whichever worker registered the embed handler.
+	if os.Getenv("PC_EMBED_URL") != "" || os.Getenv("PC_ENABLE_SEMANTIC") == "true" {
 		extractHandler.Chain(func(ctx context.Context, nodeID *uuid.UUID, ownerID uuid.UUID) {
 			if _, _, err := store.Enqueue(ctx, embed.Kind, nodeID, ownerID,
 				jobs.EnqueueOptions{OwnerQueueCap: 50000}); err != nil {
 				log.Warn("enqueue embed failed", "error", err)
 			}
 		})
-		log.Info("semantic embedding enabled", "sidecar", embedURL, "model", model, "dim", dim)
+		log.Info("extraction will enqueue embeddings")
 	}
 
 	log.Info("extraction handler registered", "ocr_available", ex.HasOCR())
