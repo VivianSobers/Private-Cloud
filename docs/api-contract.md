@@ -397,9 +397,79 @@ everything is one nobody reads, and on this hardware it would outgrow the files
 it describes. `request_id` ties an entry back to the API access log.
 
 ### Phase 8 — Advanced intelligence
-- `GET /people`, faces endpoints — TBD.
-- `POST /chat` (RAG over the user's library) — TBD.
-- Similar-files endpoint — TBD.
+
+Every endpoint here depends on a GPU sidecar and must degrade the way semantic
+search already does: **`503` with a stable code, never a 500 and never a hang.**
+The file API stays fully functional with all of this switched off — that is the
+property the whole worker split exists to protect.
+
+**People (face clustering).** A cluster is unnamed until a person names it; the
+system never guesses an identity.
+
+| Route | Body / result |
+|---|---|
+| `GET /people` | `{people: [person]}` |
+| `GET /people/{id}` | `{person, items: [node]}` — paged |
+| `PATCH /people/{id}` | `{name}` — name a cluster |
+| `POST /people/{id}/merge` | `{into}` — two clusters are the same person |
+| `DELETE /people/{id}` | forget the cluster; does not touch photos |
+| `POST /nodes/{id}/faces/{faceId}/reassign` | `{person_id}` — fix one wrong face |
+
+```json
+"person": {
+  "id": "uuid", "name": "Ada", "face_count": 87,
+  "cover_node_id": "uuid", "cover_box": [0.41, 0.22, 0.12, 0.16]
+}
+```
+
+- `cover_box` is `[x, y, w, h]` as fractions of the image, not pixels, so a
+  client can crop from whichever variant it already has.
+- Merge and reassign exist because clustering is *going to* be wrong, and a
+  faces feature with no correction path is one people stop trusting after the
+  first mistake.
+- Face data is derived and per-owner. It is **not** content-addressed like
+  embeddings: two users owning the same photo should not share a "people" graph.
+
+**Similar files.**
+
+```
+GET /nodes/{id}/similar?limit=   → {results: [node + score]}
+```
+
+Reuses the existing embedding space for documents and an image-embedding variant
+for photos; `503 semantic_unavailable` when no sidecar is configured, exactly as
+`/search?semantic=true` does today.
+
+**RAG chat.**
+
+```
+POST /chat   {question, scope?: {under?, tags?, node_ids?}, stream?: bool}
+```
+
+Non-streaming returns:
+
+```json
+{
+  "answer": "…",
+  "citations": [
+    { "node_id": "uuid", "path": "/work/report.pdf", "chunk_seq": 3, "score": 0.82 }
+  ],
+  "model": "…"
+}
+```
+
+With `stream: true`, `text/event-stream`: `token` events, then one `citations`
+event, then `done`.
+
+- **Citations are mandatory, not decorative.** An answer over someone's own
+  documents that cannot say which document it came from is unverifiable, and a
+  confident wrong answer about your own files is worse than no feature. Clients
+  should render them next to the answer, not behind a disclosure.
+- `scope` narrows retrieval; absent means the whole library the caller can read.
+  Under Phase 7 that means the ACL filter applies to retrieval too — the same
+  node-side filtering rule as semantic search, for the same reason.
+- Retrieval only ever reaches content the caller could already open, so chat
+  never becomes a way to read around a permission.
 
 ### Phase 9 — Scale & resilience
 - Quota / usage endpoints; storage-health surfacing — TBD.
