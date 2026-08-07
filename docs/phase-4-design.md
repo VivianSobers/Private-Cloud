@@ -204,7 +204,30 @@ part that genuinely needs a model, and the part the hardware most constrains.
 
 ---
 
-## 6. Auto-tagging (slice 3, alongside embeddings)
+**Slice 3 semantic-search notes, recorded where the next reader will look:**
+
+- The model runs in a **Python inference sidecar** (`deploy/embed-sidecar`,
+  sentence-transformers), not in Go. With the 4090s available this is the
+  realistic GPU path — GPU ONNX-in-Go is awkward — and it keeps the model out of
+  every Go process. The Go worker calls it to embed documents; the Go API calls it
+  to embed a query. An RPC to a sidecar is not a resident model, so rule §0.1
+  holds. Both processes are wired with `PC_EMBED_URL/MODEL/DIM`.
+- Vectors are stored as **packed little-endian float32** and searched by an exact
+  cosine scan in Go — no pgvector, so it runs on stock Postgres and is exactly
+  correct at personal scale. `SemanticSearch` filters by **both model and
+  dimension**, so a model re-trained to a new width while keeping its name leaves
+  old vectors that are simply not returned, never mismatched into a zero score —
+  a mixed store degrades to fewer results, never wrong ones.
+- Extraction **chains** into embedding: once a file has text, the extract handler
+  enqueues an `embed` job (when the chain is wired). The two are separate job
+  kinds so they can run on separate workers — extraction on the always-on box,
+  embedding on a GPU box — each claiming only its own kind. Embedding is
+  content-addressed and idempotent, like extraction.
+- The semantic endpoint is **off cleanly** without a sidecar: `503
+  semantic_unavailable`, while lexical and OCR search are untouched. The feature
+  is strictly additive, top to bottom.
+
+## 6. Auto-tagging (slice 3b)
 
 Deliberately the cheap, explainable kind.
 
@@ -271,7 +294,8 @@ fully working with the worker turned off.
 |---|---|---|
 | **1** | Job queue (`jobs` table, `SKIP LOCKED` claim, retry/backoff) + `pcworker` process | ✅ transactional claim so two workers never share a job; unique-pending index dedups per (kind, node); exponential backoff to a dead-letter state; a reaper returns a crashed worker's job to the queue; `pcworker` is a separate process that idles harmlessly with no handlers registered |
 | **2** | OCR / text extraction into `doc_text`, folded into the existing trigram search | ✅ content-addressed `doc_text` (extract once, shared by identical files); a pure `extract` package — text decode, tesseract-subprocess OCR with graceful skip when absent, best-effort PDF text layer; the `extract` job handler and its co-located content Opener; extraction enqueued on upload and folded into the same trigram search with a `matched_content` flag |
-| **3** | Semantic search (embeddings + pgvector-or-brute-force KNN, hybrid ranking) and cheap auto-tagging | ⬜ |
+| **3** | Semantic search: embeddings via an inference sidecar, brute-force cosine KNN | ✅ content-addressed `doc_embedding` (packed float32, no pgvector needed on stock Postgres); a pure `embed` package (vector math, chunking, sidecar HTTP client); the embed job chained after extraction; a Python sidecar (`deploy/embed-sidecar`) that runs the model on a GPU box; `GET /search?semantic=true` embeds the query and ranks by cosine, off cleanly when no sidecar is wired |
+| **3b** | Auto-tagging: MIME-category and keyword tags over extracted text, explainable and reversible | ⬜ (split out of slice 3 to keep semantic search focused) |
 | **4** | OIDC login alongside passkeys, opt-in and non-weakening | ⬜ |
 | **5** | Hardening pass: abuse review of every post–Phase-1 endpoint, dep/secret audit, resource caps | ⬜ |
 
