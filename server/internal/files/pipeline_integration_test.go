@@ -14,6 +14,50 @@ import (
 	"github.com/guru-bharadwaj20/private-cloud/server/internal/jobs"
 )
 
+// Re-indexing enqueues an extract job for every live file, and is idempotent: a
+// second run creates nothing new because the first run's jobs are still pending.
+func TestReindexEnqueuesLiveFiles(t *testing.T) {
+	f := newFixture(t)
+	ctx := context.Background()
+	jobStore := jobs.NewStore(f.store.Pool())
+
+	var ids []uuid.UUID
+	for _, name := range []string{"a.txt", "b.txt", "c.txt"} {
+		n, err := f.svc.Upload(ctx, f.user, f.root, name, strings.NewReader("body"), "text/plain")
+		if err != nil {
+			t.Fatal(err)
+		}
+		ids = append(ids, n.ID)
+	}
+
+	if _, err := jobStore.EnqueueForAllFiles(ctx, extract.Kind); err != nil {
+		t.Fatal(err)
+	}
+
+	// Each of this user's files now has exactly one pending extract job.
+	pending := func() int {
+		var n int
+		if err := f.store.Pool().QueryRow(ctx, `
+			SELECT count(*) FROM jobs
+			WHERE kind = $1 AND node_id = ANY($2) AND state IN ('queued','running')`,
+			extract.Kind, ids).Scan(&n); err != nil {
+			t.Fatal(err)
+		}
+		return n
+	}
+	if got := pending(); got != len(ids) {
+		t.Fatalf("pending extract jobs = %d, want %d", got, len(ids))
+	}
+
+	// A second reindex is a no-op for these files — the unique-pending index dedups.
+	if _, err := jobStore.EnqueueForAllFiles(ctx, extract.Kind); err != nil {
+		t.Fatal(err)
+	}
+	if got := pending(); got != len(ids) {
+		t.Errorf("after second reindex, pending = %d, want %d (no duplicates)", got, len(ids))
+	}
+}
+
 // pipelineEnqueuer is the real enqueue path the API uses, pointed at a jobs store.
 type pipelineEnqueuer struct{ store *jobs.Store }
 
@@ -46,8 +90,11 @@ func TestExtractionPipelineEndToEnd(t *testing.T) {
 	handler := extract.NewHandler(files.NewExtractOpener(f.svc), f.store, extract.New(), nil)
 	handler.Tagging(f.store)
 
-	var drained int
-	for i := 0; i < 100; i++ {
+	// Drain the queue. Only THIS test's node is handled and asserted; any foreign
+	// extract jobs from sibling tests sharing the database (whose content lives in
+	// a different, already-cleaned-up blob store) are just cleared out of the way.
+	var handled bool
+	for i := 0; i < 200; i++ {
 		job, err := jobStore.Claim(ctx, []string{extract.Kind})
 		if errors.Is(err, jobs.ErrNoJob) {
 			break
@@ -55,16 +102,18 @@ func TestExtractionPipelineEndToEnd(t *testing.T) {
 		if err != nil {
 			t.Fatalf("claim: %v", err)
 		}
-		if err := handler.Handle(ctx, job.NodeID, job.OwnerID); err != nil {
-			t.Fatalf("handle: %v", err)
+		if job.NodeID != nil && *job.NodeID == node.ID {
+			if err := handler.Handle(ctx, job.NodeID, job.OwnerID); err != nil {
+				t.Fatalf("handle: %v", err)
+			}
+			handled = true
 		}
 		if err := jobStore.Complete(ctx, job.ID); err != nil {
 			t.Fatal(err)
 		}
-		drained++
 	}
-	if drained == 0 {
-		t.Fatal("upload did not enqueue an extract job")
+	if !handled {
+		t.Fatal("upload did not enqueue a claimable extract job for this file")
 	}
 
 	// The text is now cached and the file is searchable by its body word.
