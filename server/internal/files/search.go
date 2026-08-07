@@ -122,7 +122,11 @@ func (s *Store) Search(ctx context.Context, ownerID uuid.UUID, q SearchQuery) ([
 	sql := `
 		SELECT ` + nodeCols + `,
 		       similarity(n.name_fold, $2) AS score,
-		       (n.name_fold NOT LIKE $3) AS matched_path,
+		       -- A path match, not merely "the name did not match". Without the
+		       -- second clause a file found ONLY by its extracted text reports
+		       -- matched_path too, because its name genuinely does not match --
+		       -- and the UI then explains an OCR hit as "matched the folder name".
+		       (n.name_fold NOT LIKE $3 AND lower(n.path) LIKE $3) AS matched_path,
 		       (dt.text IS NOT NULL AND dt.text ILIKE $3) AS matched_content
 		` + nodeFrom + `
 		LEFT JOIN doc_text dt ON dt.content_hash = coalesce(b.sha256, m.content_hash)
