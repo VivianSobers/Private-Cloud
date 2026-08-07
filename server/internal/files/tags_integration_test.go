@@ -134,3 +134,21 @@ func TestListAndFilterByTag(t *testing.T) {
 		t.Errorf("nodes by tag = %d, want 2", len(nodes))
 	}
 }
+
+// A tag carrying a control character is refused — it would be an injection vector
+// once echoed back on display.
+func TestAddTagRejectsControlChars(t *testing.T) {
+	f := newFixture(t)
+	ctx := context.Background()
+
+	node, err := f.svc.Upload(ctx, f.user, f.root, "x.txt", strings.NewReader("x"), "text/plain")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := f.store.AddUserTag(ctx, f.user, node.ID, "bad\x00tag"); err == nil {
+		t.Error("tag with a NUL byte was accepted")
+	}
+	if err := f.store.AddUserTag(ctx, f.user, node.ID, "line\nbreak"); err == nil {
+		t.Error("tag with a newline was accepted")
+	}
+}
