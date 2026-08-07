@@ -5,6 +5,33 @@ import (
 	"testing"
 )
 
+// A filename containing a Content-Disposition parameter separator must not be
+// able to end the filename* parameter early. url.PathEscape left ";" and "="
+// alone, so `report;v2.pdf` produced a header a client parses as two parameters.
+func TestContentDispositionEscapesParameterSeparators(t *testing.T) {
+	const marker = "filename*=UTF-8''"
+	for _, name := range []string{`report;v2.pdf`, `a=b,c.pdf`, "tab\there.pdf", `quote".pdf`} {
+		got := contentDisposition(name, true)
+		star := got[strings.Index(got, marker)+len(marker):]
+		for _, bad := range []string{";", ",", "=", `"`, " ", "\t"} {
+			if strings.Contains(star, bad) {
+				t.Errorf("contentDisposition(%q) ext-value %q contains raw %q", name, star, bad)
+			}
+		}
+	}
+}
+
+// Non-ASCII survives in the ext-value and is replaced in the ASCII fallback.
+func TestContentDispositionNonASCII(t *testing.T) {
+	got := contentDisposition("rapport-café.pdf", false)
+	if !strings.Contains(got, "filename*=UTF-8''rapport-caf%C3%A9.pdf") {
+		t.Errorf("ext-value not UTF-8 percent-encoded: %s", got)
+	}
+	if !strings.Contains(got, `filename="rapport-caf_.pdf"`) {
+		t.Errorf("ascii fallback not sanitised: %s", got)
+	}
+}
+
 func TestContentDisposition(t *testing.T) {
 	cases := []struct {
 		name          string

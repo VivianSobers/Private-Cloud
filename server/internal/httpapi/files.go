@@ -9,7 +9,6 @@ import (
 	"mime"
 	"mime/multipart"
 	"net/http"
-	"net/url"
 	"strconv"
 	"strings"
 
@@ -575,7 +574,41 @@ func contentDisposition(name string, forceDownload bool) string {
 	}
 
 	return fmt.Sprintf(`%s; filename="%s"; filename*=UTF-8''%s`,
-		disp, fallback, url.PathEscape(name))
+		disp, fallback, rfc5987Escape(name))
+}
+
+// rfc5987Escape percent-encodes a string for the filename*= parameter.
+//
+// url.PathEscape is the wrong tool: it is built for path segments and leaves
+// ";", ",", "=", ":", "@", "$", "&" and "+" unescaped. RFC 5987's ext-value
+// grammar allows only attr-char, so a file named `report;v2.pdf` produced
+//
+//	filename*=UTF-8''report;v2.pdf
+//
+// which a client parses as filename* plus a stray parameter, and the download
+// gets the wrong name. Everything outside attr-char is escaped here.
+func rfc5987Escape(s string) string {
+	const upperhex = "0123456789ABCDEF"
+	var b strings.Builder
+	b.Grow(len(s))
+	for i := 0; i < len(s); i++ {
+		c := s[i]
+		// attr-char = ALPHA / DIGIT / "!" / "#" / "$" / "&" / "+" / "-" / "." /
+		//             "^" / "_" / "`" / "|" / "~"
+		// $ & + are omitted deliberately: they are legal attr-char but carry
+		// meaning to enough sloppy parsers that escaping them is free safety.
+		switch {
+		case c >= 'a' && c <= 'z', c >= 'A' && c <= 'Z', c >= '0' && c <= '9',
+			c == '!', c == '#', c == '-', c == '.', c == '^', c == '_', c == '`',
+			c == '|', c == '~':
+			b.WriteByte(c)
+		default:
+			b.WriteByte('%')
+			b.WriteByte(upperhex[c>>4])
+			b.WriteByte(upperhex[c&0x0f])
+		}
+	}
+	return b.String()
 }
 
 // --- search -----------------------------------------------------------------
