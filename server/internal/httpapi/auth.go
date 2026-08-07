@@ -206,6 +206,8 @@ func (s *Server) handleAuthStatus(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, r, http.StatusOK, map[string]any{
 		"bootstrap_required": n == 0,
 		"user_count":         n,
+		// So the login page can offer an SSO button only when it will work.
+		"oidc_enabled": s.oidc != nil,
 	})
 }
 

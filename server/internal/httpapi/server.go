@@ -43,6 +43,11 @@ type Server struct {
 	// resident model in this process.
 	embedder embed.Embedder
 
+	// oidc is set when a single sign-on provider is configured; nil otherwise, in
+	// which case the OIDC endpoints report the feature disabled and the passkey
+	// paths are entirely unaffected.
+	oidc *auth.OIDCProvider
+
 	// Guards the auth endpoints against online guessing. 20/min with a burst
 	// of 10 is invisible to a human signing in and useless to a script.
 	authLimiter *rateLimiter
@@ -123,6 +128,11 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /api/v1/auth/login/finish", rl(s.handleLoginFinish))
 	mux.HandleFunc("POST /api/v1/auth/recovery/redeem", rl(s.handleRecoveryRedeem))
 	mux.HandleFunc("POST /api/v1/auth/logout", s.handleLogout)
+
+	// OIDC single sign-on: an additional login path, present only when configured.
+	// Unauthenticated (they ARE the login) and rate limited like the rest of auth.
+	mux.HandleFunc("GET /api/v1/auth/oidc/login", rl(s.handleOIDCLogin))
+	mux.HandleFunc("GET /api/v1/auth/oidc/callback", rl(s.handleOIDCCallback))
 
 	// The sync client's way in: an app password (Basic auth) exchanged for a
 	// device bearer token. Rate limited — it verifies a secret, the one online
