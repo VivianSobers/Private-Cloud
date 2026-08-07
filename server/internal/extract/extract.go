@@ -85,6 +85,14 @@ func (e *Extractor) Extract(ctx context.Context, contentType string, r io.Reader
 	}
 
 	switch {
+	// Markup first, and deliberately BEFORE the image branch: image/svg+xml is
+	// both an image and a text document, and it is the text branch that is
+	// useful. Tesseract cannot read a vector file at all, so routing an SVG to
+	// OCR would extract nothing from a file whose labels are sitting in plain
+	// text inside it. mimeTags still categorises it as an image, which is also
+	// true — the two answer different questions.
+	case isMarkup(mediaType):
+		return e.extractMarkup(data)
 	case isTextual(mediaType):
 		return e.extractText(data)
 	case mediaType == "application/pdf":
@@ -94,6 +102,60 @@ func (e *Extractor) Extract(ctx context.Context, contentType string, r io.Reader
 	default:
 		return Result{}, ErrUnsupported
 	}
+}
+
+// isMarkup reports whether a media type is tag-structured text whose markup
+// should not itself be indexed.
+func isMarkup(mediaType string) bool {
+	switch mediaType {
+	case "application/xml", "text/xml", "text/html", "application/xhtml+xml":
+		return true
+	}
+	return strings.HasSuffix(mediaType, "+xml")
+}
+
+// extractMarkup indexes an XML-family document's TEXT, not its tags.
+//
+// Routing these through extractText indexed the raw source, so every SVG and XML
+// file contributed its namespaces, element names and attribute names to the
+// search index. That is noise on both sides: it matches queries for "svg" or
+// "xmlns" that no person means, and it dilutes the real words in the document.
+func (e *Extractor) extractMarkup(data []byte) (Result, error) {
+	if !utf8.Valid(data) {
+		return Result{}, ErrNoText
+	}
+	text := clean(stripTags(string(data)))
+	if text == "" {
+		return Result{}, ErrNoText
+	}
+	return Result{Text: truncateText(text), Source: "markup"}, nil
+}
+
+// stripTags removes anything between angle brackets and collapses the
+// whitespace that replaces it.
+//
+// Deliberately a scanner rather than an XML parser: the input is an arbitrary
+// uploaded file, quite possibly malformed, and a parser that rejects it outright
+// would index nothing where this still recovers the words. Getting the text
+// approximately right is the whole requirement here.
+func stripTags(s string) string {
+	var b strings.Builder
+	b.Grow(len(s))
+	depth := 0
+	for _, r := range s {
+		switch {
+		case r == '<':
+			depth++
+			b.WriteByte(' ')
+		case r == '>':
+			if depth > 0 {
+				depth--
+			}
+		case depth == 0:
+			b.WriteRune(r)
+		}
+	}
+	return strings.Join(strings.Fields(b.String()), " ")
 }
 
 // extractText decodes a text file. Invalid UTF-8 is rejected rather than indexed:
@@ -194,13 +256,14 @@ func isTextual(mediaType string) bool {
 		return true
 	}
 	switch mediaType {
-	case "application/json", "application/xml", "application/javascript",
+	case "application/json", "application/javascript",
 		"application/x-ndjson", "application/csv", "application/yaml",
 		"application/x-yaml", "application/toml":
 		return true
 	}
-	// A structured-text convention: anything +xml / +json (e.g. image/svg+xml).
-	return strings.HasSuffix(mediaType, "+xml") || strings.HasSuffix(mediaType, "+json")
+	// A structured-text convention: anything +json. The +xml family is handled
+	// by isMarkup above, which strips tags before indexing.
+	return strings.HasSuffix(mediaType, "+json")
 }
 
 // clean normalizes extracted text: trims, and drops NUL bytes that a mislabelled

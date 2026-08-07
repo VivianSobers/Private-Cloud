@@ -23,6 +23,41 @@ func TestExtractPlainText(t *testing.T) {
 	}
 }
 
+func TestExtractMarkupIndexesTextNotTags(t *testing.T) {
+	e := New()
+
+	svg := `<svg xmlns="http://www.w3.org/2000/svg" width="200">` +
+		`<title>Quarterly revenue</title><text x="10">Northwind Traders</text></svg>`
+	res, err := e.Extract(context.Background(), "image/svg+xml", strings.NewReader(svg))
+	if err != nil {
+		t.Fatalf("svg: %v", err)
+	}
+	if res.Source != "markup" {
+		t.Errorf("source = %q, want markup", res.Source)
+	}
+	// The words a person would search for survive...
+	for _, want := range []string{"Quarterly revenue", "Northwind Traders"} {
+		if !strings.Contains(res.Text, want) {
+			t.Errorf("text %q missing %q", res.Text, want)
+		}
+	}
+	// ...and the markup that nobody searches for does not.
+	for _, unwanted := range []string{"svg", "xmlns", "http://www.w3.org", "width"} {
+		if strings.Contains(res.Text, unwanted) {
+			t.Errorf("text %q must not contain markup %q", res.Text, unwanted)
+		}
+	}
+}
+
+func TestExtractMarkupWithNoTextIsNoText(t *testing.T) {
+	e := New()
+	_, err := e.Extract(context.Background(), "application/xml",
+		strings.NewReader(`<a><b attr="x"/></a>`))
+	if !errors.Is(err, ErrNoText) {
+		t.Errorf("tags-only xml: err = %v, want ErrNoText", err)
+	}
+}
+
 func TestExtractRejectsBinaryAndUnknown(t *testing.T) {
 	e := New()
 
