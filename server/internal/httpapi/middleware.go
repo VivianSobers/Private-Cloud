@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"runtime/debug"
 	"strconv"
+	"strings"
 	"time"
 )
 
@@ -157,6 +158,59 @@ func (s *Server) withObservability(next http.Handler) http.Handler {
 
 func isProbe(path string) bool {
 	return path == "/healthz" || path == "/readyz" || path == "/metrics"
+}
+
+// maxJSONBody caps a request body on the metadata endpoints. Comfortably fits the
+// largest legitimate JSON — a manifest commit or a chunk-existence query with the
+// endpoint's own 10k-hash limit is well under this — while stopping an
+// unbounded-body decode from exhausting memory on a 7 GiB box.
+const maxJSONBody = 2 << 20 // 2 MiB
+
+// withBodyLimit caps request bodies everywhere except the routes that legitimately
+// stream large content, which enforce their own, larger limits (uploads, chunk
+// puts, resumable PATCHes, WebDAV). Without this, a POST of a gigabyte of JSON to
+// any metadata endpoint would be buffered and decoded in full.
+func withBodyLimit(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if !largeBodyRoute(r) {
+			r.Body = http.MaxBytesReader(w, r.Body, maxJSONBody)
+		}
+		next.ServeHTTP(w, r)
+	})
+}
+
+// largeBodyRoute reports whether a request legitimately carries a large body and
+// so must be exempt from the metadata-body cap.
+func largeBodyRoute(r *http.Request) bool {
+	p := r.URL.Path
+	switch {
+	case p == "/api/v1/upload":
+		return true
+	case r.Method == http.MethodPut && strings.HasPrefix(p, "/api/v1/chunks/"):
+		return true
+	case r.Method == http.MethodPatch && strings.HasPrefix(p, "/api/v1/uploads/"):
+		return true
+	case p == davPrefix || strings.HasPrefix(p, davPrefix+"/"):
+		return true
+	}
+	return false
+}
+
+// withSecurityHeaders adds defense-in-depth headers to every response. The file
+// download path sets its own stricter CSP/sandbox; these are the baseline for
+// everything else, and never override what a handler set deliberately.
+func withSecurityHeaders(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		h := w.Header()
+		// Never let a browser second-guess a declared content type — the defense
+		// against a JSON or text response being sniffed as executable HTML.
+		h.Set("X-Content-Type-Options", "nosniff")
+		// The API is not meant to be framed; deny clickjacking outright.
+		h.Set("X-Frame-Options", "DENY")
+		// Do not leak API URLs (which can carry ids) in a Referer to any origin.
+		h.Set("Referrer-Policy", "no-referrer")
+		next.ServeHTTP(w, r)
+	})
 }
 
 // statusClass buckets statuses as 2xx/4xx/5xx. The exact code is in the logs;

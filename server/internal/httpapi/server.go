@@ -247,7 +247,7 @@ func (s *Server) Handler() http.Handler {
 	// text, so clients can parse every error the same way.
 	mux.HandleFunc("/api/", s.handleNotFound)
 
-	return withRequestID(s.withRecovery(s.withObservability(mux)))
+	return withRequestID(s.withRecovery(s.withObservability(withSecurityHeaders(withBodyLimit(mux)))))
 }
 
 // --- handlers ---------------------------------------------------------------
