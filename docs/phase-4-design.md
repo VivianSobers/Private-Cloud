@@ -1,8 +1,9 @@
 # Phase 4 — Intelligence, Identity, Hardening Design
 
-**Status: design.** Written before any code, the discipline that carried Phases 1–3:
-make the expensive decisions deliberately, and keep the document as the record of
-*why*. Where the code later diverges, the section says so inline.
+**Status: complete — all slices (1, 2, 3, 3b, 4, 5).** Written before any code, the
+discipline that carried Phases 1–3: make the expensive decisions deliberately, and
+keep the document as the record of *why*. Where the code later diverged, the
+section says so inline.
 
 **Exit criterion:** you can find a scanned receipt by a word printed on it, and a
 document by what it is *about* rather than what it is *named* — and none of that
@@ -315,7 +316,7 @@ fully working with the worker turned off.
 | **3** | Semantic search: embeddings via an inference sidecar, brute-force cosine KNN | ✅ content-addressed `doc_embedding` (packed float32, no pgvector needed on stock Postgres); a pure `embed` package (vector math, chunking, sidecar HTTP client); the embed job chained after extraction; a Python sidecar (`deploy/embed-sidecar`) that runs the model on a GPU box; `GET /search?semantic=true` embeds the query and ranks by cosine, off cleanly when no sidecar is wired |
 | **3b** | Auto-tagging: MIME-category and keyword tags over extracted text, explainable and reversible | ✅ deterministic `Tags(mime, text)` — MIME category plus a small curated keyword vocabulary, no classifier; per-node `node_tags` (auto + user, `source`-tracked) where re-tagging replaces only auto tags and never a user's; applied in the extraction pass so every file is tagged; per-node tag CRUD, a tag list with counts, and filter-by-tag, with tags riding along in the node GET |
 | **4** | OIDC login alongside passkeys, opt-in and non-weakening | ✅ authorization-code + PKCE via vetted `go-oidc`/`oauth2`; state (CSRF), nonce (replay) and PKCE all bound through a short-lived flow cookie; provisions its OWN users keyed by (issuer, subject), never auto-linking a passkey account by email; gates on verified email and an optional domain allowlist; OIDC users are non-admin (admin stays passkey-bootstrapped); a discovery failure disables SSO with a log line rather than aborting startup |
-| **5** | Hardening pass: abuse review of every post–Phase-1 endpoint, dep/secret audit, resource caps | ⬜ |
+| **5** | Hardening pass: abuse review of every post–Phase-1 endpoint, dep/secret audit, resource caps | ✅ see [phase-4-hardening.md](phase-4-hardening.md): govulncheck cleared a real pgx SQL-injection CVE (upgraded v5.7.2→v5.9.2); request-body caps on every metadata endpoint; baseline security headers; tag input validation; a written endpoint-by-endpoint abuse review |
 
 ---
 
