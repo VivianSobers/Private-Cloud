@@ -21,6 +21,7 @@ export function SignIn({ onSignedIn, onCodes, codes, recoveryFor }: Props) {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [bootstrapChecked, setBootstrapChecked] = useState(false);
+  const [oidcEnabled, setOidcEnabled] = useState(false);
 
   useEffect(() => {
     if (recoveryFor) return;
@@ -31,6 +32,7 @@ export function SignIn({ onSignedIn, onCodes, codes, recoveryFor }: Props) {
         // the sign-in form first would be a dead end for the one person who
         // actually needs to get in.
         if (s.bootstrap_required) setMode("bootstrap");
+        setOidcEnabled(!!s.oidc_enabled);
       })
       .catch(() => {
         /* the API is unreachable; the sign-in attempt will say so properly */
@@ -167,6 +169,18 @@ export function SignIn({ onSignedIn, onCodes, codes, recoveryFor }: Props) {
                   : "Sign in with passkey"}
           </button>
 
+          {mode === "signin" && oidcEnabled && (
+            <button
+              disabled={busy}
+              onClick={() => {
+                // A full navigation, not a fetch: the provider redirect and the
+                // callback's Set-Cookie must happen in the top-level browser context.
+                window.location.href = "/api/v1/auth/oidc/login";
+              }}
+            >
+              Sign in with SSO
+            </button>
+          )}
           {mode === "signin" && (
             <button className="link" onClick={() => setMode("recovery")}>
               Lost your passkey?
