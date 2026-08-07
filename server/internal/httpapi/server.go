@@ -285,11 +285,14 @@ func (s *Server) handleReadyz(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleVersion(w http.ResponseWriter, r *http.Request) {
+	// No "phase" field. It was hardcoded to "1" and stayed there through four
+	// phases, so it reported the wrong thing for longer than it reported the
+	// right one. Version and commit already identify a build precisely; a
+	// hand-maintained label that duplicates them can only drift.
 	writeJSON(w, r, http.StatusOK, map[string]any{
 		"service": "private-cloud-api",
 		"version": s.version,
 		"commit":  s.commit,
-		"phase":   "1",
 	})
 }
 
