@@ -117,6 +117,9 @@ func registerHandlers(runner *jobs.Runner, store *jobs.Store, database *db.DB, l
 
 	ex := extract.New()
 	extractHandler := extract.NewHandler(files.NewExtractOpener(filesSvc), filesSvc.Store(), ex, log)
+	// Auto-tagging rides along with extraction: every extracted file gets its
+	// MIME-category and keyword tags in the same pass.
+	extractHandler.Tagging(filesSvc.Store())
 
 	// Semantic search: an inference sidecar embeds document text. When one is
 	// configured, register the embed handler and chain extraction to enqueue an
