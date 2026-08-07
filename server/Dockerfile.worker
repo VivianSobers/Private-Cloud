@@ -1,0 +1,53 @@
+# syntax=docker/dockerfile:1
+#
+# The background worker (pcworker): OCR, text extraction, tagging, and — when a
+# sidecar is configured — enqueuing embeddings.
+#
+# It cannot use the API's distroless image: OCR shells out to the `tesseract`
+# binary as a subprocess, which distroless has no room for. So the runtime is a
+# minimal Debian with tesseract installed. The Go binary is still fully static
+# (CGO_ENABLED=0), so nothing here links against system libc.
+
+# --------------------------------------------------------------------------
+# build
+# --------------------------------------------------------------------------
+FROM golang:1.25-alpine AS build
+
+WORKDIR /src
+
+COPY go.mod go.sum ./
+RUN --mount=type=cache,target=/go/pkg/mod go mod download
+
+COPY . .
+
+ARG VERSION=dev
+ARG COMMIT=none
+
+RUN --mount=type=cache,target=/go/pkg/mod \
+    --mount=type=cache,target=/root/.cache/go-build \
+    CGO_ENABLED=0 GOOS=linux go build \
+      -trimpath \
+      -ldflags="-s -w -X main.version=${VERSION} -X main.commit=${COMMIT}" \
+      -o /out/pcworker ./cmd/pcworker
+
+# --------------------------------------------------------------------------
+# runtime
+# --------------------------------------------------------------------------
+# Debian slim plus tesseract and its English language data — the OCR engine the
+# worker invokes. A deployment that does not want OCR can still run this image;
+# extraction simply reports OCR unavailable and skips images.
+FROM debian:bookworm-slim
+
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends \
+       tesseract-ocr tesseract-ocr-eng ca-certificates \
+    && rm -rf /var/lib/apt/lists/*
+
+COPY --from=build /out/pcworker /usr/local/bin/pcworker
+
+# A non-root user; the worker reads the blob store (mounted read-only) and needs
+# no elevated privilege. uid 65532 matches the API's distroless nonroot user.
+RUN useradd --uid 65532 --no-create-home --shell /usr/sbin/nologin pcworker
+USER 65532:65532
+
+ENTRYPOINT ["/usr/local/bin/pcworker"]
