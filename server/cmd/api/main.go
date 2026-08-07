@@ -208,6 +208,25 @@ func run() error {
 		log.Info("semantic search enabled", "sidecar", embedURL, "model", model, "dim", dim)
 	}
 
+	// OIDC single sign-on, if configured. A discovery failure disables SSO with a
+	// log line rather than aborting startup — a transient IdP outage must not take
+	// down the file API, and passkey login is unaffected regardless.
+	if iss := os.Getenv("PC_OIDC_ISSUER"); iss != "" {
+		provider, err := auth.NewOIDCProvider(ctx, auth.OIDCConfig{
+			Issuer:         iss,
+			ClientID:       os.Getenv("PC_OIDC_CLIENT_ID"),
+			ClientSecret:   os.Getenv("PC_OIDC_CLIENT_SECRET"),
+			RedirectURL:    os.Getenv("PC_OIDC_REDIRECT_URL"),
+			AllowedDomains: splitComma(os.Getenv("PC_OIDC_ALLOWED_DOMAINS")),
+		})
+		if err != nil {
+			log.Error("oidc setup failed; single sign-on disabled", "error", err)
+		} else {
+			apiServer.SetOIDC(provider)
+			log.Info("oidc single sign-on enabled", "issuer", iss)
+		}
+	}
+
 	srv := &http.Server{
 		Addr:    cfg.HTTPAddr,
 		Handler: apiServer.Handler(),
@@ -383,6 +402,21 @@ func (e extractEnqueuer) EnqueueExtract(ctx context.Context, nodeID, ownerID uui
 		jobs.EnqueueOptions{OwnerQueueCap: 50000}); err != nil {
 		e.log.Warn("enqueue extraction failed", "node", nodeID, "error", err)
 	}
+}
+
+// splitComma parses a comma-separated env value into trimmed, non-empty entries.
+func splitComma(v string) []string {
+	if strings.TrimSpace(v) == "" {
+		return nil
+	}
+	parts := strings.Split(v, ",")
+	out := make([]string, 0, len(parts))
+	for _, p := range parts {
+		if p = strings.TrimSpace(p); p != "" {
+			out = append(out, p)
+		}
+	}
+	return out
 }
 
 func envOr(key, def string) string {
