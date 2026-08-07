@@ -14,37 +14,58 @@ only matter the day someone hostile is looking.
 
 ---
 
-## 0. The constraint that shapes everything
+## 0. Two tiers, one queue
 
-This phase is where the temptation to add a resident ML stack is strongest, and
-where this particular machine says no. The always-on box is **7.2 GiB of RAM, 4
-cores, one 500 GB spinner**, with roughly 5 GiB already spoken for by the desktop
-it also is (see the `server-hardware-reality` note). ZFS ARC and Postgres are
-already tuned *down* to fit. There is no room for a language model sitting
-resident in memory, and no second disk to hide random-read latency behind.
+Two facts about the hardware shape this phase, and they pull in opposite
+directions:
 
-Three rules fall out of that, and they gate every slice below:
+- The **always-on box** is **7.2 GiB of RAM, 4 cores, one 500 GB spinner**, ~5 GiB
+  already spoken for by the desktop it also is (see the `server-hardware-reality`
+  note). ZFS ARC and Postgres are tuned *down* to fit. It has no room for a
+  resident model and no GPU.
+- There are also **two RTX 4090 boxes** available for compute — separate machines,
+  assumed **intermittent** (workstations, not always-on), each with 24 GB of VRAM.
 
-1. **Intelligence is opt-in and out-of-band.** OCR and embeddings run in a
-   **separate worker process** off a durable job queue, never inline with an
-   upload and never inside the API process. Turn the worker off and the system is
-   exactly the Phase 3 system — every file API still works, search still works on
-   filenames. A feature that cannot be switched off has no place on hardware this
-   tight.
-2. **Models are small, quantized, on-demand, and CPU-only.** Tesseract for OCR; a
-   ~90 MB quantized sentence-embedding model (all-MiniLM-L6-v2 class, ONNX via
-   `onnxruntime`) loaded by the worker, used, and — under memory pressure —
-   released. No GPU is assumed because there is none.
-3. **Content never leaves the box.** This is a *private* cloud; shipping file text
-   to a hosted embedding API to save a few hundred megabytes of RAM would trade
-   away the entire reason the project exists. Local inference or the feature does
-   not ship.
+The resolution is a **two-tier split with the job queue as the seam**, and it is
+the architecture slice 1 already built rather than a new one:
 
-The honest consequence: on *this* box, semantic search is a modest convenience
-that indexes slowly in the background, not a headline feature. On the eventual
-16 GB mirror-backed target it becomes comfortable. The design must be good on both
-and degrade gracefully on the small one — which is exactly why the worker is a
-separate, throttled, killable process.
+- **The always-on box owns state**: the API, Postgres (and the job queue in it),
+  and the blob store. This tier stays lean — it never loads a model, and turning
+  the worker off leaves exactly the Phase 3 system, every file endpoint and
+  filename search still working.
+- **The 4090 boxes are an accelerator tier**: one or more `pcworker` processes run
+  there, reach Postgres over the tailnet, and drain the same queue via
+  `FOR UPDATE SKIP LOCKED` — no schema change, because the queue was built for
+  exactly this. GPU workers run strong models and batch; a CPU worker on the
+  always-on box is the fallback that drains the backlog slowly when the GPUs are
+  offline. The queue tolerates their coming and going by construction: jobs wait.
+
+Four rules gate every slice below:
+
+1. **Intelligence is opt-in and out-of-band.** It runs in the worker tier off the
+   durable queue, never inline with an upload and never inside the API process. A
+   feature that cannot be switched off has no place on the always-on box.
+2. **Model choice follows the worker, not the API.** On a GPU worker: a strong
+   embedding model (e.g. `bge`/`e5`-class, 384–1024 dim) and GPU-accelerated OCR,
+   batched. On the CPU fallback: the small quantized profile (all-MiniLM-L6-v2
+   class via ONNX, tesseract). The stored vector's dimension is a config of the
+   chosen model, fixed per deployment; the query layer does not care which tier
+   produced it.
+3. **A remote worker pulls content over the authenticated API, never a mounted
+   blob FS.** The GPU box needs a file's bytes to OCR or embed it; it fetches them
+   over the tailnet through the same authenticated download path the sync client
+   uses (a service credential), so the always-on box stays the only thing that
+   touches the blob store directly. State has one owner.
+4. **Content never leaves your infrastructure.** A *private* cloud shipping file
+   text to a hosted inference API trades away the whole reason it exists. The
+   4090 boxes are yours, on your tailnet — local inference or the feature does not
+   ship. No hosted API, ever.
+
+**Training is out of scope and not required.** OCR, embeddings and tagging are all
+inference over off-the-shelf models; the GPUs make that inference good and fast,
+but there is nothing to train for these features. If a later feature genuinely
+benefits from fine-tuning (a personalized tagger, say), the GPU tier makes it
+possible — but it stays out of Phase 4.
 
 ---
 
@@ -90,9 +111,11 @@ upload ──► file stored ──► enqueue(extract) ─┐
 The API process enqueues a job when a file lands and otherwise knows nothing about
 ML. `pcworker` is the only thing that loads a model, and it is a separate binary
 in the same module — the modular-monolith rule from Phase 0 (extractable, not
-distributed-by-default) applied to compute instead of routing. One machine, one
-queue, `FOR UPDATE SKIP LOCKED` so the worker can be run as more than one process
-later without changing the schema.
+distributed-by-default) applied to compute instead of routing. It runs where the
+compute is: on a GPU box over the tailnet, or on the always-on box as a CPU
+fallback. `FOR UPDATE SKIP LOCKED` means one worker or several drain the same
+queue with no schema change, and a worker on another machine reaches file bytes
+through the authenticated download API, never a mounted blob store.
 
 ---
 
@@ -155,10 +178,13 @@ without any embedding model at all.
 "Find documents *about* invoices" where the word "invoice" appears nowhere — the
 part that genuinely needs a model, and the part the hardware most constrains.
 
-- The worker embeds `doc_text` with a small quantized model (all-MiniLM-L6-v2
-  class, 384-dim, ONNX via `onnxruntime-go`), chunking long documents and storing
-  one vector per chunk in `doc_embedding (node_id, content_hash, chunk_seq,
-  vector, ...)`.
+- The worker embeds `doc_text`, chunking long documents and storing one vector per
+  chunk in `doc_embedding (node_id, content_hash, chunk_seq, vector, ...)`. The
+  model follows the tier (§0): a strong `bge`/`e5`-class model on a GPU worker, the
+  small quantized all-MiniLM-L6-v2 class via ONNX on the CPU fallback. The vector
+  dimension is fixed per deployment by the chosen model and recorded alongside the
+  vector, so a later model change is a re-index, not silent corruption of a mixed
+  index.
 - **Storage and search: pgvector if present, brute-force if not.** At personal
   scale — thousands of documents, not millions — an exact cosine scan over stored
   vectors is fast enough and needs no extension. pgvector with an HNSW index is
@@ -255,9 +281,10 @@ fully working with the worker turned off.
 
 | Risk | Mitigation |
 |---|---|
-| ML makes the box unusable for its actual job (serving files) | Everything ML is a separate, throttled, killable worker off a durable queue; the API never loads a model; turning the worker off restores the Phase 3 system exactly |
-| A resident model exhausts 7 GiB of RAM | Small quantized CPU model, loaded on demand and released under pressure, concurrency 1; the worker's memory ceiling is an operator lever |
-| Content leaks to a hosted inference API | Local inference only; sending file text off-box is disqualifying for a private cloud, so the option does not exist in the design |
+| ML makes the box unusable for its actual job (serving files) | Everything ML is a separate, throttled, killable worker off a durable queue, and it runs on the GPU tier off-box entirely; the API never loads a model; turning the worker off restores the Phase 3 system exactly |
+| A model exhausts the always-on box's 7 GiB | The heavy model runs on a GPU worker, not the always-on box; the CPU fallback uses the small quantized profile at concurrency 1, and the worker's memory ceiling is an operator lever |
+| A remote GPU worker needs the blob filesystem | It does not — it pulls file bytes over the authenticated download API on the tailnet, so the always-on box remains the sole owner of the blob store |
+| Content leaks to a hosted inference API | Local inference only, on your own tailnet (the always-on box or the 4090 boxes); sending file text off your infrastructure is disqualifying for a private cloud, so the option does not exist in the design |
 | A crafted file makes OCR/embedding pathologically slow | Per-job size/page caps and timeouts; a job that exhausts retries dead-letters rather than pinning the one spare core |
 | A user floods the job queue | Enqueue is bounded per owner; the queue is drained at a fixed rate, so a flood delays that user's own indexing, not the system |
 | pgvector missing on a dev box breaks search | The query layer degrades to an exact cosine scan; the feature works without the extension, just slower |
