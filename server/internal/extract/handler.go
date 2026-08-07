@@ -1,0 +1,103 @@
+package extract
+
+import (
+	"context"
+	"errors"
+	"io"
+	"log/slog"
+
+	"github.com/google/uuid"
+)
+
+// Kind is the job kind this handler drains.
+const Kind = "extract"
+
+// ErrContentGone means the file was trashed or purged between the job being
+// enqueued and the worker reaching it. Not a failure to retry — there is simply
+// nothing left to extract.
+var ErrContentGone = errors.New("content no longer available")
+
+// FileContent is what the handler needs to extract from a node.
+type FileContent struct {
+	MIME        string
+	ContentHash []byte
+	Reader      io.ReadCloser
+}
+
+// Opener fetches a node's content. Two implementations exist: a co-located one
+// that reads the blob store directly (worker on the always-on box), and a remote
+// one that pulls over the authenticated download API (worker on a GPU box). The
+// handler does not care which; it only ever sees bytes.
+type Opener interface {
+	OpenForExtract(ctx context.Context, ownerID, nodeID uuid.UUID) (FileContent, error)
+}
+
+// TextStore caches extracted text by content hash.
+type TextStore interface {
+	HasDocText(ctx context.Context, contentHash []byte) (bool, error)
+	PutDocText(ctx context.Context, contentHash []byte, text, lang, source string) error
+}
+
+// Handler extracts a file's text and caches it. It is the worker's `extract`
+// handler, decoupled from the jobs package: the worker adapts a claimed job's
+// node/owner into this call.
+type Handler struct {
+	opener    Opener
+	store     TextStore
+	extractor *Extractor
+	log       *slog.Logger
+}
+
+func NewHandler(opener Opener, store TextStore, ex *Extractor, log *slog.Logger) *Handler {
+	if log == nil {
+		log = slog.New(slog.NewTextHandler(io.Discard, nil))
+	}
+	return &Handler{opener: opener, store: store, extractor: ex, log: log}
+}
+
+// Handle extracts text for one node and stores it. It returns nil — a completed
+// job — for every "nothing to index" outcome (unsupported type, no text, no OCR,
+// content gone, already cached), and a real error only for a transient failure
+// worth retrying. Idempotent by content hash, so a job that runs twice, or two
+// jobs for identical content, do the work once.
+func (h *Handler) Handle(ctx context.Context, nodeID *uuid.UUID, ownerID uuid.UUID) error {
+	if nodeID == nil {
+		return nil // an owner-scoped job is not an extraction; nothing to do
+	}
+
+	fc, err := h.opener.OpenForExtract(ctx, ownerID, *nodeID)
+	if errors.Is(err, ErrContentGone) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	defer fc.Reader.Close()
+
+	if len(fc.ContentHash) == 0 {
+		return nil // no addressable content (should not happen for a file)
+	}
+
+	// Content-addressed dedup: identical bytes are extracted once.
+	has, err := h.store.HasDocText(ctx, fc.ContentHash)
+	if err != nil {
+		return err
+	}
+	if has {
+		return nil
+	}
+
+	res, err := h.extractor.Extract(ctx, fc.MIME, fc.Reader)
+	switch {
+	case errors.Is(err, ErrUnsupported), errors.Is(err, ErrNoText), errors.Is(err, ErrNoOCR):
+		// Nothing worth indexing. A completed job, not a failure — retrying would
+		// just fail identically and burn the one worker slot.
+		h.log.Debug("nothing to extract", "node", *nodeID, "mime", fc.MIME, "reason", err)
+		return nil
+	case err != nil:
+		return err
+	}
+
+	h.log.Info("extracted text", "node", *nodeID, "source", res.Source, "chars", len(res.Text))
+	return h.store.PutDocText(ctx, fc.ContentHash, res.Text, res.Lang, res.Source)
+}
