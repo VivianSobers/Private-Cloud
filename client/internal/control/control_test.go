@@ -16,6 +16,7 @@ type stubEngine struct {
 	mu       sync.Mutex
 	paused   bool
 	syncs    int
+	excludes []string
 	snapshot engine.Status
 }
 
@@ -31,6 +32,16 @@ func (s *stubEngine) Resume() { s.mu.Lock(); s.paused = false; s.mu.Unlock() }
 func (s *stubEngine) SyncNow() {
 	s.mu.Lock()
 	s.syncs++
+	s.mu.Unlock()
+}
+func (s *stubEngine) Excludes() []string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return append([]string(nil), s.excludes...)
+}
+func (s *stubEngine) SetExcludes(x []string) {
+	s.mu.Lock()
+	s.excludes = append([]string(nil), x...)
 	s.mu.Unlock()
 }
 
@@ -121,12 +132,38 @@ func TestControlRoundTrip(t *testing.T) {
 	}
 }
 
+// The selective-sync set round-trips: PUT replaces it, GET reads it back, and the
+// daemon-side engine holds it.
+func TestExcludesRoundTrip(t *testing.T) {
+	eng := &stubEngine{}
+	client := serveOnSocket(t, eng, Info{})
+	ctx := context.Background()
+
+	if got, err := client.Excludes(ctx); err != nil || len(got) != 0 {
+		t.Fatalf("initial excludes = %v, err=%v", got, err)
+	}
+	updated, err := client.SetExcludes(ctx, []string{"/Videos", "/Photos"})
+	if err != nil {
+		t.Fatalf("set excludes: %v", err)
+	}
+	if len(updated) != 2 {
+		t.Errorf("set returned %v", updated)
+	}
+	got, err := client.Excludes(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 2 || got[0] != "/Videos" {
+		t.Errorf("excludes after set = %v", got)
+	}
+}
+
 // A GET to a POST-only control is a 405, not a silent success — a fat-fingered
 // verb fails loudly.
 func TestWrongMethodRejected(t *testing.T) {
 	client := serveOnSocket(t, &stubEngine{}, Info{})
 	// Status uses GET; hitting the pause path with GET must fail.
-	err := client.do(context.Background(), "GET", "/v1/pause", nil)
+	err := client.do(context.Background(), "GET", "/v1/pause", nil, nil)
 	if err == nil {
 		t.Fatal("expected GET on a POST-only route to fail")
 	}
