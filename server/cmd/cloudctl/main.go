@@ -8,15 +8,10 @@
 // This does not weaken the security model: it requires shell access to the
 // server, and anyone with that already has the database and the files.
 //
-//	cloudctl user list
-//	cloudctl user create <username> [--admin]
-//	cloudctl user reset-auth <username>
-//	cloudctl user disable <username>
-//	cloudctl user enable <username>
-//	cloudctl recovery regenerate <username>
-//	cloudctl cleanup
-//	cloudctl fsck [--repair]
-//	cloudctl gc
+// The full command list lives in usage() rather than being duplicated here,
+// where it drifted out of date once already: this comment listed neither
+// app-password, nor migrate-blobs, nor any of the jobs subcommands. One place to
+// read, one place to update.
 package main
 
 import (
@@ -64,11 +59,13 @@ func usage() {
   migrate-blobs [--limit=N] [--all]  rewrite Phase 1 whole-file blobs as chunks
   jobs stats                      show background job queue depth by state
   jobs failed [--limit=N]         list dead-lettered jobs and their errors
-  jobs retry                      requeue all dead-lettered jobs
+  jobs retry [--kind=KIND]        requeue dead-lettered jobs
   jobs reindex                    enqueue extraction for every live file
 
 Requires PC_DATABASE_URL in the environment.
 fsck, gc and migrate-blobs also require PC_BLOB_PATH.
+gc also honours PC_TRASH_RETENTION, PC_KEEP_VERSIONS, PC_VERSION_RETENTION,
+PC_CHANGE_RETENTION and PC_UPLOAD_TTL, and prints the policy it applies.
 `)
 }
 
@@ -568,7 +565,7 @@ func migrateCommand(ctx context.Context, database *db.DB, log *slog.Logger, args
 // of the metrics and the JobsDeadLettering alert.
 func jobsCommand(ctx context.Context, database *db.DB, args []string) error {
 	if len(args) == 0 {
-		return fmt.Errorf("usage: cloudctl jobs <stats|failed|retry>")
+		return fmt.Errorf("usage: cloudctl jobs <stats|failed|retry|reindex>")
 	}
 	store := jobs.NewStore(database.Pool)
 
@@ -649,7 +646,7 @@ func jobsCommand(ctx context.Context, database *db.DB, args []string) error {
 		return nil
 
 	default:
-		return fmt.Errorf("unknown jobs subcommand %q", args[0])
+		return fmt.Errorf("unknown jobs subcommand %q (want stats, failed, retry or reindex)", args[0])
 	}
 }
 
