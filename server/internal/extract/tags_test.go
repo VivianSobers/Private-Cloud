@@ -54,6 +54,25 @@ func TestTagsAreSortedAndDeduped(t *testing.T) {
 	}
 }
 
+// The vocabulary is meant to be conservative: a noisy tag is worse than a
+// missing one. These are ordinary sentences that a single-word trigger would
+// have mislabelled.
+func TestTagsDoNotFireOnCommonWords(t *testing.T) {
+	cases := map[string]string{
+		"Please keep this confidential until Thursday.":           "legal",
+		"We reached an agreement about the meeting time.":         "contract",
+		"The invoice is in the post, I think.":                    "invoice",
+		"I got a receipt for lunch but lost it.":                  "receipt",
+		"My resume is out of date and I should fix that someday.": "resume",
+		"The gym waiver mentions liability somewhere.":            "legal",
+	}
+	for text, unwanted := range cases {
+		if got := Tags("text/plain", text); slices.Contains(got, unwanted) {
+			t.Errorf("Tags(%q) = %v, must not contain %q", text, got, unwanted)
+		}
+	}
+}
+
 func TestTagsEmptyForUnknownAndBlank(t *testing.T) {
 	if got := Tags("application/octet-stream", ""); len(got) != 0 {
 		t.Errorf("unknown type with no text should have no tags, got %v", got)

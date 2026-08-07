@@ -74,12 +74,12 @@ func mimeTags(contentType string) []string {
 // conservative on purpose: a noisy tag is worse than a missing one, so this is a
 // curated list, not top-frequency words.
 var keywordVocabulary = map[string][]string{
-	"invoice":   {"invoice", "invoice number", "invoice #"},
-	"receipt":   {"receipt", "thank you for your purchase", "order confirmation"},
-	"financial": {"subtotal", "amount due", "balance due", "sales tax", "total due"},
-	"contract":  {"agreement", "hereby agree", "terms and conditions", "party of the first part"},
+	"invoice":   {"invoice number", "invoice #", "invoice date", "tax invoice"},
+	"receipt":   {"thank you for your purchase", "order confirmation", "payment received"},
+	"financial": {"amount due", "balance due", "sales tax", "total due", "subtotal"},
+	"contract":  {"hereby agree", "terms and conditions", "party of the first part", "this agreement is made"},
 	"resume":    {"curriculum vitae", "work experience", "professional experience", "employment history"},
-	"legal":     {"pursuant to", "confidential", "all rights reserved", "liability"},
+	"legal":     {"pursuant to", "hereinafter referred to", "governing law", "all rights reserved"},
 }
 
 // keywordTags returns the vocabulary tags whose triggers appear in the text.
