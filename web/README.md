@@ -74,3 +74,13 @@ stray click on a close button is not something the user can undo.
 **Errors surface `request_id`.** Every API error carries one, and showing it is
 what makes "it broke" answerable from the server logs without asking the user
 to reproduce it.
+
+**Installable PWA, with a deliberately narrow service worker.** A manifest and
+icon (`public/manifest.webmanifest`, `public/icon.svg`) make the app installable
+to a home screen or desktop; `public/sw.js` caches only the app *shell*, never
+data. Its rules are strict: `/api/*` is never touched (authenticated, always
+live); navigations are network-first with the cached shell as the offline
+fallback; and hashed `/assets/*` are cache-first because their filenames are
+content-addressed. The worker registers only in production and never on the
+public `/s/` share plane. This is the foundation for the mobile client — the app
+installs and its shell opens offline, with no native toolchain.

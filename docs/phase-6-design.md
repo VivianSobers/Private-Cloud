@@ -107,7 +107,18 @@ items to the existing control client (`Pause`/`Resume`/`Sync`/`SetExcludes`) —
 all of which are built and tested here. The GUI is genuinely a thin shell; every
 decision it makes is decided in `internal/tray` and exercised without a screen.
 
-## 5. Later slices (not yet)
+## 5. Slice 5 — Installable PWA (foundation) ✅
 
-- Slice 4: the platform tray icon adapter + installers / auto-update.
-- Slice 5: a mobile / PWA client speaking the same `/api/v1` surface.
+The web app is now an installable Progressive Web App: a manifest and icon make
+it addable to a home screen or desktop, and a narrow service worker
+(`web/public/sw.js`) makes its shell open offline without ever caching
+authenticated data — `/api/*` is never intercepted, navigations are network-first
+with an offline shell fallback, and content-addressed `/assets/*` are cache-first.
+This is the mobile client's foundation reached with no native toolchain: the same
+`/api/v1` surface, installed as an app. Native-feeling polish (offline file
+pinning, push) is a later slice.
+
+## 6. Later slices (not yet)
+
+- The platform tray icon adapter + desktop installers / auto-update.
+- Mobile polish: offline pinning of chosen files, share-target, push.
