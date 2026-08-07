@@ -108,10 +108,20 @@ permissions — so you can watch and steer it without reading logs. The same
 
 ```bash
 pcsync status -config ./config.json     # up to date, syncing, paused, or broken?
+pcsync watch  -config ./config.json     # a live status line that updates in place
 pcsync sync   -config ./config.json     # reconcile now (works even while paused)
 pcsync pause  -config ./config.json     # stop automatic syncing (e.g. on a hotspot)
 pcsync resume -config ./config.json     # resume it
 ```
+
+`watch` is the headless counterpart to a tray icon — one self-refreshing line:
+
+```
+✓  Up to date — 1284 items · last sync 8s ago
+```
+
+The same state and summary logic drives a desktop tray shell; the icon is a thin
+adapter over it.
 
 `status` reports the current state, how many items are tracked, when the last
 sync succeeded, any lingering error, and the list of conflict copies that need

@@ -87,9 +87,27 @@ never touching the server); persistence in the state db so a live change outlive
 a restart, with the config's `excludes` as first-run seed only; `GET`/`PUT
 /v1/excludes` on the control socket; and `pcsync exclude list|add|remove`.
 
-## 4. Later slices (not yet)
+## 4. Slice 3 — Tray presentation + live monitor ✅ (icon shell pending)
 
-- Slice 3: the desktop tray shell (platform icon + menu) over this control API —
-  the one piece that needs a machine with a display to finish.
-- Slice 4: installers / auto-update.
+The substance of the tray — turning daemon status into what a person sees — is a
+platform-free package (`internal/tray`): a `State` (offline/error/paused/
+syncing/idle, in precedence order), a one-line `Summary` for the tooltip, glyphs,
+and the shared relative-time formatter. It is fully unit-tested.
+
+`pcsync watch` renders that live over the control socket — a self-refreshing
+status line, the headless counterpart to a tray icon:
+
+```
+✓  Up to date — 1284 items · last sync 8s ago
+```
+
+**What's left for a display machine:** only the platform icon+menu adapter. It
+maps `tray.State` to an icon and `tray.Summary` to a tooltip, and wires menu
+items to the existing control client (`Pause`/`Resume`/`Sync`/`SetExcludes`) —
+all of which are built and tested here. The GUI is genuinely a thin shell; every
+decision it makes is decided in `internal/tray` and exercised without a screen.
+
+## 5. Later slices (not yet)
+
+- Slice 4: the platform tray icon adapter + installers / auto-update.
 - Slice 5: a mobile / PWA client speaking the same `/api/v1` surface.
