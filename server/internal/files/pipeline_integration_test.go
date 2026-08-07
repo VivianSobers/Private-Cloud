@@ -78,8 +78,12 @@ func TestExtractionPipelineEndToEnd(t *testing.T) {
 
 	// A token only in the body, so a hit can only come from extracted text.
 	token := "zebra" + strings.ReplaceAll(uuid.NewString(), "-", "")[:10]
+	// The body has to look like an actual invoice, not merely mention the word.
+	// The keyword vocabulary keys on phrases ("invoice number") rather than bare
+	// words precisely so that "Invoice attached." in a memo does NOT get tagged.
 	node, err := f.svc.Upload(ctx, f.user, f.root, "memo.txt",
-		strings.NewReader("Project kickoff. Codename "+token+". Invoice attached."), "text/plain")
+		strings.NewReader("Project kickoff. Codename "+token+".\nInvoice number 4471\nAmount due: 42.00"),
+		"text/plain")
 	if err != nil {
 		t.Fatalf("upload: %v", err)
 	}

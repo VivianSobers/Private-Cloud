@@ -106,7 +106,10 @@ func TestExtractImageWithoutOCR(t *testing.T) {
 }
 
 func TestIsTextual(t *testing.T) {
-	yes := []string{"text/plain", "text/markdown", "application/json", "image/svg+xml", "application/ld+json"}
+	// image/svg+xml is no longer here: the +xml family routes through isMarkup so
+	// its tags are stripped before indexing. It is still text, just not decoded
+	// verbatim. See TestIsMarkup.
+	yes := []string{"text/plain", "text/markdown", "application/json", "application/ld+json"}
 	no := []string{"image/png", "application/pdf", "application/octet-stream", "video/mp4"}
 	for _, m := range yes {
 		if !isTextual(m) {
@@ -117,6 +120,26 @@ func TestIsTextual(t *testing.T) {
 		if isTextual(m) {
 			t.Errorf("%q should not be textual", m)
 		}
+	}
+}
+
+func TestIsMarkup(t *testing.T) {
+	yes := []string{"image/svg+xml", "application/xml", "text/xml", "text/html", "application/xhtml+xml"}
+	no := []string{"text/plain", "application/json", "application/ld+json", "image/png"}
+	for _, m := range yes {
+		if !isMarkup(m) {
+			t.Errorf("%q should be markup", m)
+		}
+	}
+	for _, m := range no {
+		if isMarkup(m) {
+			t.Errorf("%q should not be markup", m)
+		}
+	}
+	// Markup is checked before the image branch, so an SVG reaches the text path
+	// rather than OCR — tesseract cannot read a vector file.
+	if !isMarkup("image/svg+xml") || isTextual("image/svg+xml") {
+		t.Error("image/svg+xml must route to markup, not to the plain text decoder")
 	}
 }
 
