@@ -71,6 +71,13 @@ type Engine struct {
 	since     time.Time
 	paused    atomic.Bool
 	syncNow   chan struct{}
+
+	// excludes is the selective-sync set (*[]string of normalized prefixes), read
+	// per node on the sync path and swapped live from the control goroutine — see
+	// selective.go. excludesLoaded records whether a persisted set was found at
+	// startup, so the config seed does not clobber a live change.
+	excludes       atomic.Pointer[[]string]
+	excludesLoaded bool
 }
 
 // New builds an engine. root and stateDir are absolute; stateDir is where the
@@ -83,7 +90,7 @@ func New(srv Server, st *state.Store, root, stateDir string, log *slog.Logger) *
 	if err != nil || host == "" {
 		host = "device"
 	}
-	return &Engine{
+	e := &Engine{
 		srv: srv, state: st, root: root, stateDir: stateDir, log: log,
 		hostname: host, clock: time.Now,
 		phase: PhaseIdle, since: time.Now(),
@@ -91,6 +98,8 @@ func New(srv Server, st *state.Store, root, stateDir string, log *slog.Logger) *
 		// coalesced with a new one — one pending sync is as good as two.
 		syncNow: make(chan struct{}, 1),
 	}
+	e.loadPersistedExcludes()
+	return e
 }
 
 // Sync runs one full reconciliation: pull remote changes, then push local ones.
@@ -103,6 +112,12 @@ func New(srv Server, st *state.Store, root, stateDir string, log *slog.Logger) *
 // slice 4 turns that into a visible conflict copy.
 func (e *Engine) Sync(ctx context.Context) error {
 	if err := e.ensureRoot(ctx); err != nil {
+		return err
+	}
+	// Drop anything newly excluded before reconciling, so the pull does not
+	// re-download what selective sync just declined, and the push does not read a
+	// pruned subtree's absence as a server deletion.
+	if err := e.pruneExcluded(); err != nil {
 		return err
 	}
 	if err := e.pull(ctx); err != nil {

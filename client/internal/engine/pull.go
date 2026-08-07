@@ -32,6 +32,12 @@ func (e *Engine) reconcileTree(ctx context.Context) error {
 			return err
 		}
 		for _, node := range children {
+			// A selectively-excluded subtree is not materialized and not descended
+			// into — it is left entirely to the server, and pruneExcluded has already
+			// dropped any local trace of it.
+			if e.excluded(node.Path) {
+				continue
+			}
 			seen[node.Path] = true
 			if node.IsFolder() {
 				if err := e.materializeFolder(node); err != nil {
@@ -56,6 +62,11 @@ func (e *Engine) reconcileTree(ctx context.Context) error {
 	}
 	for _, entry := range entries {
 		if seen[entry.Path] {
+			continue
+		}
+		// An excluded entry is absent from `seen` by design, not because the server
+		// removed it — pruneExcluded owns its removal, so do not treat it as vanished.
+		if e.excluded(entry.Path) {
 			continue
 		}
 		if err := e.removeVanished(entry); err != nil {
@@ -139,6 +150,12 @@ func (e *Engine) applyChange(ctx context.Context, ch api.Change) error {
 		return nil
 	}
 	node := *ch.Node
+
+	// A change landing inside an excluded subtree is ignored — including a move
+	// into one, which is why this is checked before the rename handling below.
+	if e.excluded(node.Path) {
+		return nil
+	}
 
 	// A rename or move: a node we already hold has surfaced at a new path. Move the
 	// local copy rather than downloading a second one and orphaning the first.

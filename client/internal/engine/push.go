@@ -47,6 +47,15 @@ func (e *Engine) pushExisting(ctx context.Context) (map[string]bool, error) {
 		if !ok || sp == "/" {
 			return nil
 		}
+		// A selectively-excluded path is not pushed. Skipping the whole subtree of an
+		// excluded directory keeps a locally-created file inside it off the server —
+		// exclusion means "this device does not sync here", in both directions.
+		if e.excluded(sp) {
+			if d.IsDir() {
+				return filepath.SkipDir
+			}
+			return nil
+		}
 		seen[sp] = true
 
 		if d.IsDir() {
@@ -130,6 +139,12 @@ func (e *Engine) pushDeletions(ctx context.Context, seen map[string]bool) error 
 	}
 	for _, entry := range entries {
 		if seen[entry.Path] {
+			continue
+		}
+		// An excluded entry is intentionally not on this device; its absence from the
+		// walk must never trash it on the server. pruneExcluded drops its state, but
+		// guard here too so a deletion is never sent for an excluded path.
+		if e.excluded(entry.Path) {
 			continue
 		}
 		// The parent folder may already have been trashed this pass, cascading on
