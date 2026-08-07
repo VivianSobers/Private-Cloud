@@ -284,6 +284,48 @@ func TestReapStaleRequeues(t *testing.T) {
 	}
 }
 
+// Failed jobs are listable and can be requeued in bulk — the operator's recovery
+// path after fixing whatever made them fail.
+func TestListAndRetryFailed(t *testing.T) {
+	f := newJobsFixture(t)
+	ctx := context.Background()
+
+	id, _, err := f.store.Enqueue(ctx, f.kind, &f.nodeID, f.owner, EnqueueOptions{MaxAttempts: 1})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.store.Claim(ctx, []string{f.kind}); err != nil {
+		t.Fatal(err)
+	}
+	if err := f.store.Fail(ctx, id, errors.New("kaboom")); err != nil {
+		t.Fatal(err)
+	}
+
+	failed, err := f.store.ListFailed(ctx, 1000)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var found bool
+	for _, j := range failed {
+		if j.ID == id {
+			found = true
+			if j.LastError != "kaboom" {
+				t.Errorf("last_error = %q, want kaboom", j.LastError)
+			}
+		}
+	}
+	if !found {
+		t.Fatal("failed job not listed")
+	}
+
+	if _, err := f.store.RetryFailed(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if s := f.stateOf(t, id); s != StateQueued {
+		t.Errorf("retried job state = %s, want queued", s)
+	}
+}
+
 // The runner claims a job, runs its handler, and completes it.
 func TestRunnerProcessesJob(t *testing.T) {
 	f := newJobsFixture(t)
