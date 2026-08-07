@@ -22,7 +22,11 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/guru-bharadwaj20/private-cloud/server/internal/blob"
+	"github.com/guru-bharadwaj20/private-cloud/server/internal/cas"
 	"github.com/guru-bharadwaj20/private-cloud/server/internal/db"
+	"github.com/guru-bharadwaj20/private-cloud/server/internal/extract"
+	"github.com/guru-bharadwaj20/private-cloud/server/internal/files"
 	"github.com/guru-bharadwaj20/private-cloud/server/internal/jobs"
 )
 
@@ -67,9 +71,13 @@ func run() error {
 		Lease: envDuration("PC_WORKER_LEASE", 10*time.Minute),
 	})
 
-	// Handlers are registered here as later slices add them:
-	//   runner.Register(extract.Kind, extract.New(files, cas).Handle)   // slice 2
-	//   runner.Register(embed.Kind,   embed.New(...).Handle)            // slice 3
+	// The extract handler needs to read file content. Co-located here (same box as
+	// the blob store), it reads blobs directly; PC_BLOB_PATH is required for that.
+	// A GPU worker on another box would instead pull content over the download API
+	// — same handler, different Opener — but that adapter is not wired yet.
+	if err := registerExtract(runner, database, log); err != nil {
+		return err
+	}
 
 	go prune(ctx, store, envDuration("PC_JOB_RETENTION", 7*24*time.Hour), log)
 
@@ -78,6 +86,40 @@ func run() error {
 		return err
 	}
 	log.Info("pcworker stopped")
+	return nil
+}
+
+// registerExtract wires the text-extraction handler, if a blob path is
+// configured. Without PC_BLOB_PATH the worker still runs (reaping, pruning) but
+// registers no handler — a deployment can defer OCR by simply not pointing it at
+// the blobs.
+func registerExtract(runner *jobs.Runner, database *db.DB, log *slog.Logger) error {
+	blobPath := os.Getenv("PC_BLOB_PATH")
+	if blobPath == "" {
+		log.Warn("PC_BLOB_PATH not set; extraction handler not registered")
+		return nil
+	}
+
+	blobs, err := blob.NewFSStore(blobPath)
+	if err != nil {
+		return fmt.Errorf("blob store: %w", err)
+	}
+	filesSvc := files.NewService(files.NewStore(database.Pool), blobs, log)
+	casStore, err := cas.NewStore(database.Pool, blobs)
+	if err != nil {
+		return fmt.Errorf("content-addressed store: %w", err)
+	}
+	filesSvc.SetCAS(casStore)
+
+	ex := extract.New()
+	log.Info("extraction handler registered", "ocr_available", ex.HasOCR())
+	handler := extract.NewHandler(files.NewExtractOpener(filesSvc), filesSvc.Store(), ex, log)
+
+	// Adapt a claimed job into the handler's node/owner arguments, keeping the
+	// extract package free of any dependency on the jobs package.
+	runner.Register(extract.Kind, func(ctx context.Context, j jobs.Job) error {
+		return handler.Handle(ctx, j.NodeID, j.OwnerID)
+	})
 	return nil
 }
 
