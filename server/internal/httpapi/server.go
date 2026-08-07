@@ -88,11 +88,16 @@ func NewServer(log *slog.Logger, database *db.DB, m *metrics.Metrics, authSvc *a
 //
 // Order is outermost-first and deliberate:
 //
-//	requestID -> recovery -> observability -> mux
+//	requestID -> recovery -> observability -> securityHeaders -> bodyLimit -> mux
 //
 // recovery sits outside observability so a panic still produces a metric and a
 // log line for the request that caused it; it sits inside requestID so the
 // panic log carries the correlation ID.
+//
+// securityHeaders sits inside observability so the headers are on the response
+// recorder the metrics read, and outside the mux so a 404 carries them too — an
+// unmatched path is exactly where a reflected-content mistake would land.
+// bodyLimit is innermost, closest to the handler that reads the body.
 func (s *Server) Handler() http.Handler {
 	mux := http.NewServeMux()
 
