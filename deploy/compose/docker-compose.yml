@@ -239,11 +239,27 @@ services:
       PC_ENABLE_SEMANTIC: ${PC_ENABLE_SEMANTIC:-}
       PC_EMBED_MODEL: ${PC_EMBED_MODEL:-bge-small-en-v1.5}
       PC_EMBED_DIM: ${PC_EMBED_DIM:-384}
+      # Serves /metrics (what the handlers actually did — OCR duration, embed
+      # failure rate, handler panics) and the /healthz this container's
+      # healthcheck probes. Queue DEPTH still comes from the API, which polls
+      # the table; this is the half only the worker can know.
+      PC_WORKER_METRICS_ADDR: ":9091"
     # read_only rootfs; tesseract needs a scratch dir, so /tmp is a tmpfs.
     read_only: true
-    tmpfs: [/tmp]
+    # Bounded so one pathological OCR cannot take the box down. Extraction reads
+    # up to 64 MiB of a file into memory and tesseract is spawned per job, on a
+    # machine with 7 GiB total that also runs Postgres and the API.
+    tmpfs: [/tmp:size=512m]
     security_opt: [no-new-privileges:true]
     cap_drop: [ALL]
+    mem_limit: ${PC_WORKER_MEM_LIMIT:-1g}
+    healthcheck:
+      # Distroless-free image, so wget is available here (unlike the API's).
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:9091/healthz"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 15s
     depends_on:
       postgres:
         condition: service_healthy
@@ -268,7 +284,27 @@ services:
     networks: [data]
     environment:
       EMBED_MODEL: ${PC_EMBED_HF_MODEL:-BAAI/bge-small-en-v1.5}
+    # Hardened like every other service. This was the one container without
+    # cap_drop, and it is the largest attack surface in the stack — a Python
+    # runtime with torch and transformers, reachable unauthenticated from the
+    # data network that Postgres also sits on.
+    #
+    # Not read_only: sentence-transformers writes to its cache directory on
+    # first load. That is confined to a tmpfs instead, so nothing it writes
+    # survives a restart and it cannot fill the host.
     security_opt: [no-new-privileges:true]
+    cap_drop: [ALL]
+    tmpfs: [/tmp:size=256m, /home/app/.cache:size=2g]
+    mem_limit: ${PC_EMBED_MEM_LIMIT:-4g}
+    healthcheck:
+      # The model takes a while to load; start_period covers that so a slow
+      # first start is not reported as a failure.
+      test: ["CMD", "python", "-c",
+             "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/healthz')"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 180s
 
   # ==========================================================================
   # Web UI — build-only. Compiles the SPA into the web_dist volume and exits.

@@ -65,3 +65,14 @@ scrape_configs:
   - job_name: privatecloud-api
     static_configs:
       - targets: ["api:8080"]
+
+  # The background worker. The API already publishes queue DEPTH by polling the
+  # jobs table, which is what the backlog alerts fire on; this target adds what
+  # only the worker can know — how long each handler took, how often it failed,
+  # and whether any handler is panicking.
+  #
+  # A worker that is stopped simply stops being scraped, so `up` covers it: the
+  # generic TargetDown alert names this job.
+  - job_name: privatecloud-worker
+    static_configs:
+      - targets: ["pcworker:9091"]
