@@ -27,7 +27,20 @@ type Runner struct {
 	// lease is how long a claimed job may run before the reaper reclaims it.
 	idle  time.Duration
 	lease time.Duration
+
+	// observe, if set, is called once per finished job. A hook rather than a
+	// metrics dependency: this package has no business importing Prometheus, and
+	// a worker that publishes nothing should not have to.
+	observe func(kind, outcome string, d time.Duration)
 }
+
+// Observe wires a callback invoked after every job, with the kind, the outcome
+// ("done", "failed" or "panic") and how long the handler took.
+//
+// Queue depth alone cannot answer whether the pipeline is doing anything useful:
+// a worker completing every extract job while every document turns out to have
+// no extractable text looks exactly like one doing real work.
+func (r *Runner) Observe(f func(kind, outcome string, d time.Duration)) { r.observe = f }
 
 // Options tunes a Runner.
 type Options struct {
@@ -135,13 +148,35 @@ func (r *Runner) step(ctx context.Context) (bool, error) {
 		return true, r.store.Fail(ctx, j.ID, errors.New("no handler for kind "+j.Kind))
 	}
 
-	if herr := r.dispatch(ctx, h, j); herr != nil {
+	started := time.Now()
+	herr := r.dispatch(ctx, h, j)
+	elapsed := time.Since(started)
+
+	outcome := "done"
+	if herr != nil {
+		outcome = "failed"
+		if panicked(herr) {
+			outcome = "panic"
+		}
+	}
+	if r.observe != nil {
+		r.observe(j.Kind, outcome, elapsed)
+	}
+
+	if herr != nil {
 		r.log.Warn("job failed", "id", j.ID, "kind", j.Kind, "attempt", j.Attempts, "error", herr)
 		return true, r.store.Fail(ctx, j.ID, herr)
 	}
-	r.log.Info("job done", "id", j.ID, "kind", j.Kind)
+	r.log.Info("job done", "id", j.ID, "kind", j.Kind, "duration_ms", elapsed.Milliseconds())
 	return true, r.store.Complete(ctx, j.ID)
 }
+
+// errPanic marks a failure that came from a recovered panic rather than a
+// handler returning an error, so the two are distinguishable on a dashboard: a
+// rising panic count is a bug, a rising failure count is usually a dependency.
+var errPanic = errors.New("handler panicked")
+
+func panicked(err error) bool { return errors.Is(err, errPanic) }
 
 // dispatch runs a handler, turning a panic into an ordinary job failure.
 //
@@ -157,7 +192,7 @@ func (r *Runner) dispatch(ctx context.Context, h Handler, j Job) (err error) {
 			r.log.Error("panic in job handler",
 				"id", j.ID, "kind", j.Kind, "node", j.NodeID,
 				"error", rec, "stack", string(debug.Stack()))
-			err = fmt.Errorf("panic in handler: %v", rec)
+			err = fmt.Errorf("%w: %v", errPanic, rec)
 		}
 	}()
 	return h(ctx, j)

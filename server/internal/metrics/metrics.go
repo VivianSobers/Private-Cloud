@@ -29,8 +29,18 @@ type Metrics struct {
 
 	// GC results, so "is the trash actually being reclaimed" is answerable from
 	// a dashboard instead of by reading logs.
+	//
+	// GCReclaimed covers everything a pass frees, labelled by what was freed, so
+	// adding a new reclaimable kind does not mean adding a new metric and a new
+	// dashboard panel. It exists because only blobs and their bytes were ever
+	// published: chunks — which is where most bytes live once CAS is in use —
+	// along with manifests, versions, journal entries and derived content were all
+	// invisible, so a dashboard could show zero reclaimed while GC was working
+	// perfectly well.
 	GCBlobsFreed prometheus.Counter
 	GCBytesFreed prometheus.Counter
+	GCReclaimed  *prometheus.CounterVec
+	GCBytes      *prometheus.CounterVec
 
 	// Background migration of Phase 1 whole-file blobs into chunks. The counters
 	// answer "is the drain making progress" and "how close to done" — a monotonic
@@ -47,6 +57,17 @@ type Metrics struct {
 	// means jobs are dead-lettering and deserve a look. This is how the OCR/embed
 	// pipeline becomes observable without the worker exposing its own endpoint.
 	Jobs *prometheus.GaugeVec
+
+	// The background pipeline's own outcomes. privatecloud_jobs answers "is the
+	// queue draining"; these answer "is it doing anything useful", which is a
+	// different question — a worker completing every extract job while every
+	// document turns out to have no extractable text looks identical on the queue
+	// depth alone.
+	//
+	// Labelled by kind and outcome rather than split into separate counters, so
+	// the failure ratio is one query and a new outcome does not need a new metric.
+	JobsProcessed *prometheus.CounterVec
+	JobDuration   *prometheus.HistogramVec
 }
 
 // New builds a dedicated registry rather than using the global default. A
@@ -131,6 +152,28 @@ func New(version, commit string, poolStats func() float64) *Metrics {
 			Name: "privatecloud_jobs",
 			Help: "Background job queue depth by state (queued, running, done, failed).",
 		}, []string{"state"}),
+
+		GCReclaimed: prometheus.NewCounterVec(prometheus.CounterOpts{
+			Name: "privatecloud_gc_reclaimed_total",
+			Help: "Rows or files reclaimed by garbage collection, by kind.",
+		}, []string{"kind"}),
+		GCBytes: prometheus.NewCounterVec(prometheus.CounterOpts{
+			Name: "privatecloud_gc_reclaimed_bytes_total",
+			Help: "Bytes reclaimed by garbage collection, by kind.",
+		}, []string{"kind"}),
+
+		JobsProcessed: prometheus.NewCounterVec(prometheus.CounterOpts{
+			Name: "privatecloud_jobs_processed_total",
+			Help: "Background jobs finished, by kind and outcome (done, failed, panic).",
+		}, []string{"kind", "outcome"}),
+		JobDuration: prometheus.NewHistogramVec(prometheus.HistogramOpts{
+			Name: "privatecloud_job_duration_seconds",
+			Help: "Background job handler duration by kind.",
+			// Buckets span seconds to minutes, unlike the HTTP histogram: OCR on a
+			// scanned page is tens of seconds and an embed batch can be longer, so
+			// the API's millisecond-weighted buckets would put everything in +Inf.
+			Buckets: []float64{0.1, 0.5, 1, 2.5, 5, 10, 30, 60, 120, 300},
+		}, []string{"kind"}),
 	}
 
 	m.DBPoolAcquired = prometheus.NewGaugeFunc(
@@ -156,6 +199,10 @@ func New(version, commit string, poolStats func() float64) *Metrics {
 		m.MigratedBytes,
 		m.VersionsPruned,
 		m.Jobs,
+		m.GCReclaimed,
+		m.GCBytes,
+		m.JobsProcessed,
+		m.JobDuration,
 		// Go runtime and process metrics: GC pressure, goroutine count, open
 		// FDs. The first two are how you spot a leak before it becomes an
 		// outage.

@@ -25,6 +25,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"net/http"
 	"os"
 	"os/signal"
 	"strings"
@@ -32,6 +33,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/prometheus/client_golang/prometheus/promhttp"
 
 	"github.com/guru-bharadwaj20/private-cloud/server/internal/blob"
 	"github.com/guru-bharadwaj20/private-cloud/server/internal/cas"
@@ -41,6 +43,7 @@ import (
 	"github.com/guru-bharadwaj20/private-cloud/server/internal/extract"
 	"github.com/guru-bharadwaj20/private-cloud/server/internal/files"
 	"github.com/guru-bharadwaj20/private-cloud/server/internal/jobs"
+	"github.com/guru-bharadwaj20/private-cloud/server/internal/metrics"
 )
 
 var (
@@ -98,6 +101,22 @@ func run() error {
 	// same handlers, different Opener — but that adapter is not wired yet.
 	if err := registerHandlers(ctx, runner, store, database, embedCfg, log); err != nil {
 		return err
+	}
+
+	// The worker's own metrics endpoint. Job counts by state come from the API,
+	// which polls the queue table — but only this process knows what its handlers
+	// actually DID: how long an OCR took, how often embedding fails, whether a
+	// handler is panicking. Serving them here is also what gives the container a
+	// real healthcheck, which it previously had no way to offer.
+	m := metrics.New(version, commit, func() float64 {
+		return float64(database.Pool.Stat().AcquiredConns())
+	})
+	runner.Observe(func(kind, outcome string, d time.Duration) {
+		m.JobsProcessed.WithLabelValues(kind, outcome).Inc()
+		m.JobDuration.WithLabelValues(kind).Observe(d.Seconds())
+	})
+	if addr := os.Getenv("PC_WORKER_METRICS_ADDR"); addr != "" {
+		go serveMetrics(ctx, addr, m, log)
 	}
 
 	retention := config.EnvDuration("PC_JOB_RETENTION", 7*24*time.Hour)
@@ -225,6 +244,37 @@ func verifyEmbedSidecar(ctx context.Context, c *embed.Client, cfg config.EmbedCo
 	log.Info("embedding sidecar verified",
 		"model", info.Model, "dim", info.Dim, "device", info.Device)
 	return true
+}
+
+// serveMetrics exposes /metrics and a /healthz liveness probe.
+//
+// /healthz reports that this process is alive and nothing more — deliberately
+// not that the database is reachable. A liveness probe that fails when a
+// dependency is down makes the orchestrator restart a healthy worker, turning a
+// Postgres blip into a crash loop, which is the same reasoning the API's probe
+// follows.
+func serveMetrics(ctx context.Context, addr string, m *metrics.Metrics, log *slog.Logger) {
+	mux := http.NewServeMux()
+	mux.Handle("GET /metrics", promhttp.HandlerFor(m.Registry, promhttp.HandlerOpts{
+		ErrorHandling: promhttp.ContinueOnError,
+	}))
+	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"status":"ok"}`))
+	})
+
+	srv := &http.Server{Addr: addr, Handler: mux, ReadHeaderTimeout: 5 * time.Second}
+	go func() {
+		<-ctx.Done()
+		shutdown, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		_ = srv.Shutdown(shutdown)
+	}()
+
+	log.Info("worker metrics listening", "addr", addr)
+	if err := srv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
+		log.Warn("worker metrics server stopped", "error", err)
+	}
 }
 
 // prune periodically deletes finished jobs so the table does not grow forever,

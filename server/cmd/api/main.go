@@ -353,6 +353,26 @@ func runGC(ctx context.Context, svc *files.Service, sharesSvc *shares.Service, m
 			m.GCBlobsFreed.Add(float64(res.BlobsFreed))
 			m.GCBytesFreed.Add(float64(res.BytesFreed))
 			m.VersionsPruned.Add(float64(res.VersionsPruned))
+
+			// Everything a pass reclaims, not just blobs. Chunks are where most
+			// bytes live once CAS is in use, so a dashboard built on the two
+			// counters above could read zero while GC was freeing gigabytes.
+			for kind, n := range map[string]int64{
+				"trash":      res.TrashPurged,
+				"versions":   res.VersionsPruned,
+				"changes":    res.ChangesPruned,
+				"blobs":      int64(res.BlobsFreed),
+				"manifests":  int64(res.ManifestsFreed),
+				"chunks":     int64(res.ChunksFreed),
+				"uploads":    int64(res.UploadsExpired),
+				"staging":    int64(res.StagingFreed),
+				"doc_text":   res.DocTextPruned,
+				"embeddings": res.EmbeddingsPruned,
+			} {
+				m.GCReclaimed.WithLabelValues(kind).Add(float64(n))
+			}
+			m.GCBytes.WithLabelValues("blobs").Add(float64(res.BytesFreed))
+			m.GCBytes.WithLabelValues("chunks").Add(float64(res.ChunkBytesFreed))
 			if res.TrashPurged > 0 || res.BlobsFreed > 0 || res.UploadsExpired > 0 ||
 				res.StagingFreed > 0 || res.ChunksFreed > 0 || res.VersionsPruned > 0 ||
 				res.ChangesPruned > 0 || res.DocTextPruned > 0 || res.EmbeddingsPruned > 0 {
