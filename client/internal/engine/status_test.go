@@ -77,6 +77,34 @@ func TestSnapshotRecordsAndClearsError(t *testing.T) {
 	}
 }
 
+// The session transfer tallies accrue: a pull counts downloaded files and bytes,
+// a subsequent local creation counts an upload.
+func TestTransferCountsAccrue(t *testing.T) {
+	f := newFake()
+	f.seedWhole(t, "/down.txt", []byte("downloaded body"))
+	e, root := newTestEngine(t, f)
+	ctx := context.Background()
+
+	if err := e.syncTracked(ctx); err != nil {
+		t.Fatal(err)
+	}
+	s := e.Snapshot()
+	if s.PulledFiles < 1 || s.PulledBytes < 1 {
+		t.Errorf("pull not counted: files=%d bytes=%d", s.PulledFiles, s.PulledBytes)
+	}
+
+	// Create a local file and sync again: it should be pushed and counted.
+	if err := os.WriteFile(filepath.Join(root, "up.txt"), []byte("uploaded"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := e.syncTracked(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if s := e.Snapshot(); s.PushedFiles < 1 || s.PushedBytes < 1 {
+		t.Errorf("push not counted: files=%d bytes=%d", s.PushedFiles, s.PushedBytes)
+	}
+}
+
 // Pause is reflected in the snapshot and is independent of the phase; SyncNow is
 // non-blocking and coalesces repeats into a single pending trigger.
 func TestPauseAndSyncNowControls(t *testing.T) {

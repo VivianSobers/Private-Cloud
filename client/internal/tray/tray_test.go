@@ -92,6 +92,23 @@ func TestRelTime(t *testing.T) {
 	}
 }
 
+// HumanBytes renders binary units to one decimal, with a plain-bytes floor.
+func TestHumanBytes(t *testing.T) {
+	cases := map[int64]string{
+		0:                      "0 B",
+		512:                    "512 B",
+		1024:                   "1.0 KiB",
+		1536:                   "1.5 KiB",
+		1024 * 1024:            "1.0 MiB",
+		5 * 1024 * 1024 * 1024: "5.0 GiB",
+	}
+	for n, want := range cases {
+		if got := HumanBytes(n); got != want {
+			t.Errorf("HumanBytes(%d) = %q, want %q", n, got, want)
+		}
+	}
+}
+
 func resp(phase string, paused bool) control.StatusResponse {
 	return control.StatusResponse{Status: engine.Status{Phase: engine.Phase(phase), Paused: paused}}
 }
