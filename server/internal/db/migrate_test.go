@@ -211,7 +211,7 @@ func TestMigrationsRoundTrip(t *testing.T) {
 		"webauthn_ceremonies", "blobs", "nodes", "file_versions",
 		"upload_sessions", "app_passwords",
 		"chunks", "manifests", "manifest_chunks",
-		"shares", "sync_state", "changes", "jobs", "doc_text",
+		"shares", "sync_state", "changes", "jobs", "doc_text", "doc_embedding",
 	} {
 		if tableExists(t, d, tbl) {
 			t.Errorf("table %q survived the down migration", tbl)
