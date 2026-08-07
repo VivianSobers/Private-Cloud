@@ -75,7 +75,8 @@ sudo ./scripts/restore-test.sh        # the step that makes it real
     ├── tailscale-setup.md
     ├── custom-metrics.md             backup/pool metrics + failure-sim validation
     ├── runbook-restore.md            something is lost
-    └── runbook-disaster-recovery.md  everything is lost
+    ├── runbook-disaster-recovery.md  everything is lost
+    └── runbook-worker.md             OCR, search and embeddings ops
 ```
 
 ---
