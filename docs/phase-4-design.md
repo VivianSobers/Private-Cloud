@@ -270,7 +270,7 @@ fully working with the worker turned off.
 | Slice | Contents | Status |
 |---|---|---|
 | **1** | Job queue (`jobs` table, `SKIP LOCKED` claim, retry/backoff) + `pcworker` process | ✅ transactional claim so two workers never share a job; unique-pending index dedups per (kind, node); exponential backoff to a dead-letter state; a reaper returns a crashed worker's job to the queue; `pcworker` is a separate process that idles harmlessly with no handlers registered |
-| **2** | OCR / text extraction into `doc_text`, folded into the existing trigram search | ⬜ |
+| **2** | OCR / text extraction into `doc_text`, folded into the existing trigram search | ✅ content-addressed `doc_text` (extract once, shared by identical files); a pure `extract` package — text decode, tesseract-subprocess OCR with graceful skip when absent, best-effort PDF text layer; the `extract` job handler and its co-located content Opener; extraction enqueued on upload and folded into the same trigram search with a `matched_content` flag |
 | **3** | Semantic search (embeddings + pgvector-or-brute-force KNN, hybrid ranking) and cheap auto-tagging | ⬜ |
 | **4** | OIDC login alongside passkeys, opt-in and non-weakening | ⬜ |
 | **5** | Hardening pass: abuse review of every post–Phase-1 endpoint, dep/secret audit, resource caps | ⬜ |
