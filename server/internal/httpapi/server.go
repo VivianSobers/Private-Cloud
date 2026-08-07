@@ -180,6 +180,15 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /api/v1/usage", s.requireAuth(s.handleUsage))
 	mux.HandleFunc("GET /api/v1/search", s.requireAuth(s.handleSearch))
 
+	// --- tags ----------------------------------------------------------------
+	// Auto tags are applied by the worker; users curate on top. A node's tags
+	// also ride along in its single-node GET.
+	mux.HandleFunc("GET /api/v1/nodes/{id}/tags", s.requireAuth(s.handleListNodeTags))
+	mux.HandleFunc("POST /api/v1/nodes/{id}/tags", s.requireAuth(s.handleAddNodeTag))
+	mux.HandleFunc("DELETE /api/v1/nodes/{id}/tags/{tag}", s.requireAuth(s.handleRemoveNodeTag))
+	mux.HandleFunc("GET /api/v1/tags", s.requireAuth(s.handleListTags))
+	mux.HandleFunc("GET /api/v1/tags/{tag}", s.requireAuth(s.handleTagNodes))
+
 	// --- sync: the change journal cursor -------------------------------------
 	mux.HandleFunc("GET /api/v1/changes", s.requireAuth(s.handleChanges))
 

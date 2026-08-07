@@ -137,12 +137,24 @@ func (s *Server) handleGetNode(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	node, err := s.files.Store().Get(r.Context(), CurrentUser(r.Context()).ID, id)
+	user := CurrentUser(r.Context())
+	node, err := s.files.Store().Get(r.Context(), user.ID, id)
 	if err != nil {
 		s.writeFilesError(w, r, "get node", err)
 		return
 	}
-	writeJSON(w, r, http.StatusOK, map[string]any{"node": nodeJSON(node)})
+
+	body := map[string]any{"node": nodeJSON(node)}
+	// A node's tags ride along here so a details view needs one request, not two.
+	// Best effort: a tag-read failure must not fail the node fetch itself.
+	if tags, err := s.files.Store().TagsForNode(r.Context(), user.ID, id); err == nil {
+		out := make([]map[string]any, 0, len(tags))
+		for _, t := range tags {
+			out = append(out, tagJSON(t.Name, t.Source))
+		}
+		body["tags"] = out
+	}
+	writeJSON(w, r, http.StatusOK, body)
 }
 
 func (s *Server) handleListChildren(w http.ResponseWriter, r *http.Request) {
