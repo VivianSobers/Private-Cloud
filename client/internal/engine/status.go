@@ -104,6 +104,16 @@ func (e *Engine) recordConflict(original, copyPath string) {
 	e.mu.Unlock()
 }
 
+// ClearConflicts empties the conflict log, so a person who has dealt with the
+// conflict files can dismiss them and stop the status surface nagging. It touches
+// only the in-memory hint — the conflict copies on disk (the durable record) are
+// untouched, and any new conflict re-populates the log.
+func (e *Engine) ClearConflicts() {
+	e.mu.Lock()
+	e.conflicts = nil
+	e.mu.Unlock()
+}
+
 // Pause stops the automatic cadences (poll, rescan, and debounced file-event
 // pushes). An in-flight reconcile finishes; only the next automatic trigger is
 // suppressed. An explicit SyncNow still runs, so paused never means stuck.

@@ -43,6 +43,7 @@ type Engine interface {
 	Pause()
 	Resume()
 	SyncNow()
+	ClearConflicts()
 	Excludes() []string
 	SetExcludes([]string)
 }

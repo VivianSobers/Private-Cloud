@@ -47,6 +47,12 @@ func (c *Client) Conflicts(ctx context.Context) ([]engine.ConflictRecord, error)
 	return out, err
 }
 
+// ClearConflicts dismisses the daemon's conflict log after the files have been
+// dealt with.
+func (c *Client) ClearConflicts(ctx context.Context) error {
+	return c.do(ctx, http.MethodPost, "/v1/conflicts/clear", nil, nil)
+}
+
 // Sync asks the daemon to reconcile now.
 func (c *Client) Sync(ctx context.Context) error {
 	return c.do(ctx, http.MethodPost, "/v1/sync", nil, nil)

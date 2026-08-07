@@ -38,6 +38,7 @@ func (s *Server) handler() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /v1/status", s.handleStatus)
 	mux.HandleFunc("GET /v1/conflicts", s.handleConflicts)
+	mux.HandleFunc("POST /v1/conflicts/clear", s.handleClearConflicts)
 	mux.HandleFunc("POST /v1/sync", s.handleSync)
 	mux.HandleFunc("POST /v1/pause", s.handlePause)
 	mux.HandleFunc("POST /v1/resume", s.handleResume)
@@ -96,6 +97,11 @@ func (s *Server) handleConflicts(w http.ResponseWriter, _ *http.Request) {
 		conflicts = []engine.ConflictRecord{}
 	}
 	writeJSON(w, conflicts)
+}
+
+func (s *Server) handleClearConflicts(w http.ResponseWriter, _ *http.Request) {
+	s.eng.ClearConflicts()
+	w.WriteHeader(http.StatusNoContent)
 }
 
 func (s *Server) handleSync(w http.ResponseWriter, _ *http.Request) {
