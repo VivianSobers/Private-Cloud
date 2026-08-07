@@ -79,6 +79,11 @@ func (s *Server) writeFilesError(w http.ResponseWriter, r *http.Request, op stri
 		writeError(w, r, http.StatusNotFound, "not_found", "no such file or folder")
 	case errors.Is(err, files.ErrNameTaken):
 		writeError(w, r, http.StatusConflict, "name_taken", "something with that name is already here")
+	case errors.Is(err, files.ErrInvalidTag):
+		// Checked before ErrInvalidName: a rejected tag used to be explained with
+		// the filename rules, which mention path separators and trailing dots and
+		// have nothing to do with why the tag was refused.
+		writeError(w, r, http.StatusBadRequest, "invalid_tag", err.Error())
 	case errors.Is(err, files.ErrInvalidName):
 		writeError(w, r, http.StatusBadRequest, "invalid_name",
 			"names cannot be empty, contain / \\ : * ? \" < > | or control characters, or end in a space or dot")

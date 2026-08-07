@@ -2,6 +2,7 @@ package files
 
 import (
 	"context"
+	"fmt"
 	"strings"
 
 	"github.com/google/uuid"
@@ -80,7 +81,8 @@ func (s *Store) AddUserTag(ctx context.Context, ownerID, nodeID uuid.UUID, raw s
 	if tag == "" || len(tag) > maxTagLen || hasControlChar(tag) {
 		// A control character in a tag is a log- or display-injection vector once
 		// the tag is echoed back; reject it at the door.
-		return ErrInvalidName
+		return fmt.Errorf("%w: a tag must be 1 to %d characters and contain no control characters",
+			ErrInvalidTag, maxTagLen)
 	}
 	if err := s.assertOwnedLive(ctx, ownerID, nodeID); err != nil {
 		return err

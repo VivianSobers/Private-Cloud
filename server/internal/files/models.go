@@ -31,6 +31,11 @@ var (
 	ErrQuota        = errors.New("quota exceeded")
 	ErrRootReserved = errors.New("the root folder cannot be renamed, moved or trashed")
 	ErrNotTrashed   = errors.New("node is not in the trash")
+	// ErrInvalidTag is separate from ErrInvalidName because the rules differ and
+	// so does the advice. A tag is not a filename: it has its own length cap and
+	// no notion of path separators or trailing dots, so reusing ErrInvalidName
+	// meant a rejected tag was explained to the user in terms of filenames.
+	ErrInvalidTag = errors.New("invalid tag")
 )
 
 const (
