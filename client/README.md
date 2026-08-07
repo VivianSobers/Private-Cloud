@@ -44,7 +44,7 @@ turns that into a visible *conflict copy*.
 ## Setup
 
 1. On the server, mint an app password (web UI → app passwords, or
-   `cloudctl user app-password <name>`). It looks like `pcap_<lookup>_<secret>`
+   `cloudctl user app-password <username> <name>`). It looks like `pcap_<lookup>_<secret>`
    and is shown once.
 2. Copy `config.example.json`, fill in your server URL, username, the app
    password, and the local folder to sync:

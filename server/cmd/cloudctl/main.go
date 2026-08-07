@@ -52,6 +52,7 @@ func usage() {
 
   user list                       list all users
   user create <username> [--admin]  create a user and print recovery codes
+  user app-password <username> <name> [--ttl-hours=N]  mint an app password (headless setup)
   user reset-auth <username>      remove all passkeys, revoke sessions, reissue codes
   user disable <username>         soft-lock an account
   user enable <username>          unlock an account
@@ -148,7 +149,7 @@ func run() error {
 
 func userCommand(ctx context.Context, store *auth.Store, svc *auth.Service, args []string) error {
 	if len(args) == 0 {
-		return fmt.Errorf("usage: cloudctl user <list|create|reset-auth|disable|enable>")
+		return fmt.Errorf("usage: cloudctl user <list|create|app-password|reset-auth|disable|enable>")
 	}
 
 	switch args[0] {
@@ -273,6 +274,38 @@ func userCommand(ctx context.Context, store *auth.Store, svc *auth.Service, args
 		} else {
 			fmt.Printf("enabled %q\n", user.Username)
 		}
+		return nil
+
+	case "app-password":
+		// Mint an app password from the CLI — the headless path for setting up the
+		// sync client or a WebDAV mount on a box with no browser to reach the web UI.
+		if len(args) < 3 {
+			return fmt.Errorf("usage: cloudctl user app-password <username> <name> [--ttl-hours=N]")
+		}
+		user, err := store.GetUserByUsername(ctx, args[1])
+		if err != nil {
+			return err
+		}
+		var ttl time.Duration
+		for _, a := range args[3:] {
+			if strings.HasPrefix(a, "--ttl-hours=") {
+				n, err := strconv.Atoi(strings.TrimPrefix(a, "--ttl-hours="))
+				if err != nil || n < 0 {
+					return fmt.Errorf("--ttl-hours must be a non-negative integer")
+				}
+				ttl = time.Duration(n) * time.Hour
+			}
+		}
+		ap, plaintext, err := store.CreateAppPassword(ctx, user.ID, args[2], ttl)
+		if err != nil {
+			return err
+		}
+		fmt.Printf("app password %q created for %q\n", ap.Name, user.Username)
+		if ap.ExpiresAt != nil {
+			fmt.Printf("expires: %s\n", ap.ExpiresAt.Format("2006-01-02 15:04"))
+		}
+		fmt.Printf("\n    %s\n\n", plaintext)
+		fmt.Println("Copy it now — it is shown once and cannot be retrieved.")
 		return nil
 
 	default:
