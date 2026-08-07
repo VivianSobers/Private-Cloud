@@ -4,6 +4,7 @@ import { ApiError, api, formatBytes, formatDate, type Node, type SearchHit, type
 import { ShareDialog } from "./ShareDialog";
 import { Shares } from "./Shares";
 import { Trash } from "./Trash";
+import { TagBrowser } from "./TagBrowser";
 import { Tags } from "./Tags";
 import { Versions } from "./Versions";
 import { upload, type UploadHandle } from "./upload";
@@ -32,6 +33,7 @@ export function Browser() {
   const [dragOver, setDragOver] = useState(false);
   const [showTrash, setShowTrash] = useState(false);
   const [showShares, setShowShares] = useState(false);
+  const [showTags, setShowTags] = useState(false);
   // The file whose version history is open, or null. A file, never a folder.
   const [versionsFor, setVersionsFor] = useState<Node | null>(null);
   // The node being shared, or null. Files and folders both.
@@ -153,6 +155,18 @@ export function Browser() {
     return <Shares onClose={() => setShowShares(false)} />;
   }
 
+  if (showTags) {
+    return (
+      <TagBrowser
+        onClose={() => setShowTags(false)}
+        onOpenFolder={(id) => {
+          setShowTags(false);
+          void load(id);
+        }}
+      />
+    );
+  }
+
   return (
     <div className="stack">
       {versionsFor && (
@@ -201,6 +215,7 @@ export function Browser() {
         </button>
         <button onClick={() => setShowTrash(true)}>Trash</button>
         <button onClick={() => setShowShares(true)}>Shares</button>
+        <button onClick={() => setShowTags(true)}>Tags</button>
 
         <span style={{ flex: 1 }} />
 
