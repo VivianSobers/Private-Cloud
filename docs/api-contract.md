@@ -53,17 +53,130 @@ all JSON responses.
 
 ## Shipped surface (Phases 1–4) — do not break
 
-> Fill in from the current handlers as the contract test is written. Groups that
-> exist today:
+Enumerated from the registered routes in `httpapi.Server.Handler`. Every route
+below exists today. Unless marked otherwise a route requires authentication and
+returns `200`.
 
-- **Auth** — `POST /auth/token`, `GET /auth/status`, `GET /auth/me`,
-  `POST /auth/logout`, passkey + OIDC login/callback.
-- **Files/nodes** — list, get, upload, download, move, trash/restore, versions.
-- **Sync** — `GET /changes`, manifest fetch/commit, chunk have/get/put.
-- **Search** — lexical + optional `semantic` mode; results carry
-  `matched_content` / `semantic` / `score`.
-- **Tags** — list, tag a node, node tags, add/remove.
-- **Shares** — public share links (file & folder).
+### Shared object: `node`
+
+Returned wherever a file or folder appears. Absent fields are omitted, not null.
+
+```json
+{
+  "id": "uuid", "kind": "file|folder", "name": "report.pdf",
+  "path": "/work/report.pdf", "parent_id": "uuid",
+  "created_at": "2026-08-07T09:00:00Z", "updated_at": "2026-08-07T09:00:00Z",
+  "size": 12345, "mime": "application/pdf",
+  "sha256": "hex", "blake3": "hex",
+  "trashed_at": "2026-08-07T09:00:00Z"
+}
+```
+
+- `size`/`mime` only on `kind: "file"`.
+- **`sha256` XOR `blake3`** — the key names the algorithm, because whole-file
+  blobs are SHA-256 and chunked (manifest-backed) files are BLAKE3-256. A client
+  verifying a download must run the one it was given. Never both.
+- `parent_id` is absent on the root; `trashed_at` only on trashed nodes.
+- Storage detail (blob keys, internal version ids) is deliberately **not** here.
+
+### Unauthenticated / operational
+
+| Route | Notes |
+|---|---|
+| `GET /healthz` | liveness only, never touches the DB |
+| `GET /readyz` | `503` when the database is unreachable |
+| `GET /metrics` | Prometheus exposition |
+| `GET /api/v1/version` | `{service, version, commit}` |
+
+### Auth
+
+| Route | Notes |
+|---|---|
+| `GET /auth/status` | `{bootstrap_required, user_count, oidc_enabled}` — unauthenticated |
+| `POST /auth/register/begin`, `/finish` | WebAuthn enrolment ceremony |
+| `POST /auth/login/begin`, `/finish` | WebAuthn assertion ceremony |
+| `POST /auth/recovery/redeem` | `{username, code}` → session + `next_step` |
+| `POST /auth/recovery/regenerate` | new codes; invalidates the previous set |
+| `POST /auth/logout` | clears the session cookie |
+| `GET /auth/oidc/login` → `302` | starts SSO; `404 oidc_disabled` when unconfigured |
+| `GET /auth/oidc/callback` → `302` | to `/` on success, `/?sso_error=1` on any failure |
+| `POST /auth/token` | **Basic** app-password → device bearer token |
+| `GET /auth/me` | `{user, session_kind, remaining_recovery_codes}` |
+| `GET`/`DELETE /auth/credentials[/{id}]` | passkeys |
+| `GET`/`DELETE /auth/sessions[/{id}]` | active sessions |
+| `GET`/`POST`/`DELETE /auth/app-passwords[/{id}]` | plaintext returned once, at creation |
+
+The auth routes and the public share routes are rate limited; exceeding it is
+`429 rate_limited` with `Retry-After`.
+
+### Files & folders
+
+| Route | Notes |
+|---|---|
+| `GET /nodes/root` | `{node}` |
+| `GET /nodes/{id}` | `{node, tags}` — `{id}` accepts the literal `root` |
+| `GET /nodes/{id}/children` | `{parent, children}` |
+| `GET /nodes/resolve?path=/a/b` | address by path instead of id |
+| `POST /folders` | `{parent_id, name}` → `201 {node}` |
+| `PATCH /nodes/{id}` | `{name?, parent_id?}` — rename and move are one atomic call |
+| `DELETE /nodes/{id}` | → trash; `{status, nodes_affected}` |
+| `POST /upload?parent_id=&name=` | raw body or multipart → `201 {node}` |
+| `GET`/`HEAD /nodes/{id}/content` | ranges, ETag, `?download=1` for attachment |
+| `GET /usage` | `{live_bytes, trash_bytes, total_bytes, file_count, quota_bytes?, available_bytes?}` |
+| `GET /trash`, `DELETE /trash` | list / empty |
+| `POST /trash/{id}/restore`, `DELETE /trash/{id}` | restore / purge permanently |
+| `POST /admin/fsck?repair=` | **admin only** |
+
+### Versions
+
+`GET /nodes/{id}/versions` · `POST /nodes/{id}/versions/{versionId}/restore` ·
+`GET`/`HEAD /nodes/{id}/versions/{versionId}/content`
+
+### Resumable uploads (tus 1.0.0)
+
+`OPTIONS /uploads` (**unauthenticated** — advertises protocol support before a
+client has anywhere to put credentials) · `POST /uploads` · `HEAD`/`PATCH`/
+`DELETE /uploads/{id}`
+
+### Sync
+
+`GET /changes` (cursor journal; signals `reset` when the cursor is older than
+the retained tail) · `GET /nodes/{id}/manifest` · `POST /chunks/have` ·
+`GET`/`PUT /chunks/{hash}` · `POST /manifests`
+
+### Search
+
+`GET /search?q=&kind=&under=&include_trashed=&limit=&offset=&semantic=`
+
+- Minimum query length **2**.
+- `limit` is clamped server-side to 200; `has_more` reflects the clamped limit.
+- Results are `node` plus `matched_path`, `matched_content`, and — in semantic
+  mode — `semantic: true` and `score` (cosine, 0–1).
+- `semantic=true` needs the inference sidecar. Without it: `503
+  semantic_unavailable`, which clients should treat as "retry lexically **and
+  say so**", not as an error.
+
+### Tags
+
+`GET`/`POST /nodes/{id}/tags` · `DELETE /nodes/{id}/tags/{tag}` ·
+`GET /tags` (with counts) · `GET /tags/{tag}?limit=&offset=`
+
+Tags are lowercased and trimmed server-side, max 64 chars, no control
+characters (`400 invalid_tag`). `source` is `auto` (worker-derived, replaced on
+re-extraction) or `user` (explicit, never clobbered).
+
+### Shares
+
+`POST /nodes/{id}/shares` · `GET /shares` · `DELETE /shares/{id}`
+
+Public plane, **unauthenticated** and rate limited: `GET /s/{token}` ·
+`POST /s/{token}/unlock` · `GET`/`HEAD /s/{token}/content`. The token is
+returned once, at creation, and never stored.
+
+### WebDAV
+
+Mounted at `/dav`, outside `/api` — a different protocol with a different auth
+scheme (Basic, using an app password).
 
 ## Proposed surface (Phase 5+) — additive, land here first
 
