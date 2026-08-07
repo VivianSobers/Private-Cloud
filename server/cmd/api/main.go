@@ -342,7 +342,7 @@ func runGC(ctx context.Context, svc *files.Service, sharesSvc *shares.Service, m
 			m.VersionsPruned.Add(float64(res.VersionsPruned))
 			if res.TrashPurged > 0 || res.BlobsFreed > 0 || res.UploadsExpired > 0 ||
 				res.StagingFreed > 0 || res.ChunksFreed > 0 || res.VersionsPruned > 0 ||
-				res.ChangesPruned > 0 {
+				res.ChangesPruned > 0 || res.DocTextPruned > 0 || res.EmbeddingsPruned > 0 {
 				log.Info("garbage collected",
 					"trash_purged", res.TrashPurged,
 					"versions_pruned", res.VersionsPruned,
@@ -352,7 +352,9 @@ func runGC(ctx context.Context, svc *files.Service, sharesSvc *shares.Service, m
 					"uploads_expired", res.UploadsExpired,
 					"staging_freed", res.StagingFreed,
 					"chunks_freed", res.ChunksFreed,
-					"chunk_bytes_freed", res.ChunkBytesFreed)
+					"chunk_bytes_freed", res.ChunkBytesFreed,
+					"doc_text_pruned", res.DocTextPruned,
+					"embeddings_pruned", res.EmbeddingsPruned)
 			}
 		}
 	}

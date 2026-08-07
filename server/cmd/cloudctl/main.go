@@ -461,6 +461,8 @@ func gcCommand(ctx context.Context, database *db.DB, log *slog.Logger) error {
 		res.UploadsExpired, res.StagingFreed)
 	fmt.Printf("freed %d manifest(s), %d chunk(s), %s\n",
 		res.ManifestsFreed, res.ChunksFreed, humanBytes(res.ChunkBytesFreed))
+	fmt.Printf("pruned %d extracted text row(s), %d embedding(s)\n",
+		res.DocTextPruned, res.EmbeddingsPruned)
 	return nil
 }
 

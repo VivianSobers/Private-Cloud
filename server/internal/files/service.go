@@ -402,7 +402,18 @@ type GCResult struct {
 	ManifestsFreed  int
 	ChunksFreed     int
 	ChunkBytesFreed int64
+
+	// Derived content — extracted text and embeddings — for content hashes no
+	// live version references any more. Neither is reachable from a file once its
+	// last version is gone, so nothing but this sweep can ever reclaim them.
+	DocTextPruned    int64
+	EmbeddingsPruned int64
 }
+
+// derivedPruneBatch bounds how much derived content one pass reclaims, for the
+// same reason the blob and chunk sweeps are bounded: a large backlog must drain
+// over several ticks rather than hold the tables for an unbounded time.
+const derivedPruneBatch = 1000
 
 // CollectGarbage purges expired trash and then deletes the blobs that fall to
 // zero references as a result.
@@ -483,6 +494,23 @@ func (s *Service) CollectGarbage(ctx context.Context) (GCResult, error) {
 		return res, err
 	}
 	res.ChunksFreed, res.ChunkBytesFreed = chunksFreed, chunkBytes
+
+	// Derived content last, deliberately: PruneVersions above is what drops the
+	// last reference to a content hash, so sweeping here reclaims text and vectors
+	// in the same pass that retired the version they described. Nothing else ever
+	// deletes these rows — they are keyed by content hash, not by node, so no
+	// cascade reaches them when a file is purged.
+	docText, err := s.store.PruneDocText(ctx, derivedPruneBatch)
+	if err != nil {
+		return res, fmt.Errorf("prune extracted text: %w", err)
+	}
+	res.DocTextPruned = docText
+
+	embeddings, err := s.store.PruneEmbeddings(ctx, derivedPruneBatch)
+	if err != nil {
+		return res, fmt.Errorf("prune embeddings: %w", err)
+	}
+	res.EmbeddingsPruned = embeddings
 
 	return res, nil
 }
