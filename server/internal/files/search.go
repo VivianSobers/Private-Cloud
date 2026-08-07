@@ -44,6 +44,10 @@ type SearchResult struct {
 	// MatchedPath is true when the query hit an ancestor directory rather than
 	// the file's own name. Surfacing this stops "why is this in my results?"
 	MatchedPath bool
+	// MatchedContent is true when the query hit the file's EXTRACTED TEXT — an OCR'd
+	// receipt found by a word printed on it — rather than its name or path. Without
+	// this, a result whose name shares nothing with the query looks like a bug.
+	MatchedContent bool
 }
 
 // Search finds nodes by filename fragment.
@@ -77,14 +81,20 @@ func (s *Store) Search(ctx context.Context, ownerID uuid.UUID, q SearchQuery) ([
 
 	// The root is excluded: it has an empty name and matching it would put a
 	// nameless entry at the top of every result list.
+	//
+	// doc_text is joined by content hash so a match against a file's extracted
+	// text — the OCR of a scanned receipt — comes through the SAME query as a name
+	// or path match, ranked below them because a name hit is the stronger signal.
 	sql := `
 		SELECT ` + nodeCols + `,
 		       similarity(n.name_fold, $2) AS score,
-		       (n.name_fold NOT LIKE $3) AS matched_path
+		       (n.name_fold NOT LIKE $3) AS matched_path,
+		       (dt.text IS NOT NULL AND dt.text ILIKE $3) AS matched_content
 		` + nodeFrom + `
+		LEFT JOIN doc_text dt ON dt.content_hash = coalesce(b.sha256, m.content_hash)
 		WHERE n.owner_id = $1
 		  AND n.parent_id IS NOT NULL
-		  AND (n.name_fold LIKE $3 OR lower(n.path) LIKE $3)`
+		  AND (n.name_fold LIKE $3 OR lower(n.path) LIKE $3 OR dt.text ILIKE $3)`
 
 	args := []any{ownerID, folded, pattern}
 
@@ -119,18 +129,19 @@ func (s *Store) Search(ctx context.Context, ownerID uuid.UUID, q SearchQuery) ([
 	out := make([]*SearchResult, 0, limit)
 	for rows.Next() {
 		var (
-			n           Node
-			size        *int64
-			mime        *string
-			sha         []byte
-			key         *string
-			score       *float64
-			matchedPath bool
+			n              Node
+			size           *int64
+			mime           *string
+			sha            []byte
+			key            *string
+			score          *float64
+			matchedPath    bool
+			matchedContent bool
 		)
 		if err := rows.Scan(
 			&n.ID, &n.OwnerID, &n.ParentID, &n.Kind, &n.Name, &n.Path,
 			&n.HeadVersionID, &n.TrashedAt, &n.TrashedRootID, &n.CreatedAt, &n.UpdatedAt,
-			&size, &mime, &sha, &key, &n.ManifestID, &score, &matchedPath,
+			&size, &mime, &sha, &key, &n.ManifestID, &score, &matchedPath, &matchedContent,
 		); err != nil {
 			return nil, err
 		}
@@ -145,7 +156,7 @@ func (s *Store) Search(ctx context.Context, ownerID uuid.UUID, q SearchQuery) ([
 			n.BlobKey = *key
 		}
 
-		r := &SearchResult{Node: &n, MatchedPath: matchedPath}
+		r := &SearchResult{Node: &n, MatchedPath: matchedPath, MatchedContent: matchedContent}
 		if score != nil {
 			r.Score = *score
 		}

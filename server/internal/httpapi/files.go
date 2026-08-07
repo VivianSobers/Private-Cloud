@@ -594,8 +594,10 @@ func (s *Server) handleSearch(w http.ResponseWriter, r *http.Request) {
 	for _, res := range results {
 		item := nodeJSON(res.Node)
 		// Why a result matched, so "the query is not in this filename" has a
-		// visible answer rather than looking like a bug.
+		// visible answer rather than looking like a bug — including a hit inside
+		// the file's extracted text, which shares nothing with its name.
 		item["matched_path"] = res.MatchedPath
+		item["matched_content"] = res.MatchedContent
 		out = append(out, item)
 	}
 
