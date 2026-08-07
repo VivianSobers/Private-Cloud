@@ -46,6 +46,12 @@ type Handler struct {
 	store     TextStore
 	extractor *Extractor
 	log       *slog.Logger
+
+	// next, if set, is called once a node has extractable text — to enqueue the
+	// follow-on embed job. Injected by the worker wiring so this package stays free
+	// of the jobs package, and nil when semantic search is not enabled, in which
+	// case extraction simply stops at searchable text.
+	next func(ctx context.Context, nodeID *uuid.UUID, ownerID uuid.UUID)
 }
 
 func NewHandler(opener Opener, store TextStore, ex *Extractor, log *slog.Logger) *Handler {
@@ -53,6 +59,18 @@ func NewHandler(opener Opener, store TextStore, ex *Extractor, log *slog.Logger)
 		log = slog.New(slog.NewTextHandler(io.Discard, nil))
 	}
 	return &Handler{opener: opener, store: store, extractor: ex, log: log}
+}
+
+// Chain wires a follow-on step run after a node gains extractable text — the
+// embed job. Called at startup when semantic search is enabled.
+func (h *Handler) Chain(next func(ctx context.Context, nodeID *uuid.UUID, ownerID uuid.UUID)) {
+	h.next = next
+}
+
+func (h *Handler) scheduleNext(ctx context.Context, nodeID *uuid.UUID, ownerID uuid.UUID) {
+	if h.next != nil {
+		h.next(ctx, nodeID, ownerID)
+	}
 }
 
 // Handle extracts text for one node and stores it. It returns nil — a completed
@@ -84,6 +102,9 @@ func (h *Handler) Handle(ctx context.Context, nodeID *uuid.UUID, ownerID uuid.UU
 		return err
 	}
 	if has {
+		// Already extracted — but this node may still need embedding (its content
+		// was extracted via a different file, or before semantic search was on).
+		h.scheduleNext(ctx, nodeID, ownerID)
 		return nil
 	}
 
@@ -99,5 +120,10 @@ func (h *Handler) Handle(ctx context.Context, nodeID *uuid.UUID, ownerID uuid.UU
 	}
 
 	h.log.Info("extracted text", "node", *nodeID, "source", res.Source, "chars", len(res.Text))
-	return h.store.PutDocText(ctx, fc.ContentHash, res.Text, res.Lang, res.Source)
+	if err := h.store.PutDocText(ctx, fc.ContentHash, res.Text, res.Lang, res.Source); err != nil {
+		return err
+	}
+	// The file now has text; schedule embedding if the chain is wired.
+	h.scheduleNext(ctx, nodeID, ownerID)
+	return nil
 }
