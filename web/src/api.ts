@@ -36,11 +36,25 @@ export interface Node {
   trashed_at?: string;
   created_at: string;
   updated_at: string;
+  /** Present on a single-node GET: the file's tags, auto and user. */
+  tags?: NodeTag[];
 }
 
-/** A search result: a node, plus whether the query hit an ancestor folder. */
+/** A tag on a file, and how it got there. */
+export interface NodeTag {
+  name: string;
+  source: "auto" | "user";
+}
+
+/** A search result: a node, plus why the query matched it. */
 export interface SearchHit extends Node {
-  matched_path: boolean;
+  /** The query hit an ancestor folder rather than the file's own name. */
+  matched_path?: boolean;
+  /** The query hit the file's extracted text (an OCR'd receipt, say). */
+  matched_content?: boolean;
+  /** This is a semantic (meaning) match; score carries the similarity. */
+  semantic?: boolean;
+  score?: number;
 }
 
 /** One entry in a file's history. The id addresses immutable content, so it is
@@ -192,7 +206,10 @@ async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
 // --- auth -------------------------------------------------------------------
 
 export const api = {
-  authStatus: () => request<{ bootstrap_required: boolean; user_count: number }>("/api/v1/auth/status"),
+  authStatus: () =>
+    request<{ bootstrap_required: boolean; user_count: number; oidc_enabled?: boolean }>(
+      "/api/v1/auth/status",
+    ),
 
   me: () => request<Me>("/api/v1/auth/me"),
 
@@ -267,15 +284,40 @@ export const api = {
 
   usage: () => request<Usage>("/api/v1/usage"),
 
-  search: (q: string, opts: { under?: string; kind?: string; limit?: number } = {}) => {
+  search: (q: string, opts: { under?: string; kind?: string; limit?: number; semantic?: boolean } = {}) => {
     const params = new URLSearchParams({ q });
     if (opts.under && opts.under !== "/") params.set("under", opts.under);
     if (opts.kind) params.set("kind", opts.kind);
     if (opts.limit) params.set("limit", String(opts.limit));
+    // Semantic mode ranks by meaning via the embedding sidecar; a 503 here means
+    // it is not enabled, which the caller can fall back from to lexical search.
+    if (opts.semantic) params.set("semantic", "true");
     return request<{ query: string; results: SearchHit[]; count: number; has_more: boolean }>(
       `/api/v1/search?${params}`,
     );
   },
+
+  // --- tags -------------------------------------------------------------------
+
+  nodeTags: (id: string) => request<{ tags: NodeTag[] }>(`/api/v1/nodes/${id}/tags`),
+
+  addTag: (id: string, tag: string) =>
+    request<{ tags: NodeTag[] }>(`/api/v1/nodes/${id}/tags`, {
+      method: "POST",
+      body: JSON.stringify({ tag }),
+    }),
+
+  removeTag: (id: string, tag: string) =>
+    request<{ status: string }>(`/api/v1/nodes/${id}/tags/${encodeURIComponent(tag)}`, {
+      method: "DELETE",
+    }),
+
+  listTags: () => request<{ tags: { tag: string; count: number }[] }>("/api/v1/tags"),
+
+  tagNodes: (tag: string) =>
+    request<{ tag: string; nodes: Node[]; count: number; has_more: boolean }>(
+      `/api/v1/tags/${encodeURIComponent(tag)}`,
+    ),
 
   fsck: (repair: boolean) =>
     request<Record<string, unknown>>(`/api/v1/admin/fsck?repair=${repair}`, { method: "POST" }),
