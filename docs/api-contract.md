@@ -472,7 +472,75 @@ event, then `done`.
   never becomes a way to read around a permission.
 
 ### Phase 9 — Scale & resilience
-- Quota / usage endpoints; storage-health surfacing — TBD.
+
+Mostly ops, so the API surface is small: it exists to let the admin console show
+what the runbooks already describe.
+
+**Storage health.** Admin only.
+
+```
+GET /admin/storage
+```
+
+```json
+{
+  "pool": { "name": "tank", "state": "ONLINE", "used_bytes": 0, "total_bytes": 0,
+            "last_scrub_at": "...", "last_scrub_errors": 0 },
+  "backup": { "last_success_at": "...", "last_failure_at": null, "age_seconds": 3600 },
+  "tiers": [ { "name": "hot", "bytes": 0, "files": 0 },
+             { "name": "cold", "bytes": 0, "files": 0 } ],
+  "jobs": { "queued": 0, "running": 0, "failed": 0 }
+}
+```
+
+Read from the same sources the alerts use — the zpool textfile collector, restic's
+success timestamp, the jobs table — rather than a second, parallel notion of
+health. Two systems disagreeing about whether the pool is fine is worse than one.
+
+**Tiering.** Cold storage is a *location* change, never a visibility one: a
+tiered file is still listed, still searchable, still has its metadata. Only its
+bytes move.
+
+| Route | Body / result |
+|---|---|
+| `GET /admin/tiering` | current policy |
+| `PUT /admin/tiering` | `{min_age_days, min_size_bytes, exclude_tags: []}` |
+| `POST /nodes/{id}/restore-tier` | pull a cold file back to hot; `202` |
+
+- `GET /nodes/{id}/content` on a cold file either streams it transparently or,
+  when the backend cannot do that within the request, returns
+  `202 restore_in_progress` with `Retry-After`. Clients must handle 202 on the
+  download path — a spinner, not an error.
+- A node carries `"storage_tier": "hot"|"cold"|"restoring"` so a UI can warn
+  before a click that will take minutes rather than after.
+
+**Quota.** `GET /usage` already exists per user and is unchanged. Adding:
+
+```
+GET  /admin/quotas                 → {users: [{username, quota_bytes, used_bytes}]}
+PUT  /admin/users/{id}/quota       {quota_bytes}   (0 = unlimited)
+```
+
+Enforcement stays where it is today — a `507 quota_exceeded` at write time, which
+WebDAV clients already understand. No new failure mode for clients to learn.
+
+---
+
+## Contract test
+
+The shared safety net named in the roadmap. It asserts the **real server** matches
+this document:
+
+- every route listed under "Shipped surface" exists and does not 405;
+- unauthenticated routes are reachable without credentials, and every other route
+  answers `401` without them — the check that a route was never accidentally left
+  open;
+- error responses parse as the nested `{error:{code,message}}` shape;
+- documented response fields are present, and `sha256`/`blake3` are mutually
+  exclusive on a node.
+
+It lives behind the API (Guru's side) but is the one suite whose failure means
+*the other track was misled*, so it is worth failing loudly and specifically.
 
 ---
 
