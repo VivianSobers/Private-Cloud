@@ -32,6 +32,7 @@ import (
 	"github.com/guru-bharadwaj20/private-cloud/client/internal/control"
 	"github.com/guru-bharadwaj20/private-cloud/client/internal/engine"
 	"github.com/guru-bharadwaj20/private-cloud/client/internal/state"
+	"github.com/guru-bharadwaj20/private-cloud/client/internal/tray"
 )
 
 // version is stamped at build time via -ldflags "-X main.version=...".
@@ -43,7 +44,7 @@ func main() {
 	// unchanged.
 	if len(os.Args) >= 2 {
 		switch os.Args[1] {
-		case "status", "sync", "pause", "resume", "exclude":
+		case "status", "watch", "sync", "pause", "resume", "exclude":
 			os.Exit(ctlMain(os.Args[1], os.Args[2:]))
 		}
 	}
@@ -153,6 +154,8 @@ func ctlMain(action string, args []string) int {
 			return 1
 		}
 		printStatus(st)
+	case "watch":
+		return ctlWatch(client)
 	case "sync":
 		if err := client.Sync(ctx); err != nil {
 			fmt.Fprintln(os.Stderr, err)
@@ -252,6 +255,36 @@ func printExcludes(ex []string) {
 	}
 }
 
+// ctlWatch renders a live, self-updating status line until interrupted — the
+// headless counterpart to a tray icon, over the same control socket.
+func ctlWatch(client *control.Client) int {
+	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
+	defer stop()
+
+	render := func() {
+		rctx, cancel := context.WithTimeout(ctx, 3*time.Second)
+		defer cancel()
+		st, err := client.Status(rctx)
+		reachable := err == nil
+		// \r returns to the line start and \033[K clears to end of line, so the
+		// summary updates in place rather than scrolling.
+		fmt.Printf("\r\033[K%s  %s", tray.Derive(st, reachable).Glyph(), tray.Summary(st, reachable))
+	}
+
+	render()
+	ticker := time.NewTicker(2 * time.Second)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			fmt.Println()
+			return 0
+		case <-ticker.C:
+			render()
+		}
+	}
+}
+
 // printStatus renders a status response as a short human-readable block.
 func printStatus(st control.StatusResponse) {
 	phase := string(st.Phase)
@@ -262,33 +295,15 @@ func printStatus(st control.StatusResponse) {
 	fmt.Printf("  folder:     %s\n", st.Root)
 	fmt.Printf("  state:      %s\n", phase)
 	fmt.Printf("  tracked:    %d items\n", st.Tracked)
-	fmt.Printf("  last sync:  %s\n", humanTime(st.LastSync))
+	fmt.Printf("  last sync:  %s\n", tray.RelTime(st.LastSync))
 	if st.LastError != "" {
-		fmt.Printf("  last error: %s (%s)\n", st.LastError, humanTime(st.LastErrorAt))
+		fmt.Printf("  last error: %s (%s)\n", st.LastError, tray.RelTime(st.LastErrorAt))
 	}
 	if len(st.Conflicts) > 0 {
 		fmt.Printf("  conflicts:  %d need attention\n", len(st.Conflicts))
 		for _, c := range st.Conflicts {
 			fmt.Printf("    %s  →  %s\n", c.Original, c.Copy)
 		}
-	}
-}
-
-// humanTime renders a timestamp as a coarse "how long ago", or "never" for zero.
-func humanTime(t time.Time) string {
-	if t.IsZero() {
-		return "never"
-	}
-	d := time.Since(t).Round(time.Second)
-	switch {
-	case d < time.Minute:
-		return fmt.Sprintf("%ds ago", int(d.Seconds()))
-	case d < time.Hour:
-		return fmt.Sprintf("%dm ago", int(d.Minutes()))
-	case d < 24*time.Hour:
-		return fmt.Sprintf("%dh ago", int(d.Hours()))
-	default:
-		return t.Format("2006-01-02 15:04")
 	}
 }
 
