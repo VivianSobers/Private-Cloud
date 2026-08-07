@@ -6,6 +6,7 @@ import (
 	"strings"
 
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5"
 )
 
 // userColsU is userCols qualified to the users table, for joins.
@@ -33,58 +34,93 @@ func (s *Store) FindUserByOIDC(ctx context.Context, issuer, subject string) (*Us
 // email and de-duplicated, so two people named the same at different providers do
 // not collide.
 func (s *Store) ProvisionOIDCUser(ctx context.Context, issuer, subject, email, displayName string) (*User, error) {
-	username, err := s.freeUsername(ctx, usernameFromEmail(email))
-	if err != nil {
-		return nil, err
-	}
-	if displayName == "" {
-		displayName = username
-	}
-
 	tx, err := s.pool.Begin(ctx)
 	if err != nil {
 		return nil, err
 	}
 	defer tx.Rollback(ctx) //nolint:errcheck // no-op after commit
 
-	id := uuid.New()
+	// Username selection runs INSIDE the transaction, and the insert is retried
+	// on a username collision rather than being reported as one.
+	//
+	// Picking the name outside meant two first-time logins from different
+	// subjects whose emails share a local part (guru@a.com, guru@b.com) both
+	// resolved to the same free candidate. The loser's insert hit the
+	// username_fold unique constraint, which was translated to ErrUserExists —
+	// and LoginOIDC reads that as "the other login provisioned MY identity", so
+	// it re-resolves by (issuer, subject), finds nothing, and fails the login
+	// with an opaque error that succeeds on retry.
+	//
+	// Two different constraints were being collapsed into one signal. They are
+	// now handled where they differ: a username clash is ours to resolve by
+	// picking another, and only a duplicate IDENTITY is a genuine race.
+	base := usernameFromEmail(email)
 	u := &User{}
-	err = tx.QueryRow(ctx, `
-		INSERT INTO users (id, username, username_fold, display_name, is_admin)
-		VALUES ($1, $2, lower($2), $3, false)
-		RETURNING `+userCols, id, username, displayName).
-		Scan(&u.ID, &u.Username, &u.DisplayName, &u.IsAdmin, &u.QuotaBytes, &u.DisabledAt, &u.CreatedAt)
-	if uniqueViolation(err) {
-		return nil, ErrUserExists // lost a race; the caller retries the whole login
-	}
-	if err != nil {
-		return nil, fmt.Errorf("create oidc user: %w", err)
+	var username string
+	for attempt := 0; ; attempt++ {
+		username, err = freeUsername(ctx, tx, base, attempt)
+		if err != nil {
+			return nil, err
+		}
+		name := displayName
+		if name == "" {
+			name = username
+		}
+
+		err = tx.QueryRow(ctx, `
+			INSERT INTO users (id, username, username_fold, display_name, is_admin)
+			VALUES ($1, $2, lower($2), $3, false)
+			RETURNING `+userCols, uuid.New(), username, name).
+			Scan(&u.ID, &u.Username, &u.DisplayName, &u.IsAdmin, &u.QuotaBytes, &u.DisabledAt, &u.CreatedAt)
+		if err == nil {
+			break
+		}
+		if !uniqueViolation(err) {
+			return nil, fmt.Errorf("create oidc user: %w", err)
+		}
+		// Someone took this name between the check and the insert. A unique
+		// violation aborts the transaction, so restart it and try the next
+		// candidate rather than reporting a name clash as an identity race.
+		if attempt >= maxUsernameAttempts {
+			return nil, fmt.Errorf("could not find a free username for %q", base)
+		}
+		if err := tx.Rollback(ctx); err != nil {
+			return nil, err
+		}
+		if tx, err = s.pool.Begin(ctx); err != nil {
+			return nil, err
+		}
 	}
 
 	if _, err := tx.Exec(ctx, `
 		INSERT INTO oidc_identities (issuer, subject, user_id, email, last_login_at)
 		VALUES ($1, $2, $3, $4, now())`, issuer, subject, u.ID, email); err != nil {
 		if uniqueViolation(err) {
-			return nil, ErrUserExists // this identity was provisioned concurrently
+			// THIS is the real race: the same (issuer, subject) was provisioned
+			// concurrently, so the caller re-resolving by identity will find it.
+			return nil, ErrUserExists
 		}
 		return nil, fmt.Errorf("link oidc identity: %w", err)
 	}
 
-	if err := tx.Commit(ctx); err != nil {
-		return nil, err
-	}
-	return u, nil
+	return u, tx.Commit(ctx)
 }
 
-// freeUsername returns base, or base with a numeric suffix, that is not yet taken.
-func (s *Store) freeUsername(ctx context.Context, base string) (string, error) {
-	for i := 0; i < 1000; i++ {
+// maxUsernameAttempts bounds the search for a free name, so a pathological
+// collection of near-identical addresses cannot spin here forever.
+const maxUsernameAttempts = 1000
+
+// freeUsername returns the nth candidate name derived from base that is not
+// currently taken. It reads through the caller's transaction so the check and the
+// insert that follows see the same snapshot.
+func freeUsername(ctx context.Context, tx pgx.Tx, base string, from int) (string, error) {
+	for i := from; i < maxUsernameAttempts; i++ {
 		candidate := base
 		if i > 0 {
 			candidate = fmt.Sprintf("%s%d", base, i+1)
 		}
 		var exists bool
-		if err := s.pool.QueryRow(ctx,
+		if err := tx.QueryRow(ctx,
 			`SELECT EXISTS (SELECT 1 FROM users WHERE username_fold = lower($1))`, candidate).Scan(&exists); err != nil {
 			return "", err
 		}
