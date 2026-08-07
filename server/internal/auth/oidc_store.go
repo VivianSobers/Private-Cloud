@@ -13,19 +13,21 @@ import (
 const userColsU = `u.id, u.username, u.display_name, u.is_admin, u.quota_bytes, u.disabled_at, u.created_at`
 
 // FindUserByOIDC resolves an external identity to a local user, or ErrUserNotFound
-// if this issuer+subject has never signed in. It records the login time as a side
-// effect, best effort.
+// if this issuer+subject has never signed in. It stamps the login time in the
+// same statement.
+//
+// One round trip, not two: the read and the last_login_at write were separate
+// statements outside any transaction, so every SSO login cost an extra
+// round trip whose failure was silently discarded — and between them the row
+// could be deleted, leaving a login recorded against an identity that no longer
+// existed. UPDATE ... FROM ... RETURNING does both against one snapshot.
 func (s *Store) FindUserByOIDC(ctx context.Context, issuer, subject string) (*User, error) {
-	u, err := scanUser(s.pool.QueryRow(ctx, `
-		SELECT `+userColsU+`
-		FROM oidc_identities oi JOIN users u ON u.id = oi.user_id
-		WHERE oi.issuer = $1 AND oi.subject = $2`, issuer, subject))
-	if err != nil {
-		return nil, err
-	}
-	_, _ = s.pool.Exec(ctx,
-		`UPDATE oidc_identities SET last_login_at = now() WHERE issuer = $1 AND subject = $2`, issuer, subject)
-	return u, nil
+	return scanUser(s.pool.QueryRow(ctx, `
+		UPDATE oidc_identities oi
+		SET last_login_at = now()
+		FROM users u
+		WHERE u.id = oi.user_id AND oi.issuer = $1 AND oi.subject = $2
+		RETURNING `+userColsU, issuer, subject))
 }
 
 // ProvisionOIDCUser creates a local user for a first-time SSO login and links the
