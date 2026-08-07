@@ -31,6 +31,11 @@ type Info struct {
 	Version string
 }
 
+// ExcludeSet is the selective-sync payload for GET/PUT /v1/excludes.
+type ExcludeSet struct {
+	Excludes []string `json:"excludes"`
+}
+
 // Engine is the slice of the sync engine the control surface drives — an
 // interface so the server can be tested against a stub with no real syncing.
 type Engine interface {
@@ -38,4 +43,6 @@ type Engine interface {
 	Pause()
 	Resume()
 	SyncNow()
+	Excludes() []string
+	SetExcludes([]string)
 }

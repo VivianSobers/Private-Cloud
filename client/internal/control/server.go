@@ -41,6 +41,8 @@ func (s *Server) handler() http.Handler {
 	mux.HandleFunc("POST /v1/sync", s.handleSync)
 	mux.HandleFunc("POST /v1/pause", s.handlePause)
 	mux.HandleFunc("POST /v1/resume", s.handleResume)
+	mux.HandleFunc("GET /v1/excludes", s.handleGetExcludes)
+	mux.HandleFunc("PUT /v1/excludes", s.handleSetExcludes)
 	return mux
 }
 
@@ -109,6 +111,29 @@ func (s *Server) handlePause(w http.ResponseWriter, _ *http.Request) {
 func (s *Server) handleResume(w http.ResponseWriter, _ *http.Request) {
 	s.eng.Resume()
 	writeJSON(w, s.eng.Snapshot())
+}
+
+func (s *Server) handleGetExcludes(w http.ResponseWriter, _ *http.Request) {
+	writeJSON(w, ExcludeSet{Excludes: nonNil(s.eng.Excludes())})
+}
+
+func (s *Server) handleSetExcludes(w http.ResponseWriter, r *http.Request) {
+	var req ExcludeSet
+	// 64 KiB is a generous ceiling for a folder list and a hard stop on a runaway body.
+	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 64<<10)).Decode(&req); err != nil {
+		http.Error(w, "invalid excludes body: "+err.Error(), http.StatusBadRequest)
+		return
+	}
+	s.eng.SetExcludes(req.Excludes)
+	writeJSON(w, ExcludeSet{Excludes: nonNil(s.eng.Excludes())})
+}
+
+// nonNil returns an empty slice for nil, so the JSON is [] rather than null.
+func nonNil(s []string) []string {
+	if s == nil {
+		return []string{}
+	}
+	return s
 }
 
 func writeJSON(w http.ResponseWriter, v any) {
