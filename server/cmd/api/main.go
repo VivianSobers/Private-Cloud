@@ -207,9 +207,12 @@ func run() error {
 	// similarity. Unset means the semantic endpoint reports "unavailable" and
 	// lexical search is unaffected.
 	if cfg.Embed.Enabled() {
-		apiServer.SetEmbedder(embed.NewClient(cfg.Embed.URL, cfg.Embed.Model, cfg.Embed.Dim))
-		log.Info("semantic search enabled",
-			"sidecar", cfg.Embed.URL, "model", cfg.Embed.Model, "dim", cfg.Embed.Dim)
+		client := embed.NewClient(cfg.Embed.URL, cfg.Embed.Model, cfg.Embed.Dim)
+		if verifyEmbedSidecar(ctx, client, cfg.Embed, log) {
+			apiServer.SetEmbedder(client)
+			log.Info("semantic search enabled",
+				"sidecar", cfg.Embed.URL, "model", cfg.Embed.Model, "dim", cfg.Embed.Dim)
+		}
 	}
 
 	// OIDC single sign-on, if configured. A discovery failure disables SSO with a
@@ -408,6 +411,45 @@ func (e extractEnqueuer) EnqueueExtract(ctx context.Context, nodeID, ownerID uui
 		jobs.EnqueueOptions{OwnerQueueCap: 50000}); err != nil {
 		e.log.Warn("enqueue extraction failed", "node", nodeID, "error", err)
 	}
+}
+
+// verifyEmbedSidecar checks the sidecar actually serves what this process is
+// configured to store, reporting whether semantic search should be enabled.
+//
+// Two failures, treated differently. A DIMENSION mismatch is fatal to the
+// feature: every vector would be rejected on arrival and every query filtered
+// out, so semantic search would return nothing, forever, with no error anywhere.
+// Better to leave it off and say why. Anything else — a sidecar still loading
+// its model, a tailnet hiccup — is transient, so the feature stays on and the
+// query path's existing 503-to-lexical fallback covers it.
+//
+// The MODEL is a warning, not a gate. Vectors are stored under an
+// operator-chosen identity, so swapping the sidecar to a different model of the
+// same width leaves old and new vectors sharing one name: cosine across two
+// unrelated spaces, ranked confidently, wrong. Nothing else can detect that.
+func verifyEmbedSidecar(ctx context.Context, c *embed.Client, cfg config.EmbedConfig, log *slog.Logger) bool {
+	probeCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
+	defer cancel()
+
+	info, err := c.Verify(probeCtx)
+	switch {
+	case errors.Is(err, embed.ErrDimMismatch):
+		log.Error("semantic search disabled: embedding sidecar dimension mismatch",
+			"error", err, "configured_dim", cfg.Dim, "sidecar_dim", info.Dim)
+		return false
+	case err != nil:
+		log.Warn("could not verify embedding sidecar at startup; enabling anyway",
+			"error", err, "sidecar", cfg.URL)
+		return true
+	}
+
+	if !c.SameModel(info.Model) {
+		log.Warn("embedding sidecar model does not match PC_EMBED_MODEL; vectors from different models will be compared as if they shared a space — set PC_EMBED_MODEL to a new identity and re-index (cloudctl jobs reindex)",
+			"sidecar_model", info.Model, "configured_model", cfg.Model)
+	}
+	log.Info("embedding sidecar verified",
+		"model", info.Model, "dim", info.Dim, "device", info.Device)
+	return true
 }
 
 // runJobMetrics polls the job queue depth by state and publishes it as gauges,

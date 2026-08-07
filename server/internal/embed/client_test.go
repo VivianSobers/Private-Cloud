@@ -3,6 +3,8 @@ package embed
 import (
 	"context"
 	"encoding/json"
+	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -53,22 +55,64 @@ func TestClientRejectsBadShape(t *testing.T) {
 	}
 }
 
-func TestClientHealthy(t *testing.T) {
-	up := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path == "/healthz" {
-			w.WriteHeader(http.StatusOK)
+// healthzServer serves a /healthz reporting the given model and dimension.
+func healthzServer(t *testing.T, model string, dim int) *httptest.Server {
+	t.Helper()
+	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/healthz" {
+			w.WriteHeader(http.StatusNotFound)
 			return
 		}
-		w.WriteHeader(http.StatusNotFound)
+		w.Header().Set("Content-Type", "application/json")
+		fmt.Fprintf(w, `{"status":"ok","model":%q,"dim":%d,"device":"cpu"}`, model, dim)
 	}))
+}
+
+func TestClientVerify(t *testing.T) {
+	up := healthzServer(t, "BAAI/bge-small-en-v1.5", 2)
 	defer up.Close()
 
-	c := NewClient(up.URL, "test", 2)
-	if !c.Healthy(context.Background()) {
-		t.Error("healthy sidecar reported unhealthy")
+	c := NewClient(up.URL, "bge-small-en-v1.5", 2)
+	info, err := c.Verify(context.Background())
+	if err != nil {
+		t.Fatalf("Verify: %v", err)
 	}
-	down := NewClient("http://127.0.0.1:1", "test", 2)
-	if down.Healthy(context.Background()) {
-		t.Error("unreachable sidecar reported healthy")
+	if info.Dim != 2 || info.Model != "BAAI/bge-small-en-v1.5" {
+		t.Errorf("Verify returned %+v", info)
+	}
+	// The stored identity drops the vendor prefix; that is the same model.
+	if !c.SameModel(info.Model) {
+		t.Error("SameModel must ignore a vendor prefix and case")
+	}
+
+	// A sidecar swapped to another model of the same width is exactly the case
+	// nothing else in the system can detect.
+	if c.SameModel("all-MiniLM-L6-v2") {
+		t.Error("SameModel must not treat a different model as a match")
 	}
 }
+
+func TestClientVerifyDimMismatch(t *testing.T) {
+	up := healthzServer(t, "bge-small-en-v1.5", 384)
+	defer up.Close()
+
+	c := NewClient(up.URL, "bge-small-en-v1.5", 2)
+	if _, err := c.Verify(context.Background()); !errors.Is(err, ErrDimMismatch) {
+		t.Fatalf("Verify error = %v, want ErrDimMismatch", err)
+	}
+}
+
+func TestClientVerifyUnreachable(t *testing.T) {
+	down := NewClient("http://127.0.0.1:1", "test", 2)
+	err := errFrom(down.Verify(context.Background()))
+	if err == nil {
+		t.Fatal("expected an error for an unreachable sidecar")
+	}
+	// Transport failure must NOT look like a mismatch: the caller keeps the
+	// feature enabled for one and disables it for the other.
+	if errors.Is(err, ErrDimMismatch) {
+		t.Error("an unreachable sidecar must not report a dimension mismatch")
+	}
+}
+
+func errFrom(_ SidecarInfo, err error) error { return err }

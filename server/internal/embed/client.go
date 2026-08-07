@@ -4,9 +4,11 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
+	"strings"
 	"time"
 )
 
@@ -90,17 +92,71 @@ func (c *Client) Embed(ctx context.Context, texts []string) ([][]float32, error)
 	return out.Vectors, nil
 }
 
-// Healthy reports whether the sidecar answers its health probe, so the API can
-// decide at query time whether semantic search is available.
-func (c *Client) Healthy(ctx context.Context) bool {
+// SidecarInfo is what the sidecar reports about itself at /healthz.
+type SidecarInfo struct {
+	Status string `json:"status"`
+	Model  string `json:"model"`
+	Dim    int    `json:"dim"`
+	Device string `json:"device"`
+}
+
+// Verify probes the sidecar and checks that what it serves is what this client
+// is configured to store.
+//
+// The dimension check is the hard one: a width mismatch means every vector
+// written here would be rejected on arrival, and every query would be filtered
+// out at search time — semantic search that returns nothing, with no error
+// anywhere. Refusing to start is better than serving an empty feature.
+//
+// The model is returned rather than enforced, because the identity vectors are
+// stored under is deliberately an operator-chosen string, not the sidecar's
+// HuggingFace id. The caller compares them and warns: swapping the sidecar to a
+// DIFFERENT model of the SAME width is the case that silently mixes two
+// unrelated vector spaces under one name, and nothing else in the system can
+// detect it.
+func (c *Client) Verify(ctx context.Context) (SidecarInfo, error) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, c.base+"/healthz", nil)
 	if err != nil {
-		return false
+		return SidecarInfo{}, err
 	}
 	resp, err := c.http.Do(req)
 	if err != nil {
-		return false
+		return SidecarInfo{}, fmt.Errorf("embed sidecar: %w", err)
 	}
 	defer resp.Body.Close()
-	return resp.StatusCode == http.StatusOK
+	if resp.StatusCode != http.StatusOK {
+		return SidecarInfo{}, fmt.Errorf("embed sidecar: healthz returned %d", resp.StatusCode)
+	}
+
+	var info SidecarInfo
+	if err := json.NewDecoder(io.LimitReader(resp.Body, 8<<10)).Decode(&info); err != nil {
+		return SidecarInfo{}, fmt.Errorf("embed sidecar: decode healthz: %w", err)
+	}
+	if info.Dim != c.dim {
+		return info, fmt.Errorf(
+			"%w: sidecar serves %q at dim %d, but PC_EMBED_DIM is %d — every vector would be rejected and every query would match nothing",
+			ErrDimMismatch, info.Model, info.Dim, c.dim)
+	}
+	return info, nil
+}
+
+// ErrDimMismatch means the sidecar's vector width is not the configured one.
+// Distinguished from a transport failure so a caller can refuse to enable a
+// feature that would silently return nothing, while still tolerating a sidecar
+// that is merely slow to start.
+var ErrDimMismatch = errors.New("embed sidecar dimension mismatch")
+
+// SameModel reports whether the sidecar's reported model is the one this client
+// stores vectors under, ignoring a vendor prefix and case — "BAAI/bge-small-en-v1.5"
+// is the same model as the identity "bge-small-en-v1.5". A false here means the
+// sidecar was swapped without changing PC_EMBED_MODEL, so new vectors would land
+// in the same logical space as vectors from a different model.
+func (c *Client) SameModel(sidecarModel string) bool {
+	norm := func(s string) string {
+		if i := strings.LastIndex(s, "/"); i >= 0 {
+			s = s[i+1:]
+		}
+		return strings.ToLower(strings.TrimSpace(s))
+	}
+	return norm(sidecarModel) == norm(c.model)
 }

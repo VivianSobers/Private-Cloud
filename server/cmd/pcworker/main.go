@@ -14,6 +14,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"os"
@@ -87,7 +88,7 @@ func run() error {
 	// store), they read blobs directly; PC_BLOB_PATH is required for that. A GPU
 	// worker on another box would instead pull content over the download API —
 	// same handlers, different Opener — but that adapter is not wired yet.
-	if err := registerHandlers(runner, store, database, embedCfg, log); err != nil {
+	if err := registerHandlers(ctx, runner, store, database, embedCfg, log); err != nil {
 		return err
 	}
 
@@ -114,18 +115,20 @@ func run() error {
 //   - The extract→embed CHAIN (enqueue an embed job once a file has text) is gated
 //     on PC_ENABLE_SEMANTIC or the presence of a sidecar, so the co-located
 //     extractor can feed a remote GPU embedder without embedding anything itself.
-func registerHandlers(runner *jobs.Runner, store *jobs.Store, database *db.DB, embedCfg config.EmbedConfig, log *slog.Logger) error {
+func registerHandlers(ctx context.Context, runner *jobs.Runner, store *jobs.Store, database *db.DB, embedCfg config.EmbedConfig, log *slog.Logger) error {
 	fileStore := files.NewStore(database.Pool)
 
 	// Embedding: DB + sidecar only, so it runs anywhere the database is reachable.
 	if embedCfg.Enabled() {
 		client := embed.NewClient(embedCfg.URL, embedCfg.Model, embedCfg.Dim)
-		embedHandler := embed.NewHandler(fileStore, fileStore, client, log)
-		runner.Register(embed.Kind, func(ctx context.Context, j jobs.Job) error {
-			return embedHandler.Handle(ctx, j.NodeID, j.OwnerID)
-		})
-		log.Info("embedding handler registered",
-			"sidecar", embedCfg.URL, "model", embedCfg.Model, "dim", embedCfg.Dim)
+		if verifyEmbedSidecar(ctx, client, embedCfg, log) {
+			embedHandler := embed.NewHandler(fileStore, fileStore, client, log)
+			runner.Register(embed.Kind, func(ctx context.Context, j jobs.Job) error {
+				return embedHandler.Handle(ctx, j.NodeID, j.OwnerID)
+			})
+			log.Info("embedding handler registered",
+				"sidecar", embedCfg.URL, "model", embedCfg.Model, "dim", embedCfg.Dim)
+		}
 	}
 
 	// Extraction: needs blob content, so only where the blob store is reachable.
@@ -171,6 +174,44 @@ func registerHandlers(runner *jobs.Runner, store *jobs.Store, database *db.DB, e
 		return extractHandler.Handle(ctx, j.NodeID, j.OwnerID)
 	})
 	return nil
+}
+
+// verifyEmbedSidecar checks the sidecar serves the width and model this worker
+// is configured to write, reporting whether the embed handler should register.
+//
+// A dimension mismatch is fatal to the handler: Client.Embed rejects every
+// vector of the wrong width, so each job would fail, retry through its whole
+// backoff budget and dead-letter. Not registering means those jobs stay queued
+// for a correctly configured worker instead of being burned. A model mismatch is
+// a warning, because the identity vectors are stored under is operator-chosen —
+// but writing a different model's vectors under an existing identity is what
+// silently poisons the space, so it must be said loudly.
+func verifyEmbedSidecar(ctx context.Context, c *embed.Client, cfg config.EmbedConfig, log *slog.Logger) bool {
+	probeCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
+	defer cancel()
+
+	info, err := c.Verify(probeCtx)
+	switch {
+	case errors.Is(err, embed.ErrDimMismatch):
+		log.Error("embedding handler NOT registered: sidecar dimension mismatch",
+			"error", err, "configured_dim", cfg.Dim, "sidecar_dim", info.Dim)
+		return false
+	case err != nil:
+		// The sidecar loads a multi-hundred-megabyte model at startup and this
+		// worker may well win the race to be ready. Register anyway; a job that
+		// runs before it answers fails once and retries with backoff.
+		log.Warn("could not verify embedding sidecar at startup; registering anyway",
+			"error", err, "sidecar", cfg.URL)
+		return true
+	}
+
+	if !c.SameModel(info.Model) {
+		log.Warn("embedding sidecar model does not match PC_EMBED_MODEL; vectors from two different models would share one identity and be compared as if they were in the same space — set PC_EMBED_MODEL to a new identity and re-index (cloudctl jobs reindex)",
+			"sidecar_model", info.Model, "configured_model", cfg.Model)
+	}
+	log.Info("embedding sidecar verified",
+		"model", info.Model, "dim", info.Dim, "device", info.Device)
+	return true
 }
 
 // prune periodically deletes finished jobs so the table does not grow forever,
