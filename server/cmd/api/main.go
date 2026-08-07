@@ -170,7 +170,13 @@ func run() error {
 	// a cheap DB insert into the job queue; the pcworker process drains it. This is
 	// strictly additive — with no worker running, jobs simply queue, and the file
 	// API is unchanged.
-	filesSvc.SetEnqueuer(extractEnqueuer{store: jobs.NewStore(database.Pool), log: log})
+	jobsStore := jobs.NewStore(database.Pool)
+	filesSvc.SetEnqueuer(extractEnqueuer{store: jobsStore, log: log})
+
+	// Publish queue depth as a metric so the OCR/embed backlog is visible on the
+	// dashboard: a climbing 'queued' means the worker is behind or stopped, a
+	// nonzero 'failed' means jobs are dead-lettering.
+	go runJobMetrics(ctx, jobsStore, m, log)
 
 	// The public share plane. It depends on files (serving a share opens the
 	// owner's content), never the reverse.
@@ -434,6 +440,37 @@ func envInt(key string, def int) int {
 		slog.Warn("ignoring unparseable integer", "key", key, "value", v)
 	}
 	return def
+}
+
+// runJobMetrics polls the job queue depth by state and publishes it as gauges,
+// so the background pipeline is observable through the API's /metrics without the
+// worker needing its own scrape endpoint.
+func runJobMetrics(ctx context.Context, store *jobs.Store, m *metrics.Metrics, log *slog.Logger) {
+	ticker := time.NewTicker(30 * time.Second)
+	defer ticker.Stop()
+
+	poll := func() {
+		stats, err := store.Stats(ctx)
+		if err != nil {
+			log.Warn("job metrics poll failed", "error", err)
+			return
+		}
+		// Reset the known states each poll so a state that drops to zero is
+		// reported as zero rather than frozen at its last value.
+		for _, state := range []string{jobs.StateQueued, jobs.StateRunning, jobs.StateDone, jobs.StateFailed} {
+			m.Jobs.WithLabelValues(state).Set(float64(stats[state]))
+		}
+	}
+
+	poll() // publish once at startup rather than waiting a full interval
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			poll()
+		}
+	}
 }
 
 func newLogger(cfg *config.Config) *slog.Logger {
