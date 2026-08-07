@@ -47,6 +47,33 @@ PC_EMBED_DIM=384                     # must equal the model's dimension
 - On the **API**, they enable the semantic endpoint (`GET /api/v1/search?semantic=true`),
   which embeds the query through this sidecar and ranks by cosine similarity.
 
+## Running embedding on a separate GPU box
+
+Embedding needs only the **database and the sidecar** — never blob content — so an
+embedding worker can run entirely on a GPU box that cannot see the blob store.
+That is the two-tier split the design is built for:
+
+- **Always-on box** — its `pcworker` keeps `PC_BLOB_PATH` (it does OCR/extraction)
+  and adds `PC_ENABLE_SEMANTIC=true` so extraction enqueues embed jobs, but leaves
+  `PC_EMBED_URL` **empty** so it does not embed on the CPU.
+- **GPU box** — run the sidecar (`--gpus all`) and a second `pcworker` there with:
+
+  ```bash
+  PC_DATABASE_URL=postgres://…@<always-on-box>.tailnet.ts.net:5432/privatecloud
+  PC_EMBED_URL=http://localhost:8000   # the local sidecar
+  PC_EMBED_MODEL=bge-small-en-v1.5
+  PC_EMBED_DIM=384
+  # NO PC_BLOB_PATH — this worker never touches the blob store.
+  ```
+
+  It reaches Postgres over the tailnet, claims only `embed` jobs (the queue's
+  `SKIP LOCKED` keeps the two workers from colliding), and does all embedding on
+  the GPU. Turn it off and embed jobs simply wait; extraction and lexical search
+  are unaffected.
+
+For a single-box setup, skip all this: one `pcworker` with both `PC_BLOB_PATH` and
+`PC_EMBED_URL` does everything (embedding on CPU, fine for a small corpus).
+
 ## Choosing a model
 
 `BAAI/bge-small-en-v1.5` (384-dim) is a strong small default. On a 4090 you can

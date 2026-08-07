@@ -230,9 +230,13 @@ services:
       PC_LOG_FORMAT: ${PC_LOG_FORMAT:-json}
       PC_DATABASE_URL: "postgres://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-privatecloud}?sslmode=disable"
       PC_BLOB_PATH: /data/blobs
-      # Point PC_EMBED_URL at the embed-sidecar to enable embedding; empty
-      # (default) is OCR + tagging only, no embed jobs enqueued.
+      # Point PC_EMBED_URL at the embed-sidecar to have THIS worker embed too;
+      # empty (default) is OCR + tagging only. To keep embedding on a separate GPU
+      # box instead, leave PC_EMBED_URL empty here, set PC_ENABLE_SEMANTIC=true so
+      # extraction still enqueues embed jobs, and run a second pcworker on the GPU
+      # box with PC_EMBED_URL set (and no PC_BLOB_PATH) to drain them.
       PC_EMBED_URL: ${PC_EMBED_URL:-}
+      PC_ENABLE_SEMANTIC: ${PC_ENABLE_SEMANTIC:-}
       PC_EMBED_MODEL: ${PC_EMBED_MODEL:-bge-small-en-v1.5}
       PC_EMBED_DIM: ${PC_EMBED_DIM:-384}
     # read_only rootfs; tesseract needs a scratch dir, so /tmp is a tmpfs.
