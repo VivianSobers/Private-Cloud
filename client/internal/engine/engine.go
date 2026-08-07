@@ -14,6 +14,8 @@ import (
 	"io"
 	"log/slog"
 	"os"
+	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/guru-bharadwaj20/private-cloud/client/internal/api"
@@ -56,6 +58,19 @@ type Engine struct {
 	clock    func() time.Time
 
 	rootID string // server root node id, cached per Sync
+
+	// Observation and control, read/written from the control goroutine while the
+	// sync loop runs — see status.go. mu guards the status fields; paused and
+	// syncNow steer the Run loop from outside it.
+	mu        sync.Mutex
+	phase     Phase
+	lastSync  time.Time
+	lastErr   string
+	lastErrAt time.Time
+	conflicts []ConflictRecord
+	since     time.Time
+	paused    atomic.Bool
+	syncNow   chan struct{}
 }
 
 // New builds an engine. root and stateDir are absolute; stateDir is where the
@@ -71,6 +86,10 @@ func New(srv Server, st *state.Store, root, stateDir string, log *slog.Logger) *
 	return &Engine{
 		srv: srv, state: st, root: root, stateDir: stateDir, log: log,
 		hostname: host, clock: time.Now,
+		phase: PhaseIdle, since: time.Now(),
+		// Buffered so SyncNow never blocks the caller: a trigger already waiting is
+		// coalesced with a new one — one pending sync is as good as two.
+		syncNow: make(chan struct{}, 1),
 	}
 }
 
