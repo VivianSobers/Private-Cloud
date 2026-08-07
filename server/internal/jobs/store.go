@@ -207,6 +207,24 @@ func (s *Store) DeleteFinished(ctx context.Context, retention time.Duration) (in
 	return tag.RowsAffected(), nil
 }
 
+// EnqueueForAllFiles inserts a job of `kind` for every live file, skipping any
+// file that already has one pending — the bulk re-index primitive behind
+// `cloudctl jobs reindex`, for rebuilding extracted text or embeddings after a
+// model or extractor change. Idempotent by the same unique-pending index that
+// dedups ordinary enqueues. Returns how many jobs were created.
+func (s *Store) EnqueueForAllFiles(ctx context.Context, kind string) (int64, error) {
+	tag, err := s.pool.Exec(ctx, `
+		INSERT INTO jobs (kind, node_id, owner_id)
+		SELECT $1, n.id, n.owner_id
+		FROM nodes n
+		WHERE n.kind = 'file' AND n.trashed_at IS NULL
+		ON CONFLICT (kind, node_id) WHERE state IN ('queued','running') DO NOTHING`, kind)
+	if err != nil {
+		return 0, err
+	}
+	return tag.RowsAffected(), nil
+}
+
 // ListFailed returns dead-lettered jobs, newest first — the operator's view of
 // what the JobsDeadLettering alert is warning about.
 func (s *Store) ListFailed(ctx context.Context, limit int) ([]Job, error) {
