@@ -120,10 +120,13 @@ func (s *Server) Handler() http.Handler {
 	// rateLimited wraps each individually rather than the group, because these
 	// live on the same mux as everything else and a path-prefix check would
 	// have to be kept in sync by hand.
+	// Wrapped once per route at registration, not once per request: the previous
+	// form rebuilt the middleware chain inside the handler body, so every
+	// rate-limited request allocated a closure and an http.HandlerFunc before
+	// doing any work — on the login path, which is the one under attack when it
+	// matters.
 	rl := func(h http.HandlerFunc) http.HandlerFunc {
-		return func(w http.ResponseWriter, r *http.Request) {
-			s.withRateLimit(h).ServeHTTP(w, r)
-		}
+		return s.withRateLimit(h).ServeHTTP
 	}
 
 	mux.HandleFunc("GET /api/v1/auth/status", s.handleAuthStatus)
