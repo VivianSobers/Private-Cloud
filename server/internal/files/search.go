@@ -48,6 +48,10 @@ type SearchResult struct {
 	// receipt found by a word printed on it — rather than its name or path. Without
 	// this, a result whose name shares nothing with the query looks like a bug.
 	MatchedContent bool
+	// Semantic is true for a result from a vector (meaning) search rather than a
+	// lexical one — found by what it is about, not a word it contains. Score then
+	// carries the cosine similarity.
+	Semantic bool
 }
 
 // Search finds nodes by filename fragment.
