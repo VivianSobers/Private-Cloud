@@ -6,11 +6,17 @@ import { ApiError, api, formatBytes, formatDate, type Node } from "./api";
 // the files under whichever tag is selected. The tags themselves come from the
 // worker (MIME + OCR) and from what users add by hand.
 export function TagBrowser({ onClose, onOpenFolder }: { onClose: () => void; onOpenFolder: (id: string) => void }) {
+  const PAGE = 50;
   const [tags, setTags] = useState<{ tag: string; count: number }[]>([]);
   const [selected, setSelected] = useState<string | null>(null);
   const [nodes, setNodes] = useState<Node[]>([]);
+  const [hasMore, setHasMore] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
+  // Separate from `loading`, which covers the initial tag-cloud fetch. Without
+  // it, switching tags rendered "No files under this tag" against the previous
+  // tag's emptied list while the new one was still in flight.
+  const [loadingNodes, setLoadingNodes] = useState(false);
 
   useEffect(() => {
     void api
@@ -23,12 +29,35 @@ export function TagBrowser({ onClose, onOpenFolder }: { onClose: () => void; onO
   const openTag = useCallback(async (tag: string) => {
     setSelected(tag);
     setError(null);
+    setNodes([]);
+    setHasMore(false);
+    setLoadingNodes(true);
     try {
-      setNodes((await api.tagNodes(tag)).nodes);
+      const res = await api.tagNodes(tag, { limit: PAGE });
+      setNodes(res.nodes);
+      setHasMore(res.has_more);
     } catch (err) {
       setError(err instanceof ApiError ? err.message : String(err));
+    } finally {
+      setLoadingNodes(false);
     }
   }, []);
+
+  // The API has always reported has_more here; nothing ever asked for the next
+  // page, so a tag with more than a page of files silently showed only the first.
+  const loadMore = useCallback(async () => {
+    if (!selected) return;
+    setLoadingNodes(true);
+    try {
+      const res = await api.tagNodes(selected, { limit: PAGE, offset: nodes.length });
+      setNodes((ns) => [...ns, ...res.nodes]);
+      setHasMore(res.has_more);
+    } catch (err) {
+      setError(err instanceof ApiError ? err.message : String(err));
+    } finally {
+      setLoadingNodes(false);
+    }
+  }, [selected, nodes.length]);
 
   return (
     <div className="stack">
@@ -64,7 +93,9 @@ export function TagBrowser({ onClose, onOpenFolder }: { onClose: () => void; onO
       {selected && (
         <div className="stack">
           <p className="muted small">Files tagged “{selected}”</p>
-          {nodes.length === 0 ? (
+          {loadingNodes && nodes.length === 0 ? (
+            <p className="muted">Loading…</p>
+          ) : nodes.length === 0 ? (
             <div className="empty">No files under this tag.</div>
           ) : (
             <table className="listing">
@@ -96,6 +127,11 @@ export function TagBrowser({ onClose, onOpenFolder }: { onClose: () => void; onO
                 ))}
               </tbody>
             </table>
+          )}
+          {hasMore && (
+            <button disabled={loadingNodes} onClick={() => void loadMore()}>
+              {loadingNodes ? "Loading…" : "Load more"}
+            </button>
           )}
         </div>
       )}

@@ -290,11 +290,17 @@ export const api = {
 
   usage: () => request<Usage>("/api/v1/usage"),
 
-  search: (q: string, opts: { under?: string; kind?: string; limit?: number; semantic?: boolean } = {}) => {
+  search: (
+    q: string,
+    opts: { under?: string; kind?: string; limit?: number; offset?: number; semantic?: boolean } = {},
+  ) => {
     const params = new URLSearchParams({ q });
     if (opts.under && opts.under !== "/") params.set("under", opts.under);
     if (opts.kind) params.set("kind", opts.kind);
     if (opts.limit) params.set("limit", String(opts.limit));
+    // Without an offset the API's has_more is decoration: it says another page
+    // exists and there is no way to ask for it.
+    if (opts.offset) params.set("offset", String(opts.offset));
     // Semantic mode ranks by meaning via the embedding sidecar; a 503 here means
     // it is not enabled, which the caller can fall back from to lexical search.
     if (opts.semantic) params.set("semantic", "true");
@@ -320,10 +326,15 @@ export const api = {
 
   listTags: () => request<{ tags: { tag: string; count: number }[] }>("/api/v1/tags"),
 
-  tagNodes: (tag: string) =>
-    request<{ tag: string; nodes: Node[]; count: number; has_more: boolean }>(
-      `/api/v1/tags/${encodeURIComponent(tag)}`,
-    ),
+  tagNodes: (tag: string, opts: { limit?: number; offset?: number } = {}) => {
+    const params = new URLSearchParams();
+    if (opts.limit) params.set("limit", String(opts.limit));
+    if (opts.offset) params.set("offset", String(opts.offset));
+    const qs = params.toString();
+    return request<{ tag: string; nodes: Node[]; count: number; has_more: boolean }>(
+      `/api/v1/tags/${encodeURIComponent(tag)}${qs ? `?${qs}` : ""}`,
+    );
+  },
 
   fsck: (repair: boolean) =>
     request<Record<string, unknown>>(`/api/v1/admin/fsck?repair=${repair}`, { method: "POST" }),
