@@ -555,6 +555,16 @@ func (c *countingWriter) Write(b []byte) (int, error) {
 // ServeContent needs for read deadlines on long transfers.
 func (c *countingWriter) Unwrap() http.ResponseWriter { return c.ResponseWriter }
 
+// Flush is forwarded for the same reason statusRecorder forwards it: Unwrap only
+// serves http.ResponseController, and a direct w.(http.Flusher) assertion would
+// otherwise see this wrapper and find nothing. On the download path that would
+// mean a large streamed file buffering instead of flowing.
+func (c *countingWriter) Flush() {
+	if f, ok := c.ResponseWriter.(http.Flusher); ok {
+		f.Flush()
+	}
+}
+
 // contentDisposition builds a header safe for non-ASCII names.
 //
 // The bare filename= parameter cannot carry anything outside ASCII, so RFC 6266

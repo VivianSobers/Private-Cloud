@@ -1,10 +1,12 @@
 package httpapi
 
 import (
+	"bufio"
 	"context"
 	"crypto/rand"
 	"encoding/hex"
 	"log/slog"
+	"net"
 	"net/http"
 	"runtime/debug"
 	"strconv"
@@ -51,9 +53,38 @@ func (r *statusRecorder) Write(b []byte) (int, error) {
 	return n, err
 }
 
-// Unwrap lets http.ResponseController reach the underlying writer, which
-// streaming endpoints in slice 3 will need for flushing and deadline control.
+// Unwrap lets http.ResponseController reach the underlying writer for flushing
+// and deadline control.
 func (r *statusRecorder) Unwrap() http.ResponseWriter { return r.ResponseWriter }
+
+// Flush and Hijack are forwarded explicitly, because Unwrap only helps
+// http.ResponseController. Code that type-asserts the writer directly —
+// w.(http.Flusher), which is what most streaming and SSE code does, and what
+// golang.org/x/net/webdav does internally — sees this wrapper, not the writer
+// underneath, and silently loses the capability. A handler that checks for
+// Flusher and finds none does not fail loudly; it just buffers forever.
+func (r *statusRecorder) Flush() {
+	if f, ok := r.ResponseWriter.(http.Flusher); ok {
+		// A flush commits the response, so record the implicit 200 that net/http
+		// would write, or the status here would stay wrong for the log line.
+		if !r.wrote {
+			r.status = http.StatusOK
+			r.wrote = true
+		}
+		f.Flush()
+	}
+}
+
+// Hijack lets a handler take over the connection (WebSocket upgrades, and
+// anything else that stops speaking HTTP). Nothing does today; the wrapper must
+// not be the reason it cannot.
+func (r *statusRecorder) Hijack() (net.Conn, *bufio.ReadWriter, error) {
+	h, ok := r.ResponseWriter.(http.Hijacker)
+	if !ok {
+		return nil, nil, http.ErrNotSupported
+	}
+	return h.Hijack()
+}
 
 // withRequestID assigns each request a correlation ID, preferring an inbound
 // X-Request-Id so a trace survives the hop through Caddy.
