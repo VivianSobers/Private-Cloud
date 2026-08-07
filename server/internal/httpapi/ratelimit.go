@@ -25,6 +25,11 @@ type rateLimiter struct {
 
 	rate     float64 // tokens per second
 	capacity float64 // burst
+
+	// stop ends the reaper goroutine. Process-lifetime limiters never close it;
+	// tests do, so a package that constructs a limiter per case does not leak a
+	// goroutine and a ticker for each one.
+	stop chan struct{}
 }
 
 type bucket struct {
@@ -37,10 +42,15 @@ func newRateLimiter(perMinute, burst float64) *rateLimiter {
 		buckets:  make(map[string]*bucket),
 		rate:     perMinute / 60,
 		capacity: burst,
+		stop:     make(chan struct{}),
 	}
 	go rl.reap()
 	return rl
 }
+
+// close ends the reaper. Safe to call once; the server's own limiters live for
+// the life of the process and never do.
+func (rl *rateLimiter) close() { close(rl.stop) }
 
 // allow consumes a token, reporting whether the request may proceed.
 func (rl *rateLimiter) allow(key string) bool {
@@ -71,16 +81,27 @@ func (rl *rateLimiter) allow(key string) bool {
 
 // reap drops idle buckets so the map cannot grow without bound — otherwise a
 // scanner cycling source addresses would be a slow memory leak.
+// A ticker that is stopped rather than time.Tick, which allocates a ticker that
+// can never be collected — fine for one process-lifetime limiter, a leak per
+// instance for anything that constructs them repeatedly.
 func (rl *rateLimiter) reap() {
-	for range time.Tick(5 * time.Minute) {
-		cutoff := time.Now().Add(-15 * time.Minute)
-		rl.mu.Lock()
-		for k, b := range rl.buckets {
-			if b.last.Before(cutoff) {
-				delete(rl.buckets, k)
+	ticker := time.NewTicker(5 * time.Minute)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-rl.stop:
+			return
+		case <-ticker.C:
+			cutoff := time.Now().Add(-15 * time.Minute)
+			rl.mu.Lock()
+			for k, b := range rl.buckets {
+				if b.last.Before(cutoff) {
+					delete(rl.buckets, k)
+				}
 			}
+			rl.mu.Unlock()
 		}
-		rl.mu.Unlock()
 	}
 }
 
