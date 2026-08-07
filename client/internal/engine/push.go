@@ -124,6 +124,7 @@ func (e *Engine) pushFile(ctx context.Context, sp string) error {
 		return err
 	}
 	e.log.Info("pushed", "path", sp, "size", info.Size())
+	e.countPush(info.Size())
 	return e.state.Put(state.Entry{
 		Path: sp, NodeID: node.ID, Kind: "file",
 		Size: info.Size(), MtimeUnix: info.ModTime().Unix(),

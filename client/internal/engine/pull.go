@@ -220,6 +220,7 @@ func (e *Engine) pullDown(ctx context.Context, node api.Node) error {
 		return err
 	}
 	e.log.Info("pulled", "path", node.Path, "size", size)
+	e.countPull(size)
 	return e.state.Put(state.Entry{
 		Path: node.Path, NodeID: node.ID, Kind: "file",
 		Size: size, MtimeUnix: mtime, Hash: hash, RemoteHash: node.ContentHash(),

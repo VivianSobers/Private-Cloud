@@ -78,6 +78,13 @@ type Engine struct {
 	// startup, so the config seed does not clobber a live change.
 	excludes       atomic.Pointer[[]string]
 	excludesLoaded bool
+
+	// Session transfer tallies since the daemon started, incremented on the sync
+	// path and read for the status surface — atomic, so no lock is taken per file.
+	pulledFiles atomic.Int64
+	pushedFiles atomic.Int64
+	pulledBytes atomic.Int64
+	pushedBytes atomic.Int64
 }
 
 // New builds an engine. root and stateDir are absolute; stateDir is where the

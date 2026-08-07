@@ -39,6 +39,12 @@ type Status struct {
 	Tracked     int              `json:"tracked"`       // nodes in the local state db
 	Conflicts   []ConflictRecord `json:"conflicts"`     // recent, newest last
 	Since       time.Time        `json:"since"`         // when this daemon started
+
+	// Session transfer tallies since Since.
+	PulledFiles int64 `json:"pulled_files"`
+	PushedFiles int64 `json:"pushed_files"`
+	PulledBytes int64 `json:"pulled_bytes"`
+	PushedBytes int64 `json:"pushed_bytes"`
 }
 
 // Snapshot returns the current status, including a fresh tracked-item count from
@@ -56,6 +62,11 @@ func (e *Engine) Snapshot() Status {
 	}
 	e.mu.Unlock()
 
+	s.PulledFiles = e.pulledFiles.Load()
+	s.PushedFiles = e.pushedFiles.Load()
+	s.PulledBytes = e.pulledBytes.Load()
+	s.PushedBytes = e.pushedBytes.Load()
+
 	// Counted outside the lock: it touches the database, and the sync loop is the
 	// only writer, so a count taken here is at worst one reconcile stale — fine for
 	// a status line, and not worth holding the status mutex across a query.
@@ -63,6 +74,17 @@ func (e *Engine) Snapshot() Status {
 		s.Tracked = n
 	}
 	return s
+}
+
+// countPull and countPush tally one transferred file for the session stats.
+func (e *Engine) countPull(size int64) {
+	e.pulledFiles.Add(1)
+	e.pulledBytes.Add(size)
+}
+
+func (e *Engine) countPush(size int64) {
+	e.pushedFiles.Add(1)
+	e.pushedBytes.Add(size)
 }
 
 // setPhase records the coarse activity. A run that failed leaves PhaseError until
