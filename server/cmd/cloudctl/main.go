@@ -19,6 +19,7 @@ import (
 	"fmt"
 	"log/slog"
 	"os"
+	"slices"
 	"strconv"
 	"strings"
 	"text/tabwriter"
@@ -187,7 +188,10 @@ func userCommand(ctx context.Context, store *auth.Store, svc *auth.Service, args
 			return fmt.Errorf("usage: cloudctl user create <username> [--admin]")
 		}
 		username := args[1]
-		isAdmin := len(args) > 2 && args[2] == "--admin"
+		if err := checkFlags(args[2:], "--admin"); err != nil {
+			return err
+		}
+		isAdmin := slices.Contains(args[2:], "--admin")
 
 		if strings.TrimSpace(username) == "" || strings.ContainsAny(username, " \t/\\") {
 			return fmt.Errorf("username must be non-empty and contain no spaces or slashes")
@@ -285,6 +289,9 @@ func userCommand(ctx context.Context, store *auth.Store, svc *auth.Service, args
 		if err != nil {
 			return err
 		}
+		if err := checkFlags(args[3:], "--ttl-hours="); err != nil {
+			return err
+		}
 		var ttl time.Duration
 		for _, a := range args[3:] {
 			if strings.HasPrefix(a, "--ttl-hours=") {
@@ -359,7 +366,10 @@ func filesService(database *db.DB, log *slog.Logger) (*files.Service, error) {
 }
 
 func fsckCommand(ctx context.Context, database *db.DB, log *slog.Logger, args []string) error {
-	repair := len(args) > 0 && args[0] == "--repair"
+	if err := checkFlags(args, "--repair"); err != nil {
+		return err
+	}
+	repair := slices.Contains(args, "--repair")
 
 	svc, err := filesService(database, log)
 	if err != nil {
@@ -583,6 +593,9 @@ func jobsCommand(ctx context.Context, database *db.DB, args []string) error {
 		return w.Flush()
 
 	case "failed":
+		if err := checkFlags(args[1:], "--limit="); err != nil {
+			return err
+		}
 		limit := 100
 		for _, a := range args[1:] {
 			if strings.HasPrefix(a, "--limit=") {
@@ -617,6 +630,9 @@ func jobsCommand(ctx context.Context, database *db.DB, args []string) error {
 	case "retry":
 		// Optional kind filter: the reasons jobs fail are per-kind, so requeuing
 		// everything after fixing one cause re-runs work that failed for another.
+		if err := checkFlags(args[1:], "--kind="); err != nil {
+			return err
+		}
 		var kind string
 		for _, a := range args[1:] {
 			if strings.HasPrefix(a, "--kind=") {
@@ -648,6 +664,26 @@ func jobsCommand(ctx context.Context, database *db.DB, args []string) error {
 	default:
 		return fmt.Errorf("unknown jobs subcommand %q (want stats, failed, retry or reindex)", args[0])
 	}
+}
+
+// checkFlags rejects any argument that is not in the known set.
+//
+// Silently ignoring an unrecognised flag is the worst outcome for commands like
+// these: `user create bob --admn` reported success and made a NON-admin, and
+// `fsck --repar` printed a clean report having repaired nothing. Both look
+// exactly like the command working. Only migrate-blobs got this right; now they
+// all do.
+func checkFlags(args []string, known ...string) error {
+	for _, a := range args {
+		name := a
+		if i := strings.Index(a, "="); i >= 0 {
+			name = a[:i+1] // keep the "=" so --limit= and --limit are distinct
+		}
+		if !slices.Contains(known, name) {
+			return fmt.Errorf("unknown option %q (accepted here: %s)", a, strings.Join(known, " "))
+		}
+	}
+	return nil
 }
 
 // truncate shortens a string for single-line tabular output.
