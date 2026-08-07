@@ -18,8 +18,38 @@ This is the **one file both developers edit** (see
 
 - Base path `/api/v1`. JSON in/out. Auth is cookie **or** `Authorization:
   Bearer` (device token); Basic is accepted **only** at `POST /auth/token`.
-- Errors: `{ "error": "<code>", "message": "<human text>" }` with an HTTP status.
 - Timestamps are RFC 3339 UTC. IDs are UUIDs unless noted.
+
+### Errors
+
+Every failure, from every endpoint, has one shape — a **nested** object, not a
+flat one:
+
+```json
+{
+  "error": {
+    "code": "not_found",
+    "message": "no such file or folder",
+    "request_id": "4f9c1e2a8b7d0c3e5a6f9b12"
+  }
+}
+```
+
+`code` is stable and safe to branch on; `message` is human text and may be
+reworded. `request_id` is present on most responses and is echoed in the
+`X-Request-Id` header — quoting it is what makes a user's "it broke" answerable
+from the server log without asking them to reproduce it.
+
+`Content-Type: application/json; charset=utf-8` and `Cache-Control: no-store` on
+all JSON responses.
+
+> Corrected 2026-08-07. This section previously documented
+> `{"error": "<code>", "message": "<text>"}` — flat, and with no `request_id`.
+> The server has never produced that shape (see `errorBody` in
+> `server/internal/httpapi/server.go`). A client coded against the old text would
+> read `error` as a string and get an object, so every error path would fail to
+> parse. Recorded rather than quietly edited because the whole point of this file
+> is that the other track can trust it without reading the handlers.
 
 ## Shipped surface (Phases 1–4) — do not break
 
