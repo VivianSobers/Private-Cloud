@@ -183,9 +183,83 @@ scheme (Basic, using an app password).
 Each new phase from the split adds its endpoints below **before** implementation.
 
 ### Phase 5 — Photos & media
-- `GET /albums`, `POST /albums`, `PATCH /albums/{id}`, `GET /albums/{id}` — TBD shapes.
-- Media metadata on nodes (EXIF: taken-at, gps, dimensions) — TBD.
-- Thumbnail / variant retrieval — TBD (likely a param on the existing blob path).
+
+**Media metadata.** Extracted by a new `media` job kind, alongside the existing
+`extract`. Content-addressed like `doc_text`, so identical images are read once.
+It appears as an optional `media` object on a `node`, absent until the job runs:
+
+```json
+"media": {
+  "width": 4032, "height": 3024, "orientation": 1,
+  "taken_at": "2026-07-14T18:22:05Z",
+  "camera": "Pixel 8 Pro",
+  "gps": { "lat": 51.5072, "lon": -0.1276 },
+  "duration_ms": 12500,
+  "variants": ["thumb", "preview"]
+}
+```
+
+- Every field optional — a PNG has no `taken_at`, a video has no `gps`.
+- `taken_at` is **not** `created_at`: it is when the shutter fired, and it is
+  what a timeline sorts by. Falls back to `updated_at` when absent, which the
+  client must do itself so the fallback stays visible.
+- `gps` is omitted entirely if absent. Note it is exact; there is no blurring.
+- `variants` lists which derived sizes exist **now**, so a gallery knows whether
+  to request a thumbnail or fall back to the original rather than guessing and
+  getting a 404 per tile.
+
+**Variant retrieval.** A parameter on the existing content route, not a new one —
+so range requests, ETags, `Cache-Control` and the share plane all keep working
+unchanged:
+
+```
+GET /nodes/{id}/content?variant=thumb|preview|original     (default: original)
+```
+
+- `thumb` ≈ 320px longest edge, `preview` ≈ 1600px. Both preserve aspect ratio.
+- `404 variant_unavailable` when the media job has not produced it yet — an
+  honest miss the client can retry, not a silent fallback to a 12 MB original
+  that would make a gallery of 200 tiles pull gigabytes.
+- Variants are stored in CAS and reference-counted like any other content, so
+  they are garbage-collected with the file.
+
+**Albums.** A user-ordered collection of nodes. An album is *not* a folder: a
+node can be in many albums, and being in one does not move it.
+
+| Route | Body / result |
+|---|---|
+| `GET /albums` | `{albums: [album]}` |
+| `POST /albums` | `{name, description?}` → `201 {album}` |
+| `GET /albums/{id}` | `{album, items: [node]}` — paged with `limit`/`offset` |
+| `PATCH /albums/{id}` | `{name?, description?, cover_node_id?}` |
+| `DELETE /albums/{id}` | deletes the album only, **never** the files in it |
+| `POST /albums/{id}/items` | `{node_ids: [uuid], position?}` → `201` |
+| `DELETE /albums/{id}/items/{nodeId}` | removes from the album |
+| `PATCH /albums/{id}/items` | `{node_ids: [uuid]}` — full order, for drag-reorder |
+
+```json
+"album": {
+  "id": "uuid", "name": "Iceland 2026", "description": "",
+  "item_count": 214, "cover_node_id": "uuid",
+  "created_at": "...", "updated_at": "..."
+}
+```
+
+- Ordering is explicit and user-controlled; `PATCH .../items` replaces the whole
+  order in one call, because a drag-reorder that issues N position updates is
+  N chances to end up half-applied.
+- Adding a node already in the album is a no-op, not a duplicate or an error, so
+  a retried request is safe.
+- Deleting an album never touches file content. Worth stating because it is the
+  question every user has before they click it.
+
+**Timeline.** The gallery's primary read, kept separate from `/search` because it
+sorts by `taken_at` and pages by date rather than by relevance:
+
+```
+GET /media/timeline?from=&to=&limit=&offset=
+  → {items: [node], has_more: bool}
+```
 
 ### Phase 6 — Native clients
 - `GET /devices`, `DELETE /devices/{id}` — list/revoke device tokens — TBD.
