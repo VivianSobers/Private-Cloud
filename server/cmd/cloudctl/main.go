@@ -583,11 +583,23 @@ func jobsCommand(ctx context.Context, database *db.DB, args []string) error {
 		return w.Flush()
 
 	case "retry":
-		n, err := store.RetryFailed(ctx)
+		// Optional kind filter: the reasons jobs fail are per-kind, so requeuing
+		// everything after fixing one cause re-runs work that failed for another.
+		var kind string
+		for _, a := range args[1:] {
+			if strings.HasPrefix(a, "--kind=") {
+				kind = strings.TrimPrefix(a, "--kind=")
+			}
+		}
+		n, err := store.RetryFailed(ctx, kind)
 		if err != nil {
 			return err
 		}
-		fmt.Printf("requeued %d failed job(s)\n", n)
+		if kind != "" {
+			fmt.Printf("requeued %d failed %s job(s)\n", n, kind)
+		} else {
+			fmt.Printf("requeued %d failed job(s)\n", n)
+		}
 		return nil
 
 	case "reindex":

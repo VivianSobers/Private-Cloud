@@ -277,14 +277,21 @@ func (s *Store) ListFailed(ctx context.Context, limit int) ([]Job, error) {
 	return out, rows.Err()
 }
 
-// RetryFailed returns every dead-lettered job to the queue with a fresh attempt
+// RetryFailed returns dead-lettered jobs to the queue with a fresh attempt
 // budget — the escape hatch after fixing whatever made them fail (a sidecar that
 // was down, say). Returns how many were requeued.
-func (s *Store) RetryFailed(ctx context.Context) (int64, error) {
+//
+// kind, when non-empty, restricts the retry to one job kind. That matters
+// because the reasons jobs fail are per-kind: a sidecar outage dead-letters
+// embeds and leaves extractions alone, and requeuing everything then re-runs
+// OCR that failed for its own, unfixed reason — burning the one spare core on
+// work that will fail again. An unfiltered retry is still available by passing
+// an empty kind, which is what "retry everything" should have to say explicitly.
+func (s *Store) RetryFailed(ctx context.Context, kind string) (int64, error) {
 	tag, err := s.pool.Exec(ctx, `
 		UPDATE jobs SET
 			state = 'queued', attempts = 0, run_after = now(), last_error = NULL, updated_at = now()
-		WHERE state = 'failed'`)
+		WHERE state = 'failed' AND ($1 = '' OR kind = $1)`, kind)
 	if err != nil {
 		return 0, err
 	}
