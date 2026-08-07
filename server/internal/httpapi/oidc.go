@@ -1,11 +1,14 @@
 package httpapi
 
 import (
+	"crypto/hmac"
 	"crypto/rand"
+	"crypto/sha256"
 	"crypto/subtle"
 	"encoding/base64"
 	"encoding/json"
 	"net/http"
+	"strings"
 
 	"golang.org/x/oauth2"
 
@@ -37,8 +40,17 @@ type oidcFlow struct {
 
 func randToken() string {
 	b := make([]byte, 32)
+	// crypto/rand.Read never returns an error; since Go 1.24 it panics rather
+	// than handing back weak bytes, which is the correct failure for a CSRF token.
 	_, _ = rand.Read(b)
 	return base64.RawURLEncoding.EncodeToString(b)
+}
+
+// newFlowKey mints the HMAC key for the login-flow cookie.
+func newFlowKey() []byte {
+	k := make([]byte, 32)
+	_, _ = rand.Read(k)
+	return k
 }
 
 // handleOIDCLogin starts the flow: it mints state (CSRF), nonce (token replay)
@@ -50,11 +62,10 @@ func (s *Server) handleOIDCLogin(w http.ResponseWriter, r *http.Request) {
 	}
 
 	flow := oidcFlow{State: randToken(), Nonce: randToken(), Verifier: oauth2.GenerateVerifier()}
-	blob, _ := json.Marshal(flow)
 
 	http.SetCookie(w, &http.Cookie{
 		Name:     oidcFlowCookie,
-		Value:    base64.RawURLEncoding.EncodeToString(blob),
+		Value:    s.sealOIDCFlow(flow),
 		Path:     "/api/v1/auth/oidc",
 		HttpOnly: true,
 		Secure:   s.cookieSecure,
@@ -119,16 +130,52 @@ func (s *Server) handleOIDCCallback(w http.ResponseWriter, r *http.Request) {
 	http.Redirect(w, r, postLoginURL, http.StatusFound)
 }
 
-// readOIDCFlow decodes the flow cookie.
+// sealOIDCFlow encodes the flow and authenticates it with an HMAC.
+//
+// The state/query comparison in the callback is a CSRF defence only if the
+// cookie side cannot be chosen by the attacker. Unsigned, it was just base64
+// JSON: anyone able to set a cookie on the victim's browser — a sibling
+// subdomain, a network position on plain HTTP, a stray XSS — could plant a flow
+// whose state matches a login THEY started, and silently sign the victim in as
+// the attacker. Everything the victim then files goes into the attacker's
+// account.
+//
+// Signing makes the cookie unforgeable without the key, so the state check
+// compares two values that both originate here.
+func (s *Server) sealOIDCFlow(flow oidcFlow) string {
+	blob, _ := json.Marshal(flow)
+	mac := hmac.New(sha256.New, s.oidcFlowKey)
+	mac.Write(blob)
+	return base64.RawURLEncoding.EncodeToString(blob) + "." +
+		base64.RawURLEncoding.EncodeToString(mac.Sum(nil))
+}
+
+// readOIDCFlow decodes the flow cookie and verifies its signature.
 func (s *Server) readOIDCFlow(r *http.Request) (oidcFlow, bool) {
 	c, err := r.Cookie(oidcFlowCookie)
 	if err != nil {
 		return oidcFlow{}, false
 	}
-	raw, err := base64.RawURLEncoding.DecodeString(c.Value)
+	encoded, sig, ok := strings.Cut(c.Value, ".")
+	if !ok {
+		return oidcFlow{}, false
+	}
+	raw, err := base64.RawURLEncoding.DecodeString(encoded)
 	if err != nil {
 		return oidcFlow{}, false
 	}
+	got, err := base64.RawURLEncoding.DecodeString(sig)
+	if err != nil {
+		return oidcFlow{}, false
+	}
+	mac := hmac.New(sha256.New, s.oidcFlowKey)
+	mac.Write(raw)
+	// Constant time, like every other secret comparison here: the signature is
+	// checked before the contents are trusted at all.
+	if !hmac.Equal(got, mac.Sum(nil)) {
+		return oidcFlow{}, false
+	}
+
 	var flow oidcFlow
 	if err := json.Unmarshal(raw, &flow); err != nil {
 		return oidcFlow{}, false

@@ -48,6 +48,14 @@ type Server struct {
 	// paths are entirely unaffected.
 	oidc *auth.OIDCProvider
 
+	// oidcFlowKey authenticates the short-lived login-flow cookie, so the state
+	// the callback compares against cannot be planted by whoever can set a cookie
+	// on the victim's browser. Minted per process rather than persisted: the
+	// cookie lives ten minutes and exists only between the redirect out and the
+	// redirect back, so the worst a restart costs is one login retry — cheaper
+	// than another secret to manage and rotate.
+	oidcFlowKey []byte
+
 	// Guards the auth endpoints against online guessing. 20/min with a burst
 	// of 10 is invisible to a human signing in and useless to a script.
 	authLimiter *rateLimiter
@@ -91,6 +99,7 @@ func NewServer(log *slog.Logger, database *db.DB, m *metrics.Metrics, authSvc *a
 		// typist stays well inside this, while a scripted loop against the
 		// sidecar is bounded.
 		searchLimiter: newRateLimiter(120, 30),
+		oidcFlowKey:   newFlowKey(),
 	}
 }
 
