@@ -36,6 +36,7 @@ import (
 	"github.com/guru-bharadwaj20/private-cloud/server/internal/cas"
 	"github.com/guru-bharadwaj20/private-cloud/server/internal/db"
 	"github.com/guru-bharadwaj20/private-cloud/server/internal/files"
+	"github.com/guru-bharadwaj20/private-cloud/server/internal/jobs"
 	"github.com/guru-bharadwaj20/private-cloud/server/internal/shares"
 )
 
@@ -59,6 +60,9 @@ func usage() {
   fsck [--repair]                 compare the blob store against the database
   gc                              purge expired trash and unreferenced blobs
   migrate-blobs [--limit=N] [--all]  rewrite Phase 1 whole-file blobs as chunks
+  jobs stats                      show background job queue depth by state
+  jobs failed [--limit=N]         list dead-lettered jobs and their errors
+  jobs retry                      requeue all dead-lettered jobs
 
 Requires PC_DATABASE_URL in the environment.
 fsck, gc and migrate-blobs also require PC_BLOB_PATH.
@@ -131,6 +135,8 @@ func run() error {
 		return gcCommand(ctx, database, log)
 	case "migrate-blobs":
 		return migrateCommand(ctx, database, log, args[1:])
+	case "jobs":
+		return jobsCommand(ctx, database, args[1:])
 	case "help", "-h", "--help":
 		usage()
 		return nil
@@ -484,6 +490,81 @@ func migrateCommand(ctx context.Context, database *db.DB, log *slog.Logger, args
 		return fmt.Errorf("%d version(s) could not be migrated; run cloudctl fsck", total.Failed)
 	}
 	return nil
+}
+
+// jobsCommand inspects and repairs the background job queue — the operator side
+// of the metrics and the JobsDeadLettering alert.
+func jobsCommand(ctx context.Context, database *db.DB, args []string) error {
+	if len(args) == 0 {
+		return fmt.Errorf("usage: cloudctl jobs <stats|failed|retry>")
+	}
+	store := jobs.NewStore(database.Pool)
+
+	switch args[0] {
+	case "stats":
+		stats, err := store.Stats(ctx)
+		if err != nil {
+			return err
+		}
+		w := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
+		fmt.Fprintln(w, "STATE\tCOUNT")
+		for _, s := range []string{jobs.StateQueued, jobs.StateRunning, jobs.StateDone, jobs.StateFailed} {
+			fmt.Fprintf(w, "%s\t%d\n", s, stats[s])
+		}
+		return w.Flush()
+
+	case "failed":
+		limit := 100
+		for _, a := range args[1:] {
+			if strings.HasPrefix(a, "--limit=") {
+				n, err := strconv.Atoi(strings.TrimPrefix(a, "--limit="))
+				if err != nil || n <= 0 {
+					return fmt.Errorf("--limit must be a positive integer")
+				}
+				limit = n
+			}
+		}
+		failed, err := store.ListFailed(ctx, limit)
+		if err != nil {
+			return err
+		}
+		if len(failed) == 0 {
+			fmt.Println("no failed jobs")
+			return nil
+		}
+		w := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
+		fmt.Fprintln(w, "KIND\tNODE\tATTEMPTS\tCREATED\tERROR")
+		for _, j := range failed {
+			node := "-"
+			if j.NodeID != nil {
+				node = j.NodeID.String()[:8]
+			}
+			fmt.Fprintf(w, "%s\t%s\t%d/%d\t%s\t%s\n",
+				j.Kind, node, j.Attempts, j.MaxAttempts,
+				j.CreatedAt.Format("2006-01-02 15:04"), truncate(j.LastError, 80))
+		}
+		return w.Flush()
+
+	case "retry":
+		n, err := store.RetryFailed(ctx)
+		if err != nil {
+			return err
+		}
+		fmt.Printf("requeued %d failed job(s)\n", n)
+		return nil
+
+	default:
+		return fmt.Errorf("unknown jobs subcommand %q", args[0])
+	}
+}
+
+// truncate shortens a string for single-line tabular output.
+func truncate(s string, max int) string {
+	s = strings.ReplaceAll(s, "\n", " ")
+	if len(s) > max {
+		return s[:max-1] + "…"
+	}
+	return s
 }
 
 func humanBytes(n int64) string {
