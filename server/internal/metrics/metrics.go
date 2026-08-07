@@ -41,6 +41,12 @@ type Metrics struct {
 	// Old versions retired by the retention policy. Watching it climb confirms
 	// history is actually being bounded rather than accumulating unnoticed.
 	VersionsPruned prometheus.Counter
+
+	// Jobs is the background queue depth by state, polled from the database. A
+	// rising 'queued' means the worker is behind or stopped; a nonzero 'failed'
+	// means jobs are dead-lettering and deserve a look. This is how the OCR/embed
+	// pipeline becomes observable without the worker exposing its own endpoint.
+	Jobs *prometheus.GaugeVec
 }
 
 // New builds a dedicated registry rather than using the global default. A
@@ -121,6 +127,10 @@ func New(version, commit string, poolStats func() float64) *Metrics {
 			Name: "privatecloud_versions_pruned_total",
 			Help: "Old file versions removed by the retention policy.",
 		}),
+		Jobs: prometheus.NewGaugeVec(prometheus.GaugeOpts{
+			Name: "privatecloud_jobs",
+			Help: "Background job queue depth by state (queued, running, done, failed).",
+		}, []string{"state"}),
 	}
 
 	m.DBPoolAcquired = prometheus.NewGaugeFunc(
@@ -145,6 +155,7 @@ func New(version, commit string, poolStats func() float64) *Metrics {
 		m.MigratedVersions,
 		m.MigratedBytes,
 		m.VersionsPruned,
+		m.Jobs,
 		// Go runtime and process metrics: GC pressure, goroutine count, open
 		// FDs. The first two are how you spot a leak before it becomes an
 		// outage.
