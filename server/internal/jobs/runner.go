@@ -84,7 +84,10 @@ func (r *Runner) Run(ctx context.Context) error {
 			} else if n > 0 {
 				r.log.Warn("reclaimed stale jobs from a crashed worker", "count", n)
 			}
-			continue
+			// Fall through to the work step rather than continuing. Reaping is
+			// housekeeping that takes milliseconds; skipping a claim for it means
+			// a reaper tick costs the queue a whole idle interval, and the jobs
+			// just returned to 'queued' wait longer than anything else would.
 		default:
 		}
 
