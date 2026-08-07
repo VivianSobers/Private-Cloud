@@ -19,6 +19,14 @@ func TestSecurityHeadersPresent(t *testing.T) {
 	if got := rec.Header().Get("Referrer-Policy"); got != "no-referrer" {
 		t.Errorf("Referrer-Policy = %q, want no-referrer", got)
 	}
+	// The API serves JSON: nothing it returns should be able to load a script,
+	// frame a page, submit a form or retarget relative URLs.
+	csp := rec.Header().Get("Content-Security-Policy")
+	for _, want := range []string{"default-src 'none'", "frame-ancestors 'none'", "form-action 'none'", "base-uri 'none'"} {
+		if !strings.Contains(csp, want) {
+			t.Errorf("Content-Security-Policy = %q, want it to contain %q", csp, want)
+		}
+	}
 }
 
 // A metadata endpoint refuses an oversized JSON body rather than buffering it —

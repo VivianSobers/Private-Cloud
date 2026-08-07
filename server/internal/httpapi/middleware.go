@@ -209,6 +209,14 @@ func withSecurityHeaders(next http.Handler) http.Handler {
 		h.Set("X-Frame-Options", "DENY")
 		// Do not leak API URLs (which can carry ids) in a Referer to any origin.
 		h.Set("Referrer-Policy", "no-referrer")
+		// A baseline CSP for everything that is not a file download. The API
+		// serves JSON, so nothing here legitimately loads a script, frames a
+		// page or submits a form — saying so turns any future reflected-content
+		// bug into a blocked request rather than an executed one. The download
+		// path sets its own, stricter policy (default-src 'none'; sandbox) and
+		// Set here would be overwritten by it, which is the intended precedence.
+		h.Set("Content-Security-Policy",
+			"default-src 'none'; frame-ancestors 'none'; form-action 'none'; base-uri 'none'")
 		next.ServeHTTP(w, r)
 	})
 }
