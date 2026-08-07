@@ -7,6 +7,52 @@ import (
 	"time"
 )
 
+// X-Forwarded-For is believed from a trusted peer and ignored from anyone else.
+func TestClientIPTrustedProxyOnly(t *testing.T) {
+	trusted := mustPrefixes("127.0.0.0/8", "10.0.0.0/8")
+
+	req := func(remote, xff string) *http.Request {
+		r := httptest.NewRequest("GET", "/", nil)
+		r.RemoteAddr = remote
+		if xff != "" {
+			r.Header.Set("X-Forwarded-For", xff)
+		}
+		return r
+	}
+
+	cases := []struct {
+		name, remote, xff, want string
+	}{
+		// Caddy on the private network: believe what it observed.
+		{"trusted peer", "10.0.0.5:1234", "203.0.113.9", "203.0.113.9"},
+		// A forged chain: only the rightmost untrusted hop counts, so the
+		// attacker-supplied entries on the left cannot mint a fresh bucket.
+		{"forged chain", "10.0.0.5:1234", "1.1.1.1, 2.2.2.2, 203.0.113.9", "203.0.113.9"},
+		// Further trusted hops are walked past.
+		{"proxy chain", "127.0.0.1:1", "203.0.113.9, 10.0.0.7", "203.0.113.9"},
+		// Direct from a routable address: the header is not believed at all.
+		{"untrusted peer", "198.51.100.4:5555", "203.0.113.9", "198.51.100.4"},
+		// Nothing usable in the header falls back to the peer.
+		{"garbage header", "10.0.0.5:1234", "not-an-ip", "10.0.0.5"},
+		{"no header", "10.0.0.5:1234", "", "10.0.0.5"},
+	}
+	for _, c := range cases {
+		if got := clientIPFrom(req(c.remote, c.xff), trusted); got != c.want {
+			t.Errorf("%s: clientIP = %q, want %q", c.name, got, c.want)
+		}
+	}
+}
+
+// An empty trusted set must never believe the header.
+func TestClientIPNoTrustedProxies(t *testing.T) {
+	r := httptest.NewRequest("GET", "/", nil)
+	r.RemoteAddr = "10.0.0.5:1234"
+	r.Header.Set("X-Forwarded-For", "203.0.113.9")
+	if got := clientIPFrom(r, nil); got != "10.0.0.5" {
+		t.Errorf("clientIP = %q, want the peer address", got)
+	}
+}
+
 func TestRateLimiterAllowsBurstThenBlocks(t *testing.T) {
 	// 60/min = 1/sec, burst 5.
 	rl := newRateLimiter(60, 5)
