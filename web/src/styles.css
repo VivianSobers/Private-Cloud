@@ -333,3 +333,22 @@ dialog::backdrop {
   text-align: center;
   color: var(--fg-muted);
 }
+
+/* Tag chips (Tags dialog). Uses the same palette variables as the rest of the UI
+   so it tracks the light/dark theme automatically. */
+.tag {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.3rem;
+  padding: 0.1rem 0.55rem;
+  border-radius: 999px;
+  background: var(--bg-subtle);
+  border: 1px solid var(--border);
+  font-size: 0.85rem;
+  white-space: nowrap;
+}
+.tag button.link {
+  padding: 0;
+  line-height: 1;
+  font-size: 1rem;
+}
