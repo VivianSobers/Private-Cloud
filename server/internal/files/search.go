@@ -53,6 +53,24 @@ func ClampSearchLimit(limit int) int {
 	return limit
 }
 
+// clampOffset keeps a caller-supplied paging offset inside what SQL accepts.
+//
+// A negative OFFSET is a Postgres ERROR, not an empty page, so an unchecked
+// value turns a caller's paging mistake into a 500. SearchQuery.Offset is an
+// exported field and NodesByTag takes a plain int, so any in-process caller can
+// supply one — the guard belongs here at the store boundary, not in whichever
+// handler happens to parse the query string today.
+//
+// Only negatives are corrected. A very large offset is left alone: it costs a
+// scan and returns an empty page, which is honest, whereas capping it would
+// silently serve the wrong page.
+func clampOffset(offset int) int {
+	if offset < 0 {
+		return 0
+	}
+	return offset
+}
+
 // SearchResult is a node plus why it matched.
 type SearchResult struct {
 	*Node
@@ -127,7 +145,7 @@ func (s *Store) Search(ctx context.Context, ownerID uuid.UUID, q SearchQuery) ([
 		sql += fmt.Sprintf(` AND n.path LIKE $%d`, len(args))
 	}
 
-	args = append(args, limit, q.Offset)
+	args = append(args, limit, clampOffset(q.Offset))
 	sql += fmt.Sprintf(`
 		ORDER BY
 			(n.name_fold = $2) DESC,

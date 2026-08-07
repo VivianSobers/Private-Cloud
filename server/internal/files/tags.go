@@ -158,7 +158,7 @@ func (s *Store) NodesByTag(ctx context.Context, ownerID uuid.UUID, raw string, l
 		WHERE n.owner_id = $1 AND nt.tag = $2 AND n.trashed_at IS NULL
 		ORDER BY n.updated_at DESC
 		LIMIT $3 OFFSET $4`,
-		ownerID, normalizeTag(raw), limit, offset)
+		ownerID, normalizeTag(raw), limit, clampOffset(offset))
 	if err != nil {
 		return nil, err
 	}
