@@ -56,11 +56,12 @@ type Store struct {
 func NewStore(pool *pgxpool.Pool) *Store { return &Store{pool: pool} }
 
 // EnqueueOptions tunes a single enqueue.
+//
+// MaxAttempts and Delay used to live here and were never set by any caller. The
+// retry budget is uniform at defaultMaxAttempts and deferral is what Fail's
+// backoff already does, so both were configuration for a decision nothing makes.
+// Add them back when something needs them, with the caller that needs them.
 type EnqueueOptions struct {
-	// MaxAttempts overrides the default retry budget when > 0.
-	MaxAttempts int
-	// Delay defers the job's first eligibility by this much.
-	Delay time.Duration
 	// OwnerQueueCap, when > 0, refuses the enqueue if the owner already has this
 	// many queued jobs — a per-owner bound so one account cannot flood the single
 	// worker and starve everyone else's indexing.
@@ -69,6 +70,10 @@ type EnqueueOptions struct {
 
 // ErrOwnerQueueFull is returned when OwnerQueueCap would be exceeded.
 var ErrOwnerQueueFull = errors.New("owner has too many queued jobs")
+
+// defaultMaxAttempts is every job's retry budget. Matches the column default in
+// migration 00011; set explicitly here so the value is visible where it is used.
+const defaultMaxAttempts = 5
 
 // Enqueue adds a job, unless an identical (kind, node) job is already pending —
 // the unique partial index makes that a no-op rather than a duplicate, so a burst
@@ -87,20 +92,14 @@ func (s *Store) Enqueue(ctx context.Context, kind string, nodeID *uuid.UUID, own
 		}
 	}
 
-	maxAttempts := 5
-	if opts.MaxAttempts > 0 {
-		maxAttempts = opts.MaxAttempts
-	}
-	runAfter := time.Now().Add(opts.Delay)
-
 	var id uuid.UUID
 	err := s.pool.QueryRow(ctx, `
 		INSERT INTO jobs (kind, node_id, owner_id, max_attempts, run_after)
-		VALUES ($1, $2, $3, $4, $5)
+		VALUES ($1, $2, $3, $4, now())
 		ON CONFLICT (kind, node_id) WHERE state IN ('queued','running')
 		DO NOTHING
 		RETURNING id`,
-		kind, nodeID, ownerID, maxAttempts, runAfter).Scan(&id)
+		kind, nodeID, ownerID, defaultMaxAttempts).Scan(&id)
 	if errors.Is(err, pgx.ErrNoRows) {
 		// A pending job for this (kind, node) already exists: nothing to do.
 		return uuid.Nil, false, nil

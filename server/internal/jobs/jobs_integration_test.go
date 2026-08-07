@@ -205,8 +205,13 @@ func TestFailRetriesThenDeadLetters(t *testing.T) {
 	f := newJobsFixture(t)
 	ctx := context.Background()
 
-	id, _, err := f.store.Enqueue(ctx, f.kind, &f.nodeID, f.owner, EnqueueOptions{MaxAttempts: 2})
+	id, _, err := f.store.Enqueue(ctx, f.kind, &f.nodeID, f.owner, EnqueueOptions{})
 	if err != nil {
+		t.Fatal(err)
+	}
+	// Shorten the budget in SQL rather than through an option only this test
+	// would ever pass — the same way the test already advances run_after below.
+	if _, err := f.pool.Exec(ctx, `UPDATE jobs SET max_attempts = 2 WHERE id = $1`, id); err != nil {
 		t.Fatal(err)
 	}
 
@@ -290,8 +295,12 @@ func TestListAndRetryFailed(t *testing.T) {
 	f := newJobsFixture(t)
 	ctx := context.Background()
 
-	id, _, err := f.store.Enqueue(ctx, f.kind, &f.nodeID, f.owner, EnqueueOptions{MaxAttempts: 1})
+	id, _, err := f.store.Enqueue(ctx, f.kind, &f.nodeID, f.owner, EnqueueOptions{})
 	if err != nil {
+		t.Fatal(err)
+	}
+	// One attempt, so the first failure dead-letters immediately.
+	if _, err := f.pool.Exec(ctx, `UPDATE jobs SET max_attempts = 1 WHERE id = $1`, id); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := f.store.Claim(ctx, []string{f.kind}); err != nil {
@@ -379,7 +388,12 @@ func TestRunnerFailingHandlerDeadLetters(t *testing.T) {
 		return errors.New("handler exploded")
 	})
 
-	if _, _, err := f.store.Enqueue(ctx, f.kind, &f.nodeID, f.owner, EnqueueOptions{MaxAttempts: 1}); err != nil {
+	id, _, err := f.store.Enqueue(ctx, f.kind, &f.nodeID, f.owner, EnqueueOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	// One attempt, so a single failing step is enough to dead-letter it.
+	if _, err := f.pool.Exec(ctx, `UPDATE jobs SET max_attempts = 1 WHERE id = $1`, id); err != nil {
 		t.Fatal(err)
 	}
 	if worked, err := runner.step(ctx); err != nil || !worked {
