@@ -189,8 +189,27 @@ func (s *Store) Cursor() (int64, error) {
 // it have been applied, so a crash resumes from the last fully applied seq rather
 // than skipping the ones in flight.
 func (s *Store) SetCursor(seq int64) error {
+	return s.SetMeta(cursorKey, fmt.Sprintf("%d", seq))
+}
+
+// --- generic meta -----------------------------------------------------------
+
+// Meta returns a stored value and whether the key was present. It is how durable
+// client settings — the selective-sync set, say — survive a restart alongside the
+// change cursor.
+func (s *Store) Meta(key string) (string, bool, error) {
+	var v string
+	err := s.db.QueryRow(`SELECT value FROM meta WHERE key = ?`, key).Scan(&v)
+	if errors.Is(err, sql.ErrNoRows) {
+		return "", false, nil
+	}
+	return v, err == nil, err
+}
+
+// SetMeta upserts a value under a key.
+func (s *Store) SetMeta(key, value string) error {
 	_, err := s.db.Exec(`
 		INSERT INTO meta (key, value) VALUES (?, ?)
-		ON CONFLICT(key) DO UPDATE SET value = excluded.value`, cursorKey, seq)
+		ON CONFLICT(key) DO UPDATE SET value = excluded.value`, key, value)
 	return err
 }
