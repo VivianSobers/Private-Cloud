@@ -3,8 +3,10 @@ package jobs
 import (
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"log/slog"
+	"runtime/debug"
 	"time"
 )
 
@@ -124,10 +126,30 @@ func (r *Runner) step(ctx context.Context) (bool, error) {
 		return true, r.store.Fail(ctx, j.ID, errors.New("no handler for kind "+j.Kind))
 	}
 
-	if herr := h(ctx, j); herr != nil {
+	if herr := r.dispatch(ctx, h, j); herr != nil {
 		r.log.Warn("job failed", "id", j.ID, "kind", j.Kind, "attempt", j.Attempts, "error", herr)
 		return true, r.store.Fail(ctx, j.ID, herr)
 	}
 	r.log.Info("job done", "id", j.ID, "kind", j.Kind)
 	return true, r.store.Complete(ctx, j.ID)
+}
+
+// dispatch runs a handler, turning a panic into an ordinary job failure.
+//
+// The API has withRecovery for exactly this reason; the worker had nothing, so
+// one nil dereference in any handler killed the process. That is worse here than
+// in the API: the claimed job stays 'running' until its lease expires, and with a
+// restart policy in front, a poison-pill job becomes a crash loop that takes the
+// whole lease-and-retry budget to work through. Failing the job instead lets
+// backoff and dead-lettering do their job, and leaves the stack in the log.
+func (r *Runner) dispatch(ctx context.Context, h Handler, j Job) (err error) {
+	defer func() {
+		if rec := recover(); rec != nil {
+			r.log.Error("panic in job handler",
+				"id", j.ID, "kind", j.Kind, "node", j.NodeID,
+				"error", rec, "stack", string(debug.Stack()))
+			err = fmt.Errorf("panic in handler: %v", rec)
+		}
+	}()
+	return h(ctx, j)
 }
