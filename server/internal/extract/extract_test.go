@@ -27,8 +27,9 @@ func TestExtractRejectsBinaryAndUnknown(t *testing.T) {
 	e := New()
 
 	// A binary payload mislabelled as text is not indexed as mojibake.
-	if _, err := e.Extract(context.Background(), "text/plain", bytes.NewReader([]byte{0xff, 0xfe, 0x00, 0x01})); !errors.Is(err, ErrUnsupported) {
-		t.Errorf("invalid utf-8 text: err = %v, want ErrUnsupported", err)
+	// An extractor ran and this type is supported; there is just nothing to index.
+	if _, err := e.Extract(context.Background(), "text/plain", bytes.NewReader([]byte{0xff, 0xfe, 0x00, 0x01})); !errors.Is(err, ErrNoText) {
+		t.Errorf("invalid utf-8 text: err = %v, want ErrNoText", err)
 	}
 	// An unhandled type has nothing to extract.
 	if _, err := e.Extract(context.Background(), "application/octet-stream", strings.NewReader("x")); !errors.Is(err, ErrUnsupported) {

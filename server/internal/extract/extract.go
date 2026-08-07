@@ -101,7 +101,13 @@ func (e *Extractor) Extract(ctx context.Context, contentType string, r io.Reader
 // mojibake that matches nothing a person would search for.
 func (e *Extractor) extractText(data []byte) (Result, error) {
 	if !utf8.Valid(data) {
-		return Result{}, ErrUnsupported
+		// ErrNoText, not ErrUnsupported: an extractor DID run and this content
+		// type IS supported — there is simply nothing here worth indexing. The
+		// handler treats both as "job complete", but the distinction is what the
+		// two sentinels are for, and a future caller that tells them apart (a
+		// "why was this not indexed?" view, say) would otherwise be told this
+		// file's type has no extractor, which is false.
+		return Result{}, ErrNoText
 	}
 	text := clean(string(data))
 	if text == "" {
