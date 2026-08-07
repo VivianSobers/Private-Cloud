@@ -44,6 +44,9 @@ export function Browser() {
   const [hits, setHits] = useState<SearchHit[] | null>(null);
   const [searchScoped, setSearchScoped] = useState(false);
   const [semantic, setSemantic] = useState(false);
+  // True when a semantic query was asked for but answered lexically, so the
+  // results can be labelled honestly rather than passing for what was requested.
+  const [semanticFellBack, setSemanticFellBack] = useState(false);
 
   const fileInput = useRef<HTMLInputElement>(null);
 
@@ -79,21 +82,38 @@ export function Browser() {
     let cancelled = false;
     const under = searchScoped ? folder?.path : undefined;
     const timer = setTimeout(() => {
-      void api
-        .search(text, { under, semantic })
-        .then((res) => {
-          if (!cancelled) setHits(res.results);
-        })
-        .catch((err) => {
-          // Semantic search is optional; if no sidecar is configured the server
-          // answers 503. Fall back to lexical search rather than showing an error.
+      void (async () => {
+        try {
+          const res = await api.search(text, { under, semantic });
+          if (cancelled) return;
+          setHits(res.results);
+          setSemanticFellBack(false);
+          setError(null);
+        } catch (err) {
+          // Semantic search is optional; without a sidecar the server answers
+          // 503. Fall back to lexical rather than showing an error — but SAY so.
+          // Silently serving lexical results under a ticked "Semantic" box tells
+          // the user their query was understood by meaning when it was not, and
+          // the difference is the whole reason the toggle exists.
           if (semantic && err instanceof ApiError && err.status === 503) {
-            return api.search(text, { under }).then((res) => {
-              if (!cancelled) setHits(res.results);
-            });
+            try {
+              const res = await api.search(text, { under });
+              if (cancelled) return;
+              setHits(res.results);
+              setSemanticFellBack(true);
+              setError(null);
+              return;
+            } catch (fallbackErr) {
+              // The lexical retry failed too. Previously this rejection had no
+              // catch at all and surfaced as an unhandled promise rejection.
+              if (cancelled) return;
+              setError(describeSearchError(fallbackErr));
+              return;
+            }
           }
-          if (!cancelled) setError(err instanceof ApiError ? err.message : String(err));
-        });
+          if (!cancelled) setError(describeSearchError(err));
+        }
+      })();
     }, 200);
 
     return () => {
@@ -101,6 +121,12 @@ export function Browser() {
       clearTimeout(timer);
     };
   }, [query, searchScoped, folder?.path, semantic]);
+
+  // Errors from search are shown in place of results, so they need to read as
+  // sentences rather than as an error code.
+  function describeSearchError(err: unknown): string {
+    return err instanceof ApiError ? err.message : String(err);
+  }
 
   const reload = useCallback(() => {
     if (folder) void load(folder.id);
@@ -244,6 +270,13 @@ export function Browser() {
           by meaning
         </label>
       </div>
+
+      {semanticFellBack && (
+        <div className="banner small">
+          Search by meaning is not available on this server right now — these are
+          ordinary keyword results.
+        </div>
+      )}
 
       <div
         className={dragOver ? "dropzone over" : "dropzone"}
