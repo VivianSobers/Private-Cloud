@@ -16,13 +16,17 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/google/uuid"
+
 	"github.com/guru-bharadwaj20/private-cloud/server/internal/auth"
 	"github.com/guru-bharadwaj20/private-cloud/server/internal/blob"
 	"github.com/guru-bharadwaj20/private-cloud/server/internal/cas"
 	"github.com/guru-bharadwaj20/private-cloud/server/internal/config"
 	"github.com/guru-bharadwaj20/private-cloud/server/internal/db"
+	"github.com/guru-bharadwaj20/private-cloud/server/internal/extract"
 	"github.com/guru-bharadwaj20/private-cloud/server/internal/files"
 	"github.com/guru-bharadwaj20/private-cloud/server/internal/httpapi"
+	"github.com/guru-bharadwaj20/private-cloud/server/internal/jobs"
 	"github.com/guru-bharadwaj20/private-cloud/server/internal/metrics"
 	"github.com/guru-bharadwaj20/private-cloud/server/internal/shares"
 )
@@ -159,6 +163,12 @@ func run() error {
 		return fmt.Errorf("content-addressed store: %w", err)
 	}
 	filesSvc.SetCAS(casStore)
+
+	// A file that lands is scheduled for background text extraction. The enqueue is
+	// a cheap DB insert into the job queue; the pcworker process drains it. This is
+	// strictly additive — with no worker running, jobs simply queue, and the file
+	// API is unchanged.
+	filesSvc.SetEnqueuer(extractEnqueuer{store: jobs.NewStore(database.Pool), log: log})
 
 	// The public share plane. It depends on files (serving a share opens the
 	// owner's content), never the reverse.
@@ -340,6 +350,23 @@ func runMigration(ctx context.Context, svc *files.Service, m *metrics.Metrics, i
 					"failed", res.Failed)
 			}
 		}
+	}
+}
+
+// extractEnqueuer adapts the job queue to the file service's Enqueuer interface,
+// scheduling text extraction when a file is stored. Best effort: a failed enqueue
+// is logged, never propagated, so it cannot fail an upload.
+type extractEnqueuer struct {
+	store *jobs.Store
+	log   *slog.Logger
+}
+
+func (e extractEnqueuer) EnqueueExtract(ctx context.Context, nodeID, ownerID uuid.UUID) {
+	// A per-owner cap so one account cannot flood the single worker; the
+	// unique-pending index already prevents duplicate work for one file.
+	if _, _, err := e.store.Enqueue(ctx, extract.Kind, &nodeID, ownerID,
+		jobs.EnqueueOptions{OwnerQueueCap: 50000}); err != nil {
+		e.log.Warn("enqueue extraction failed", "node", nodeID, "error", err)
 	}
 }
 
