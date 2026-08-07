@@ -68,5 +68,6 @@ func (s *Service) PutManifestFile(ctx context.Context, ownerID, parentID uuid.UU
 		}
 		return nil, err
 	}
+	s.scheduleExtract(ctx, node)
 	return node, nil
 }

@@ -60,6 +60,35 @@ type Service struct {
 	// offline longer than this re-syncs from scratch — signalled by the changes
 	// endpoint's reset flag — rather than the journal growing without limit.
 	ChangeRetention time.Duration
+
+	// enqueue schedules background text extraction for a newly stored file.
+	// Optional: nil means no worker is wired, and uploads behave exactly as
+	// before — the intelligence layer is strictly additive.
+	enqueue Enqueuer
+}
+
+// Enqueuer schedules deferred work for a stored file. Defined here rather than
+// imported from the jobs package so files stays free of that dependency; the API
+// wires a concrete adapter. A best-effort contract: it must not fail or block the
+// upload, so it takes no error return and logs its own problems.
+type Enqueuer interface {
+	EnqueueExtract(ctx context.Context, nodeID, ownerID uuid.UUID)
+}
+
+// SetEnqueuer wires background extraction. Called at startup when a worker is
+// configured; left unset otherwise.
+func (s *Service) SetEnqueuer(e Enqueuer) { s.enqueue = e }
+
+// scheduleExtract enqueues extraction for a freshly stored file, best effort. A
+// missed enqueue means the file is not searchable by its text until it is next
+// written — never a failed upload.
+func (s *Service) scheduleExtract(ctx context.Context, node *Node) {
+	if s.enqueue == nil || node == nil || !node.IsFile() {
+		return
+	}
+	// Detached from the request's cancellation: a client disconnecting the instant
+	// after its upload succeeds must not drop the extraction that upload earned.
+	s.enqueue.EnqueueExtract(context.WithoutCancel(ctx), node.ID, node.OwnerID)
 }
 
 func NewService(store *Store, blobs blob.Store, log *slog.Logger) *Service {
@@ -162,6 +191,7 @@ func (s *Service) Upload(ctx context.Context, ownerID, parentID uuid.UUID, name 
 		}
 		return nil, err
 	}
+	s.scheduleExtract(ctx, node)
 	return node, nil
 }
 
@@ -184,6 +214,7 @@ func (s *Service) uploadViaCAS(ctx context.Context, ownerID, parentID uuid.UUID,
 		s.dropOrphanManifest(ctx, res)
 		return nil, err
 	}
+	s.scheduleExtract(ctx, node)
 	return node, nil
 }
 
