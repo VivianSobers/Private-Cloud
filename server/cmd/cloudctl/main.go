@@ -435,13 +435,48 @@ func gcCommand(ctx context.Context, database *db.DB, log *slog.Logger) error {
 	if err != nil {
 		return err
 	}
-	if v := os.Getenv("PC_TRASH_RETENTION"); v != "" {
+	// Every retention knob the API honours, not just one.
+	//
+	// Only PC_TRASH_RETENTION was read here, so the others silently fell back to
+	// the NewService defaults. An operator who set PC_KEEP_VERSIONS=100 in .env
+	// and then ran `cloudctl gc` by hand got pruning at 25 — the command
+	// destroying history the running server was configured to keep, with nothing
+	// in its output to say so.
+	for _, k := range []struct {
+		env string
+		set func(time.Duration)
+	}{
+		{"PC_TRASH_RETENTION", func(d time.Duration) { svc.TrashRetention = d }},
+		{"PC_VERSION_RETENTION", func(d time.Duration) { svc.VersionRetention = d }},
+		{"PC_CHANGE_RETENTION", func(d time.Duration) { svc.ChangeRetention = d }},
+		{"PC_UPLOAD_TTL", func(d time.Duration) { svc.UploadTTL = d }},
+	} {
+		v := os.Getenv(k.env)
+		if v == "" {
+			continue
+		}
 		d, err := time.ParseDuration(v)
 		if err != nil {
-			return fmt.Errorf("PC_TRASH_RETENTION: %w", err)
+			return fmt.Errorf("%s: %w", k.env, err)
 		}
-		svc.TrashRetention = d
+		if d <= 0 {
+			return fmt.Errorf("%s must be positive, got %q", k.env, v)
+		}
+		k.set(d)
 	}
+	if v := os.Getenv("PC_KEEP_VERSIONS"); v != "" {
+		n, err := strconv.Atoi(v)
+		if err != nil || n < 1 {
+			return fmt.Errorf("PC_KEEP_VERSIONS must be an integer of at least 1, got %q", v)
+		}
+		svc.KeepVersions = n
+	}
+
+	// Say what policy this run is about to apply, since it decides what gets
+	// deleted and the defaults are not obvious from the command line.
+	fmt.Printf("policy: trash %s, versions keep %d / %s, journal %s, uploads %s\n",
+		svc.TrashRetention, svc.KeepVersions, svc.VersionRetention,
+		svc.ChangeRetention, svc.UploadTTL)
 
 	sharesSvc := shares.NewService(shares.NewStore(database.Pool), svc, log)
 	staleShares, err := sharesSvc.CollectStale(ctx)
