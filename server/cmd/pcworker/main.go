@@ -60,10 +60,10 @@ func run() error {
 	slog.SetDefault(log)
 	log.Info("starting pcworker", "version", version, "commit", commit)
 
-	// The worker reads only what it needs — the database URL — rather than the
-	// API's full config, so it stays independent of WebAuthn and blob settings it
-	// has no use for. (The handlers that need blob access will read PC_BLOB_PATH
-	// when they are added.)
+	// The worker reads only what it needs rather than the API's full config, so it
+	// stays independent of the WebAuthn origins and cookie settings it has no use
+	// for. It shares the config package's env helpers, though, so an unparseable
+	// value is reported here exactly as it would be in the API.
 	dsn := os.Getenv("PC_DATABASE_URL")
 	if dsn == "" {
 		return fmt.Errorf("PC_DATABASE_URL is required")
@@ -88,8 +88,8 @@ func run() error {
 
 	store := jobs.NewStore(database.Pool)
 	runner := jobs.NewRunner(store, log, jobs.Options{
-		Idle:  envDuration("PC_WORKER_IDLE", 2*time.Second),
-		Lease: envDuration("PC_WORKER_LEASE", 10*time.Minute),
+		Idle:  config.EnvDuration("PC_WORKER_IDLE", 2*time.Second),
+		Lease: config.EnvDuration("PC_WORKER_LEASE", 10*time.Minute),
 	})
 
 	// The handlers need to read file content. Co-located here (same box as the blob
@@ -100,9 +100,14 @@ func run() error {
 		return err
 	}
 
-	go prune(ctx, store,
-		envDuration("PC_JOB_RETENTION", 7*24*time.Hour),
-		envDuration("PC_JOB_QUEUED_TTL", 30*24*time.Hour), log)
+	retention := config.EnvDuration("PC_JOB_RETENTION", 7*24*time.Hour)
+	queuedTTL := config.EnvDuration("PC_JOB_QUEUED_TTL", 30*24*time.Hour)
+	// Every duration above has now been read, so report any that failed to parse
+	// rather than running on a default the operator did not choose.
+	if err := config.TakeParseErrors(); err != nil {
+		return fmt.Errorf("config: %w", err)
+	}
+	go prune(ctx, store, retention, queuedTTL, log)
 
 	log.Info("pcworker draining queue")
 	if err := runner.Run(ctx); err != nil && ctx.Err() == nil {
@@ -255,16 +260,6 @@ func prune(ctx context.Context, store *jobs.Store, retention, queuedTTL time.Dur
 			}
 		}
 	}
-}
-
-func envDuration(key string, def time.Duration) time.Duration {
-	if v := os.Getenv(key); v != "" {
-		if d, err := time.ParseDuration(v); err == nil {
-			return d
-		}
-		slog.Warn("ignoring unparseable duration", "key", key, "value", v)
-	}
-	return def
 }
 
 func newLogger() *slog.Logger {

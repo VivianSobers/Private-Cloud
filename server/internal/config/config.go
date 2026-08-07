@@ -6,6 +6,7 @@
 package config
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -266,6 +267,11 @@ func Load() (*Config, error) {
 	}
 	c.Embed = embed
 
+	// Unparseable values first: a validate() message about a setting the operator
+	// never actually set is more confusing than the parse error that caused it.
+	if err := TakeParseErrors(); err != nil {
+		return nil, err
+	}
 	if err := c.validate(); err != nil {
 		return nil, err
 	}
@@ -421,6 +427,21 @@ func redactURL(raw string) string {
 	return raw[:scheme+3] + creds[:colon] + ":***" + raw[at:]
 }
 
+// The env helpers below are the single definition for the whole server: cmd/api
+// and cmd/pcworker each had their own near-copies, which disagreed with these on
+// the one thing that matters.
+//
+// An unparseable value is now REPORTED, not silently replaced by the default.
+// This package promises that a misconfigured server "should fail immediately and
+// loudly, not three hours later", and swallowing PC_DB_MAX_CONNS=ten broke that
+// promise in the quietest possible way: the server starts, works, and is running
+// settings the operator did not choose and has no way to see. The cmd/* copies
+// at least logged a warning; nothing here did even that.
+//
+// Errors accumulate in parseErrs so one pass reports every bad variable, rather
+// than making an operator fix them one restart at a time.
+var parseErrs []error
+
 func env(key, def string) string {
 	if v, ok := os.LookupEnv(key); ok && v != "" {
 		return v
@@ -435,6 +456,7 @@ func envInt(key string, def int) int {
 	}
 	n, err := strconv.Atoi(v)
 	if err != nil {
+		parseErrs = append(parseErrs, fmt.Errorf("%s must be an integer, got %q", key, v))
 		return def
 	}
 	return n
@@ -447,6 +469,7 @@ func envBool(key string, def bool) bool {
 	}
 	b, err := strconv.ParseBool(v)
 	if err != nil {
+		parseErrs = append(parseErrs, fmt.Errorf("%s must be true or false, got %q", key, v))
 		return def
 	}
 	return b
@@ -471,6 +494,13 @@ func envList(key string, def []string) []string {
 	return out
 }
 
+// EnvDuration reads a duration variable. Exported because cmd/pcworker needs it
+// for its own knobs (PC_WORKER_IDLE, PC_WORKER_LEASE, PC_JOB_RETENTION) and had
+// grown a private copy that silently ignored a bad value.
+func EnvDuration(key string, def time.Duration) time.Duration {
+	return envDuration(key, def)
+}
+
 func envDuration(key string, def time.Duration) time.Duration {
 	v, ok := os.LookupEnv(key)
 	if !ok || v == "" {
@@ -478,7 +508,19 @@ func envDuration(key string, def time.Duration) time.Duration {
 	}
 	d, err := time.ParseDuration(v)
 	if err != nil {
+		parseErrs = append(parseErrs, fmt.Errorf("%s must be a duration such as 30s or 24h, got %q", key, v))
 		return def
 	}
 	return d
+}
+
+// TakeParseErrors returns and clears the accumulated parse failures. Callers
+// that read settings outside Load — the worker — check this themselves.
+func TakeParseErrors() error {
+	if len(parseErrs) == 0 {
+		return nil
+	}
+	err := errors.Join(parseErrs...)
+	parseErrs = nil
+	return err
 }
