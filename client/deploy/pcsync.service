@@ -1,0 +1,50 @@
+# systemd USER service for the Private Cloud sync daemon.
+#
+# A user service, not a system one, on purpose: pcsync syncs one person's folder
+# with their own credential, and running it as the logged-in user keeps it out of
+# root's reach and inside that user's home and session. Install per user:
+#
+#   mkdir -p ~/.config/systemd/user ~/.config/pcsync
+#   cp client/deploy/pcsync.service ~/.config/systemd/user/
+#   cp client/config.example.json   ~/.config/pcsync/config.json   # then edit it
+#   systemctl --user daemon-reload
+#   systemctl --user enable --now pcsync
+#
+# Watch it:   journalctl --user -u pcsync -f
+#
+# To keep it running after you log out (a headless box, a desktop that sleeps):
+#   sudo loginctl enable-linger "$USER"
+
+[Unit]
+Description=Private Cloud sync daemon
+Documentation=https://github.com/guru-bharadwaj20/private-cloud
+# The daemon needs the network to reach the server; if it is not up yet it will
+# retry, but ordering after the network target avoids a noisy first failure.
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+# The binary and config path. Adjust ExecStart if you installed pcsync elsewhere.
+ExecStart=%h/.local/bin/pcsync -config %h/.config/pcsync/config.json
+# A dropped connection or a server restart should not stop syncing for good.
+Restart=on-failure
+RestartSec=10s
+# SIGTERM lets the daemon finish its current step and exit cleanly (see cmd/pcsync).
+KillSignal=SIGTERM
+TimeoutStopSec=30s
+
+# --- hardening ---
+# The daemon writes across the synced folder and its state DB, both under $HOME,
+# so $HOME must stay writable — ProtectSystem=true locks down /usr, /boot and /etc
+# without touching /home. ProtectHome and a strict read-only root are deliberately
+# NOT used: they would block the very writes syncing depends on.
+NoNewPrivileges=true
+ProtectSystem=true
+PrivateTmp=true
+ProtectKernelTunables=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+
+[Install]
+WantedBy=default.target

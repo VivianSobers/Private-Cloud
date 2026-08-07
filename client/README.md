@@ -71,6 +71,32 @@ contact; the password itself never touches the file endpoints. A device token
 can read and write your files but cannot manage account credentials — it cannot
 mint another app password, the same limit the app password itself has.
 
+## Run as a service (systemd)
+
+To keep syncing in the background across logins, install the provided **user**
+service — it runs as you, with your credential, syncing your folder:
+
+```bash
+go build -o ~/.local/bin/pcsync ./cmd/pcsync
+mkdir -p ~/.config/systemd/user ~/.config/pcsync
+cp client/deploy/pcsync.service ~/.config/systemd/user/
+cp client/config.example.json   ~/.config/pcsync/config.json   # then edit it
+systemctl --user daemon-reload
+systemctl --user enable --now pcsync
+journalctl --user -u pcsync -f                                 # watch it
+```
+
+On a headless box or a desktop that logs you out, let the service run without an
+active session:
+
+```bash
+sudo loginctl enable-linger "$USER"
+```
+
+The unit hardens the daemon (no new privileges, `/usr` and `/etc` read-only,
+private `/tmp`) while leaving your home tree writable — which is where both the
+synced folder and the state database live.
+
 ## Configuration
 
 | Key | Meaning | Default |
