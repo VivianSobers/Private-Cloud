@@ -1,0 +1,104 @@
+import { useCallback, useEffect, useState } from "react";
+
+import { ApiError, api, formatBytes, formatDate, type Node } from "./api";
+
+// Browse the whole library by tag: a cloud of every tag with its file count, and
+// the files under whichever tag is selected. The tags themselves come from the
+// worker (MIME + OCR) and from what users add by hand.
+export function TagBrowser({ onClose, onOpenFolder }: { onClose: () => void; onOpenFolder: (id: string) => void }) {
+  const [tags, setTags] = useState<{ tag: string; count: number }[]>([]);
+  const [selected, setSelected] = useState<string | null>(null);
+  const [nodes, setNodes] = useState<Node[]>([]);
+  const [error, setError] = useState<string | null>(null);
+  const [loading, setLoading] = useState(true);
+
+  useEffect(() => {
+    void api
+      .listTags()
+      .then((r) => setTags(r.tags))
+      .catch((err) => setError(err instanceof ApiError ? err.message : String(err)))
+      .finally(() => setLoading(false));
+  }, []);
+
+  const openTag = useCallback(async (tag: string) => {
+    setSelected(tag);
+    setError(null);
+    try {
+      setNodes((await api.tagNodes(tag)).nodes);
+    } catch (err) {
+      setError(err instanceof ApiError ? err.message : String(err));
+    }
+  }, []);
+
+  return (
+    <div className="stack">
+      <div className="row">
+        <strong>Browse by tag</strong>
+        <span style={{ flex: 1 }} />
+        <button onClick={onClose}>Back to files</button>
+      </div>
+
+      {error && <div className="banner error">{error}</div>}
+
+      {loading ? (
+        <p className="muted">Loading…</p>
+      ) : tags.length === 0 ? (
+        <p className="muted small">
+          No tags yet. The worker adds tags to files as it processes them, and you
+          can add your own from a file’s Tags dialog.
+        </p>
+      ) : (
+        <div className="row" style={{ flexWrap: "wrap", gap: "0.4rem" }}>
+          {tags.map((t) => (
+            <button
+              key={t.tag}
+              className={selected === t.tag ? "tag active" : "tag"}
+              onClick={() => void openTag(t.tag)}
+            >
+              {t.tag} <span className="muted small">{t.count}</span>
+            </button>
+          ))}
+        </div>
+      )}
+
+      {selected && (
+        <div className="stack">
+          <p className="muted small">Files tagged “{selected}”</p>
+          {nodes.length === 0 ? (
+            <div className="empty">No files under this tag.</div>
+          ) : (
+            <table className="listing">
+              <thead>
+                <tr>
+                  <th>Name</th>
+                  <th style={{ textAlign: "right" }}>Size</th>
+                  <th className="when" style={{ textAlign: "right" }}>
+                    Modified
+                  </th>
+                </tr>
+              </thead>
+              <tbody>
+                {nodes.map((n) => (
+                  <tr key={n.id}>
+                    <td className="name">
+                      {n.kind === "folder" ? (
+                        <button onClick={() => onOpenFolder(n.id)}>📁 {n.name}</button>
+                      ) : (
+                        <a href={api.downloadUrl(n.id)} target="_blank" rel="noreferrer">
+                          📄 {n.name}
+                        </a>
+                      )}
+                      <div className="muted small">{n.path}</div>
+                    </td>
+                    <td className="size">{n.kind === "file" ? formatBytes(n.size ?? 0) : "—"}</td>
+                    <td className="when">{formatDate(n.updated_at)}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}

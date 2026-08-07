@@ -352,3 +352,7 @@ dialog::backdrop {
   line-height: 1;
   font-size: 1rem;
 }
+.tag.active {
+  border-color: var(--accent);
+  color: var(--accent);
+}
