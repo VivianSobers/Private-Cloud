@@ -31,6 +31,17 @@ func normalizeTag(tag string) string {
 	return strings.ToLower(strings.TrimSpace(tag))
 }
 
+// hasControlChar reports whether a string contains an ASCII control character,
+// which has no place in a tag and is a classic injection vector on display.
+func hasControlChar(s string) bool {
+	for _, r := range s {
+		if r < 0x20 || r == 0x7f {
+			return true
+		}
+	}
+	return false
+}
+
 // SetAutoTags replaces a node's automatic tags, leaving user tags untouched. The
 // worker calls this by node id (it is trusted and already scoped the job to an
 // owner); user-facing mutations below verify ownership.
@@ -66,10 +77,9 @@ func (s *Store) SetAutoTags(ctx context.Context, nodeID uuid.UUID, tags []string
 // remove it.
 func (s *Store) AddUserTag(ctx context.Context, ownerID, nodeID uuid.UUID, raw string) error {
 	tag := normalizeTag(raw)
-	if tag == "" {
-		return ErrInvalidName
-	}
-	if len(tag) > maxTagLen {
+	if tag == "" || len(tag) > maxTagLen || hasControlChar(tag) {
+		// A control character in a tag is a log- or display-injection vector once
+		// the tag is echoed back; reject it at the door.
 		return ErrInvalidName
 	}
 	if err := s.assertOwnedLive(ctx, ownerID, nodeID); err != nil {
