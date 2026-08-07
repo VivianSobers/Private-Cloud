@@ -207,6 +207,48 @@ func (s *Store) DeleteFinished(ctx context.Context, retention time.Duration) (in
 	return tag.RowsAffected(), nil
 }
 
+// ListFailed returns dead-lettered jobs, newest first — the operator's view of
+// what the JobsDeadLettering alert is warning about.
+func (s *Store) ListFailed(ctx context.Context, limit int) ([]Job, error) {
+	if limit <= 0 || limit > 1000 {
+		limit = 100
+	}
+	rows, err := s.pool.Query(ctx, `
+		SELECT id, kind, node_id, owner_id, state, attempts, max_attempts, run_after, coalesce(last_error,''), created_at
+		FROM jobs WHERE state = 'failed'
+		ORDER BY updated_at DESC
+		LIMIT $1`, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var out []Job
+	for rows.Next() {
+		var j Job
+		if err := rows.Scan(&j.ID, &j.Kind, &j.NodeID, &j.OwnerID, &j.State,
+			&j.Attempts, &j.MaxAttempts, &j.RunAfter, &j.LastError, &j.CreatedAt); err != nil {
+			return nil, err
+		}
+		out = append(out, j)
+	}
+	return out, rows.Err()
+}
+
+// RetryFailed returns every dead-lettered job to the queue with a fresh attempt
+// budget — the escape hatch after fixing whatever made them fail (a sidecar that
+// was down, say). Returns how many were requeued.
+func (s *Store) RetryFailed(ctx context.Context) (int64, error) {
+	tag, err := s.pool.Exec(ctx, `
+		UPDATE jobs SET
+			state = 'queued', attempts = 0, run_after = now(), last_error = NULL, updated_at = now()
+		WHERE state = 'failed'`)
+	if err != nil {
+		return 0, err
+	}
+	return tag.RowsAffected(), nil
+}
+
 // Stats counts jobs by state, for metrics and operator visibility.
 func (s *Store) Stats(ctx context.Context) (map[string]int64, error) {
 	rows, err := s.pool.Query(ctx, `SELECT state, count(*) FROM jobs GROUP BY state`)
