@@ -687,12 +687,21 @@ func checkFlags(args []string, known ...string) error {
 }
 
 // truncate shortens a string for single-line tabular output.
+//
+// Counted and cut in RUNES, not bytes. A job's last_error is an arbitrary string
+// — a filename in the message, a provider's error, anything — so byte-slicing it
+// splits a multibyte character and prints a replacement glyph in the middle of
+// the one column an operator is reading to find out what broke.
 func truncate(s string, max int) string {
 	s = strings.ReplaceAll(s, "\n", " ")
-	if len(s) > max {
-		return s[:max-1] + "…"
+	if max <= 0 {
+		return ""
 	}
-	return s
+	r := []rune(s)
+	if len(r) <= max {
+		return s
+	}
+	return string(r[:max-1]) + "…"
 }
 
 func humanBytes(n int64) string {
