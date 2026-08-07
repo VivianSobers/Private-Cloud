@@ -207,6 +207,30 @@ func (s *Store) DeleteFinished(ctx context.Context, retention time.Duration) (in
 	return tag.RowsAffected(), nil
 }
 
+// DeleteStaleQueued drops jobs that have sat 'queued' longer than ttl without
+// ever being claimed.
+//
+// This is the backstop for a job kind no deployed worker handles. Claim filters
+// by the kinds a worker has registered, so a job whose handler exists on no box
+// is never claimed, never fails, and never reaches the done/failed states
+// DeleteFinished prunes — it accumulates one row per upload, forever. The
+// split-tier design makes that easy to hit: PC_ENABLE_SEMANTIC on the always-on
+// box enqueues embed jobs for a GPU worker that may never be deployed.
+//
+// Deleting queued work is lossy, so the caller logs it loudly: a nonzero count
+// means the queue is being fed work nothing drains, which is a deployment fault
+// to fix rather than a number to watch climb.
+func (s *Store) DeleteStaleQueued(ctx context.Context, ttl time.Duration) (int64, error) {
+	tag, err := s.pool.Exec(ctx, `
+		DELETE FROM jobs
+		WHERE state = 'queued' AND attempts = 0 AND created_at < now() - $1::interval`,
+		ttl.String())
+	if err != nil {
+		return 0, err
+	}
+	return tag.RowsAffected(), nil
+}
+
 // EnqueueForAllFiles inserts a job of `kind` for every live file, skipping any
 // file that already has one pending — the bulk re-index primitive behind
 // `cloudctl jobs reindex`, for rebuilding extracted text or embeddings after a

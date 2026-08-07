@@ -83,7 +83,9 @@ func run() error {
 		return err
 	}
 
-	go prune(ctx, store, envDuration("PC_JOB_RETENTION", 7*24*time.Hour), log)
+	go prune(ctx, store,
+		envDuration("PC_JOB_RETENTION", 7*24*time.Hour),
+		envDuration("PC_JOB_QUEUED_TTL", 30*24*time.Hour), log)
 
 	log.Info("pcworker draining queue")
 	if err := runner.Run(ctx); err != nil && ctx.Err() == nil {
@@ -164,8 +166,15 @@ func registerHandlers(runner *jobs.Runner, store *jobs.Store, database *db.DB, l
 	return nil
 }
 
-// prune periodically deletes finished jobs so the table does not grow forever.
-func prune(ctx context.Context, store *jobs.Store, retention time.Duration, log *slog.Logger) {
+// prune periodically deletes finished jobs so the table does not grow forever,
+// and drops jobs that have sat queued past queuedTTL without ever being claimed.
+//
+// The second sweep exists because a job kind no deployed worker registers is
+// never claimed and so never reaches done or failed — it would otherwise
+// accumulate one row per upload indefinitely. Dropping such work is lossy, so it
+// is logged at warn: the fix is to deploy the worker that handles that kind, not
+// to let the sweep keep swallowing it.
+func prune(ctx context.Context, store *jobs.Store, retention, queuedTTL time.Duration, log *slog.Logger) {
 	ticker := time.NewTicker(time.Hour)
 	defer ticker.Stop()
 	for {
@@ -177,6 +186,16 @@ func prune(ctx context.Context, store *jobs.Store, retention time.Duration, log 
 				log.Warn("prune finished jobs failed", "error", err)
 			} else if n > 0 {
 				log.Info("pruned finished jobs", "count", n)
+			}
+
+			if queuedTTL <= 0 {
+				continue
+			}
+			if n, err := store.DeleteStaleQueued(ctx, queuedTTL); err != nil {
+				log.Warn("prune stale queued jobs failed", "error", err)
+			} else if n > 0 {
+				log.Warn("dropped queued jobs no worker ever claimed; is a handler for their kind deployed?",
+					"count", n, "queued_ttl", queuedTTL.String())
 			}
 		}
 	}
