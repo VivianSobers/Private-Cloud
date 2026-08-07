@@ -260,6 +260,24 @@ second user does not mean hand-minting a passkey.
 - Provider config (issuer, client id/secret, allowed domains) is env/secret
   material like everything else, never committed.
 
+**Slice 4 OIDC notes, recorded where the next reader will look:**
+
+- Token verification is delegated to **go-oidc** (JWKS fetch, signature, iss/aud/
+  exp) rather than hand-rolled — a subtly wrong JWT check is exactly how an SSO
+  integration becomes an auth bypass. `oauth2` provides the code exchange and PKCE
+  helpers. Both are configured behind `PC_OIDC_*` env vars, read in `cmd/api`.
+- The three transient secrets — **state** (CSRF, compared constant-time against
+  the query param), **nonce** (bound into the ID token and checked after verify),
+  and the **PKCE verifier** — ride in one short-lived, HttpOnly, SameSite=Lax flow
+  cookie scoped to `/api/v1/auth/oidc`, single-use (cleared on callback).
+- OIDC **provisions its own users**, keyed by `(issuer, subject)` — the only
+  identifier a provider promises stable. It does NOT auto-link to a passkey
+  account by email, which removes email-reassignment account takeover as a risk.
+  Provisioned users are non-admin; the admin is still a passkey.
+- The endpoints are **absent in effect without config**: `404 oidc_disabled`, and
+  `/auth/status` advertises `oidc_enabled` so the login page shows an SSO button
+  only when it will work. Passkey, recovery and device-token paths are untouched.
+
 ---
 
 ## 8. Hardening pass (slice 5)
@@ -296,7 +314,7 @@ fully working with the worker turned off.
 | **2** | OCR / text extraction into `doc_text`, folded into the existing trigram search | ✅ content-addressed `doc_text` (extract once, shared by identical files); a pure `extract` package — text decode, tesseract-subprocess OCR with graceful skip when absent, best-effort PDF text layer; the `extract` job handler and its co-located content Opener; extraction enqueued on upload and folded into the same trigram search with a `matched_content` flag |
 | **3** | Semantic search: embeddings via an inference sidecar, brute-force cosine KNN | ✅ content-addressed `doc_embedding` (packed float32, no pgvector needed on stock Postgres); a pure `embed` package (vector math, chunking, sidecar HTTP client); the embed job chained after extraction; a Python sidecar (`deploy/embed-sidecar`) that runs the model on a GPU box; `GET /search?semantic=true` embeds the query and ranks by cosine, off cleanly when no sidecar is wired |
 | **3b** | Auto-tagging: MIME-category and keyword tags over extracted text, explainable and reversible | ✅ deterministic `Tags(mime, text)` — MIME category plus a small curated keyword vocabulary, no classifier; per-node `node_tags` (auto + user, `source`-tracked) where re-tagging replaces only auto tags and never a user's; applied in the extraction pass so every file is tagged; per-node tag CRUD, a tag list with counts, and filter-by-tag, with tags riding along in the node GET |
-| **4** | OIDC login alongside passkeys, opt-in and non-weakening | ⬜ |
+| **4** | OIDC login alongside passkeys, opt-in and non-weakening | ✅ authorization-code + PKCE via vetted `go-oidc`/`oauth2`; state (CSRF), nonce (replay) and PKCE all bound through a short-lived flow cookie; provisions its OWN users keyed by (issuer, subject), never auto-linking a passkey account by email; gates on verified email and an optional domain allowlist; OIDC users are non-admin (admin stays passkey-bootstrapped); a discovery failure disables SSO with a log line rather than aborting startup |
 | **5** | Hardening pass: abuse review of every post–Phase-1 endpoint, dep/secret audit, resource caps | ⬜ |
 
 ---
