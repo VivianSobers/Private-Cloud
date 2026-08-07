@@ -17,6 +17,7 @@ import (
 
 	"github.com/guru-bharadwaj20/private-cloud/server/internal/auth"
 	"github.com/guru-bharadwaj20/private-cloud/server/internal/db"
+	"github.com/guru-bharadwaj20/private-cloud/server/internal/embed"
 	"github.com/guru-bharadwaj20/private-cloud/server/internal/files"
 	"github.com/guru-bharadwaj20/private-cloud/server/internal/metrics"
 	"github.com/guru-bharadwaj20/private-cloud/server/internal/shares"
@@ -36,10 +37,20 @@ type Server struct {
 	cookieName   string
 	cookieSecure bool
 
+	// embedder is set when a semantic-search sidecar is configured; nil otherwise,
+	// in which case semantic queries are answered "unavailable" and lexical search
+	// is unaffected. It embeds the QUERY only — an RPC to the sidecar, never a
+	// resident model in this process.
+	embedder embed.Embedder
+
 	// Guards the auth endpoints against online guessing. 20/min with a burst
 	// of 10 is invisible to a human signing in and useless to a script.
 	authLimiter *rateLimiter
 }
+
+// SetEmbedder enables semantic search by wiring the query embedder. Left unset
+// when no inference sidecar is configured.
+func (s *Server) SetEmbedder(e embed.Embedder) { s.embedder = e }
 
 type Options struct {
 	Version      string

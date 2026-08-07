@@ -571,6 +571,14 @@ func contentDisposition(name string, forceDownload bool) string {
 func (s *Server) handleSearch(w http.ResponseWriter, r *http.Request) {
 	q := r.URL.Query()
 
+	// Semantic mode finds files by meaning rather than by a literal word. It needs
+	// the embedding sidecar; without it, lexical search still works, so this is a
+	// clean "unavailable" rather than a broken endpoint.
+	if q.Get("semantic") == "true" {
+		s.handleSemanticSearch(w, r)
+		return
+	}
+
 	query := files.SearchQuery{
 		Text:           q.Get("q"),
 		Kind:           q.Get("kind"),
@@ -609,6 +617,56 @@ func (s *Server) handleSearch(w http.ResponseWriter, r *http.Request) {
 		// aggregate over the same trigram scan to answer a question no client
 		// asks — "are there more" is what paging actually needs.
 		"has_more": len(out) == query.Limit,
+	})
+}
+
+// handleSemanticSearch answers a meaning-based query: embed the query text, then
+// rank the user's files by vector similarity.
+func (s *Server) handleSemanticSearch(w http.ResponseWriter, r *http.Request) {
+	if s.embedder == nil {
+		writeError(w, r, http.StatusServiceUnavailable, "semantic_unavailable",
+			"semantic search is not enabled on this server")
+		return
+	}
+
+	q := r.URL.Query()
+	text := strings.TrimSpace(q.Get("q"))
+	if len([]rune(text)) < 2 {
+		writeError(w, r, http.StatusBadRequest, "query_too_short", "search needs at least 2 characters")
+		return
+	}
+	limit := atoiDefault(q.Get("limit"), 50)
+
+	vecs, err := s.embedder.Embed(r.Context(), []string{text})
+	if err != nil || len(vecs) == 0 {
+		// The sidecar is down or misbehaving. Report unavailable rather than a 500:
+		// the feature is optional and the client can fall back to lexical search.
+		s.log.Warn("query embedding failed", "error", err, "request_id", RequestID(r.Context()))
+		writeError(w, r, http.StatusServiceUnavailable, "semantic_unavailable",
+			"semantic search is temporarily unavailable")
+		return
+	}
+
+	results, err := s.files.Store().SemanticSearch(r.Context(), CurrentUser(r.Context()).ID,
+		vecs[0], s.embedder.Model(), limit)
+	if err != nil {
+		s.serverError(w, r, "semantic search", err)
+		return
+	}
+
+	out := make([]map[string]any, 0, len(results))
+	for _, res := range results {
+		item := nodeJSON(res.Node)
+		item["semantic"] = true
+		item["score"] = res.Score
+		out = append(out, item)
+	}
+	writeJSON(w, r, http.StatusOK, map[string]any{
+		"query":    text,
+		"semantic": true,
+		"results":  out,
+		"count":    len(out),
+		"has_more": len(out) == limit,
 	})
 }
 
