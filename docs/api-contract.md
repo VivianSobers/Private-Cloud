@@ -304,9 +304,97 @@ existing, working path — push is a latency optimisation, never a correctness
 requirement. Any client must work with it switched off.
 
 ### Phase 7 — Multi-user & sharing
-- User-to-user share + shared-folder endpoints — TBD.
-- ACL-scoped variants of search/tags — TBD.
-- Admin: users, quotas, sessions, audit — TBD.
+
+> **The one phase with a compatibility hazard.** Everything today is
+> owner-scoped: every query filters `owner_id = $me`, and search and tags are
+> owner-global. Introducing "files I can see but do not own" widens what those
+> endpoints return. That is *additive in shape* — no field changes — but it is a
+> **semantic** change to existing endpoints, and it is the one place this
+> phase can break a client that assumed everything it saw was its own.
+>
+> Rule adopted here: **shared content is excluded from existing endpoints
+> unless the client opts in** with `?include_shared=true`. Default behaviour is
+> unchanged, so an old client keeps seeing exactly what it sees today. The
+> alternative — widening the default — would silently change the meaning of
+> `GET /nodes/{id}/children` and `/search` for every already-shipped client.
+
+**Grants.** A grant gives a user access to one node (and, for a folder,
+everything beneath it).
+
+| Route | Body / result |
+|---|---|
+| `GET /grants` | `{granted: [grant], received: [grant]}` — both directions |
+| `POST /nodes/{id}/grants` | `{username, role}` → `201 {grant}` |
+| `PATCH /grants/{id}` | `{role}` |
+| `DELETE /grants/{id}` | revoke; effective immediately |
+
+```json
+"grant": {
+  "id": "uuid", "node_id": "uuid", "path": "/work/shared",
+  "owner": "guru", "grantee": "vivian",
+  "role": "viewer|editor|owner",
+  "inherited_from": "uuid",
+  "created_at": "..."
+}
+```
+
+- Three roles only. `viewer` reads, `editor` reads and writes, `owner` is the
+  file's actual owner and cannot be granted away. Resist adding a fourth without
+  a concrete need — a permission model people cannot hold in their heads is one
+  they misconfigure.
+- Grants are **per node and inherit down a folder**. `inherited_from` names the
+  ancestor a grant came from, so a UI can explain *why* someone has access
+  instead of showing an unexplained entry.
+- A grant never moves or copies anything. The file stays in the owner's tree;
+  the grantee reaches it at `GET /shared` or with `?include_shared=true`.
+- Quota is charged to the **owner**, always. Otherwise sharing a folder would
+  let one user spend another's quota.
+
+**Reading shared content.**
+
+```
+GET /shared                          → {items: [node]} — roots granted to me
+GET /nodes/{id}/children?include_shared=true
+GET /search?include_shared=true
+GET /tags?include_shared=true
+```
+
+When shared content is included, each `node` additionally carries:
+
+```json
+"access": { "role": "viewer", "owner": "guru", "shared": true }
+```
+
+`access` is absent on a node the caller owns — its absence means "mine", which
+keeps the common response unchanged in both size and meaning.
+
+**Search and tags under ACLs.** Semantic search ranks over embeddings that are
+content-addressed and therefore shared between users by construction. The filter
+must be applied to the **node** rows, never to the vectors, or one user's query
+could surface the existence of another's document through a similarity score.
+Tag counts at `GET /tags` are likewise per-caller, not per-tag-globally.
+
+**Admin.** All `403` for non-admins.
+
+| Route | Body / result |
+|---|---|
+| `GET /admin/users`, `POST /admin/users` | list / create |
+| `PATCH /admin/users/{id}` | `{display_name?, is_admin?, disabled?, quota_bytes?}` |
+| `DELETE /admin/users/{id}` | disables and revokes; does **not** delete content |
+| `GET /admin/users/{id}/sessions`, `DELETE .../sessions/{sid}` | |
+| `GET /admin/audit?actor=&action=&from=&to=&limit=&offset=` | append-only |
+
+```json
+"audit_entry": {
+  "id": "uuid", "at": "...", "actor": "guru", "action": "grant.create",
+  "target": "/work/shared", "request_id": "...", "detail": {}
+}
+```
+
+The audit log records **authorisation-relevant** events — grants, role changes,
+logins, admin actions, share creation — not every read. A log that records
+everything is one nobody reads, and on this hardware it would outgrow the files
+it describes. `request_id` ties an entry back to the API access log.
 
 ### Phase 8 — Advanced intelligence
 - `GET /people`, faces endpoints — TBD.
