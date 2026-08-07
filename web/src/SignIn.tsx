@@ -23,6 +23,25 @@ export function SignIn({ onSignedIn, onCodes, codes, recoveryFor }: Props) {
   const [bootstrapChecked, setBootstrapChecked] = useState(false);
   const [oidcEnabled, setOidcEnabled] = useState(false);
 
+  // A failed SSO round trip comes back as /?sso_error=1. The server cannot say
+  // more than that — the reason (unverified email, disallowed domain, disabled
+  // account, expired flow) stays in its log deliberately, since telling an
+  // unauthenticated browser which of those applied leaks account state.
+  //
+  // Nothing read this marker before, so every SSO failure dumped the user back
+  // on this page with no indication anything had happened. They click the button
+  // again and get the same silence.
+  const [ssoError, setSsoError] = useState(false);
+  useEffect(() => {
+    const params = new URLSearchParams(window.location.search);
+    if (!params.has("sso_error")) return;
+    setSsoError(true);
+    // Strip it so a reload does not resurrect the banner.
+    params.delete("sso_error");
+    const qs = params.toString();
+    window.history.replaceState({}, "", window.location.pathname + (qs ? `?${qs}` : ""));
+  }, []);
+
   useEffect(() => {
     if (recoveryFor) return;
     void api
@@ -130,6 +149,14 @@ export function SignIn({ onSignedIn, onCodes, codes, recoveryFor }: Props) {
         )}
 
         {error && <div className="banner error">{error}</div>}
+        {ssoError && (
+          <div className="banner error">
+            Single sign-on did not complete. That usually means your account is
+            not permitted on this server, or the sign-in took too long and
+            expired — try again, and ask an admin if it keeps failing. You can
+            still sign in with a passkey below.
+          </div>
+        )}
         {codes && <RecoveryCodes codes={codes} onDismiss={() => onCodes([])} />}
 
         <label className="stack">
