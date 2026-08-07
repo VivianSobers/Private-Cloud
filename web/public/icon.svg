@@ -1,0 +1,8 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" role="img" aria-label="Private Cloud">
+  <!-- Full-bleed background so the icon works as a maskable PWA icon (the safe
+       zone keeps the cloud well inside the 40% mask radius). -->
+  <rect width="512" height="512" rx="112" fill="#0b0e14"/>
+  <path fill="#4c8bf5"
+        d="M352 214a96 96 0 0 0-183-28 76 76 0 0 0-93 74 76 76 0 0 0 76 76h196a72 72 0 0 0 4-122z"/>
+  <path fill="#a9c7ff" d="M256 232l-56 56h40v56h32v-56h40z"/>
+</svg>
