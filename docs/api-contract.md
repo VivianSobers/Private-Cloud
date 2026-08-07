@@ -262,7 +262,46 @@ GET /media/timeline?from=&to=&limit=&offset=
 ```
 
 ### Phase 6 — Native clients
-- `GET /devices`, `DELETE /devices/{id}` — list/revoke device tokens — TBD.
+
+Almost no new server surface — the point of this phase is that the clients
+consume the API that already exists. Two additions:
+
+**Devices.** A device is a session of kind `device`, minted at
+`POST /auth/token`. `GET /auth/sessions` already returns these, but a device list
+wants the *client's* identity, not the session's.
+
+| Route | Body / result |
+|---|---|
+| `GET /devices` | `{devices: [device]}` |
+| `PATCH /devices/{id}` | `{name}` — let a user rename "unknown device" |
+| `DELETE /devices/{id}` | revokes the token; the client gets `401` on its next call |
+
+```json
+"device": {
+  "id": "uuid", "name": "guru-laptop", "platform": "linux",
+  "app_version": "0.4.1", "last_seen_at": "...", "created_at": "...",
+  "current": true
+}
+```
+
+- `current` marks the caller's own device, so a UI can avoid offering "revoke"
+  on the session doing the revoking without inferring it from ids.
+- Revocation is immediate — the token is checked per request, not cached — which
+  is the property that makes "I lost my laptop" a real answer.
+- `platform` and `app_version` come from the client's `User-Agent` at token
+  creation. Advisory only: they are self-reported and must never gate anything.
+
+**Push (optional).** Deliberately a *hook*, not a service: this server does not
+talk to APNs or FCM, and should not learn to.
+
+```
+POST /devices/{id}/push        {endpoint, keys}   register a Web Push subscription
+DELETE /devices/{id}/push                         unregister
+```
+
+A client that does not register one simply polls `GET /changes`, which is the
+existing, working path — push is a latency optimisation, never a correctness
+requirement. Any client must work with it switched off.
 
 ### Phase 7 — Multi-user & sharing
 - User-to-user share + shared-folder endpoints — TBD.
