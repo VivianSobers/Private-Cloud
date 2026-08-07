@@ -107,6 +107,21 @@ func items(n int) string {
 	return fmt.Sprintf("%d items", n)
 }
 
+// HumanBytes renders a byte count in binary units (KiB/MiB/…) to one decimal,
+// for the transfer stats a status line shows.
+func HumanBytes(n int64) string {
+	const unit = 1024
+	if n < unit {
+		return fmt.Sprintf("%d B", n)
+	}
+	div, exp := int64(unit), 0
+	for v := n / unit; v >= unit; v /= unit {
+		div *= unit
+		exp++
+	}
+	return fmt.Sprintf("%.1f %ciB", float64(n)/float64(div), "KMGTPE"[exp])
+}
+
 // RelTime renders a timestamp as a coarse "how long ago", or "never" for zero. It
 // is the one place relative time is formatted, shared by the monitor and the CLI.
 func RelTime(t time.Time) string {
