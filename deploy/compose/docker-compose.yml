@@ -169,6 +169,17 @@ services:
       PC_TRASH_RETENTION: ${PC_TRASH_RETENTION:-720h}
       PC_BLOB_GC_INTERVAL: ${PC_BLOB_GC_INTERVAL:-6h}
       PC_UPLOAD_TTL: ${PC_UPLOAD_TTL:-48h}
+      # --- semantic search: the API embeds the QUERY through the sidecar. Empty
+      #     disables the semantic endpoint; lexical + OCR search are unaffected. ---
+      PC_EMBED_URL: ${PC_EMBED_URL:-}
+      PC_EMBED_MODEL: ${PC_EMBED_MODEL:-bge-small-en-v1.5}
+      PC_EMBED_DIM: ${PC_EMBED_DIM:-384}
+      # --- OIDC single sign-on (optional; empty disables it, passkeys unaffected) ---
+      PC_OIDC_ISSUER: ${PC_OIDC_ISSUER:-}
+      PC_OIDC_CLIENT_ID: ${PC_OIDC_CLIENT_ID:-}
+      PC_OIDC_CLIENT_SECRET: ${PC_OIDC_CLIENT_SECRET:-}
+      PC_OIDC_REDIRECT_URL: ${PC_OIDC_REDIRECT_URL:-}
+      PC_OIDC_ALLOWED_DOMAINS: ${PC_OIDC_ALLOWED_DOMAINS:-}
     # distroless/static:nonroot — uid 65532, no shell, no package manager.
     # read_only applies to the image layers; the blob bind mount above is
     # writable, which is the one place this container needs to write.
@@ -190,6 +201,70 @@ services:
     depends_on:
       postgres:
         condition: service_healthy
+
+  # ==========================================================================
+  # Background worker — OCR, text extraction, tagging, and (optionally) embeds.
+  # ==========================================================================
+  # A SEPARATE process from the API, so intelligence never shares the API's
+  # memory budget. It drains the DB job queue; stop it and every file endpoint
+  # still works and search still works on filenames. Its own image carries
+  # tesseract for OCR — the API's distroless image cannot.
+  pcworker:
+    build:
+      context: ../../server
+      dockerfile: Dockerfile.worker
+      args:
+        VERSION: ${API_VERSION:-dev}
+        COMMIT: ${API_COMMIT:-none}
+    image: privatecloud-worker:${API_VERSION:-dev}
+    container_name: privatecloud-worker
+    <<: *default-restart
+    logging: *default-logging
+    networks: [data]
+    # Reads file content directly from the blob store, READ-ONLY: it only ever
+    # reads bytes to extract from, never writes them.
+    volumes:
+      - ${PC_BLOB_HOST_PATH:-/tank/data/blobs}:/data/blobs:ro
+    environment:
+      PC_LOG_LEVEL: ${PC_LOG_LEVEL:-info}
+      PC_LOG_FORMAT: ${PC_LOG_FORMAT:-json}
+      PC_DATABASE_URL: "postgres://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-privatecloud}?sslmode=disable"
+      PC_BLOB_PATH: /data/blobs
+      # Point PC_EMBED_URL at the embed-sidecar to enable embedding; empty
+      # (default) is OCR + tagging only, no embed jobs enqueued.
+      PC_EMBED_URL: ${PC_EMBED_URL:-}
+      PC_EMBED_MODEL: ${PC_EMBED_MODEL:-bge-small-en-v1.5}
+      PC_EMBED_DIM: ${PC_EMBED_DIM:-384}
+    # read_only rootfs; tesseract needs a scratch dir, so /tmp is a tmpfs.
+    read_only: true
+    tmpfs: [/tmp]
+    security_opt: [no-new-privileges:true]
+    cap_drop: [ALL]
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  # ==========================================================================
+  # Embedding inference sidecar — semantic search's model tier. GPU-optional.
+  # ==========================================================================
+  # Behind the `semantic` profile, so it only runs with
+  #   docker compose --profile semantic up
+  # On a GPU host, add a device reservation (see deploy/embed-sidecar/README.md)
+  # and run with the NVIDIA runtime. Then set PC_EMBED_URL in .env to
+  #   http://embed-sidecar:8000
+  # to activate embedding on both the api and the worker.
+  embed-sidecar:
+    build:
+      context: ../../deploy/embed-sidecar
+    image: privatecloud-embed:${API_VERSION:-dev}
+    container_name: privatecloud-embed
+    profiles: ["semantic"]
+    <<: *default-restart
+    logging: *default-logging
+    networks: [data]
+    environment:
+      EMBED_MODEL: ${PC_EMBED_HF_MODEL:-BAAI/bge-small-en-v1.5}
+    security_opt: [no-new-privileges:true]
 
   # ==========================================================================
   # Web UI — build-only. Compiles the SPA into the web_dist volume and exits.
