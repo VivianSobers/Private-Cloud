@@ -36,10 +36,12 @@ of an n-party consensus one.
   trusted — the client trusts the server's bytes exactly as much as the server
   trusts the client's, which is to say only after checking.
 
-Conflict handling is deliberately minimal in this slice: when a file changed on
-both sides, the local edit is kept and uploaded as a new version, and the server
-preserves the remote edit in its version history — nothing is lost. Slice 4
-turns that into a visible *conflict copy*.
+Conflict handling is by lineage, never by clocks: when a file changed on *both*
+sides since it was last synced, the server's version keeps the original name and
+the local edit is set aside as a visible *conflict copy* —
+`name (conflict from HOST DATE).ext` — then uploaded as its own file. Nothing is
+overwritten and nothing is silently merged; you resolve it by choosing between
+two files, a decision a person can make and an automatic merge cannot.
 
 ## Setup
 
@@ -97,6 +99,38 @@ The unit hardens the daemon (no new privileges, `/usr` and `/etc` read-only,
 private `/tmp`) while leaving your home tree writable — which is where both the
 synced folder and the state database live.
 
+## Watch and control it
+
+The resident daemon serves a local **control socket** — a Unix socket at
+`<state>/control.sock`, never a network port, gated by owner-only file
+permissions — so you can watch and steer it without reading logs. The same
+`pcsync` binary is the client:
+
+```bash
+pcsync status -config ./config.json     # up to date, syncing, paused, or broken?
+pcsync sync   -config ./config.json     # reconcile now (works even while paused)
+pcsync pause  -config ./config.json     # stop automatic syncing (e.g. on a hotspot)
+pcsync resume -config ./config.json     # resume it
+```
+
+`status` reports the current state, how many items are tracked, when the last
+sync succeeded, any lingering error, and the list of conflict copies that need
+your attention:
+
+```
+pcsync 1.0 — https://cloud.example.ts.net
+  folder:     /home/vivian/PrivateCloud
+  state:      idle
+  tracked:    1284 items
+  last sync:  8s ago
+  conflicts:  1 need attention
+    /notes/todo.txt  →  /notes/todo (conflict from laptop 2026-08-07).txt
+```
+
+`pause` stops the automatic poll/rescan/watch cadences; an explicit `sync` still
+runs, so paused never means stuck. This control surface is also the contract a
+desktop tray app drives — the GUI is a thin shell over these same calls.
+
 ## Configuration
 
 | Key | Meaning | Default |
@@ -109,5 +143,5 @@ synced folder and the state database live.
 | `poll_seconds` | How often the change journal is polled | 15 |
 | `rescan_seconds` | How often a full local rescan runs | 300 |
 
-The `.pcsync` directory under the root holds the state database and download temp
-files and is never synced.
+The `.pcsync` directory under the root holds the state database, download temp
+files, and the control socket, and is never synced.

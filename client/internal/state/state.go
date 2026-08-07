@@ -162,6 +162,14 @@ func (s *Store) Empty() (bool, error) {
 	return n == 0, nil
 }
 
+// Count returns how many nodes are tracked — the "N items in sync" a status
+// surface reports. Cheaper than List when only the total is wanted.
+func (s *Store) Count() (int, error) {
+	var n int
+	err := s.db.QueryRow(`SELECT COUNT(*) FROM synced`).Scan(&n)
+	return n, err
+}
+
 // --- cursor -----------------------------------------------------------------
 
 const cursorKey = "change_cursor"

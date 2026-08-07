@@ -27,7 +27,7 @@ const debounceDelay = time.Second
 // The select serializes them: a pull, a push and a rescan never overlap, so no
 // lock is needed around the state database or the tree.
 func (e *Engine) Run(ctx context.Context, poll, rescan time.Duration) error {
-	if err := e.Sync(ctx); err != nil {
+	if err := e.syncTracked(ctx); err != nil {
 		e.log.Error("initial sync failed", "error", err)
 	}
 
@@ -55,13 +55,27 @@ func (e *Engine) Run(ctx context.Context, poll, rescan time.Duration) error {
 		case <-ctx.Done():
 			return ctx.Err()
 
+		case <-e.syncNow:
+			// An explicit "sync now" runs even while paused — a manual override is
+			// never suppressed by the automatic-pause flag.
+			if err := e.syncTracked(ctx); err != nil {
+				e.log.Error("manual sync failed", "error", err)
+			}
+			e.addWatches(watcher)
+
 		case <-pollTicker.C:
-			if err := e.pullSafe(ctx); err != nil {
+			if e.Paused() {
+				continue
+			}
+			if err := e.pullTracked(ctx); err != nil {
 				e.log.Error("pull failed", "error", err)
 			}
 
 		case <-rescanTicker.C:
-			if err := e.Sync(ctx); err != nil {
+			if e.Paused() {
+				continue
+			}
+			if err := e.syncTracked(ctx); err != nil {
 				e.log.Error("rescan failed", "error", err)
 			}
 			e.addWatches(watcher)
@@ -76,10 +90,16 @@ func (e *Engine) Run(ctx context.Context, poll, rescan time.Duration) error {
 					_ = watcher.Add(ev.Name)
 				}
 			}
+			if e.Paused() {
+				continue // observe the tree so nothing is missed, but do not push while paused
+			}
 			debounce.Reset(debounceDelay)
 
 		case <-debounce.C:
-			if err := e.pushSafe(ctx); err != nil {
+			if e.Paused() {
+				continue
+			}
+			if err := e.pushTracked(ctx); err != nil {
 				e.log.Error("push failed", "error", err)
 			}
 			e.addWatches(watcher)
@@ -88,6 +108,25 @@ func (e *Engine) Run(ctx context.Context, poll, rescan time.Duration) error {
 			e.log.Warn("watcher error", "error", werr)
 		}
 	}
+}
+
+// syncTracked, pullTracked and pushTracked wrap the reconcile steps with status
+// bookkeeping: each marks the daemon syncing, runs the step, and folds the
+// outcome (last-sync time, or a lingering error) into the snapshot the control
+// surface reports.
+func (e *Engine) syncTracked(ctx context.Context) error {
+	e.setPhase(PhaseSyncing)
+	return e.recordResult(e.Sync(ctx))
+}
+
+func (e *Engine) pullTracked(ctx context.Context) error {
+	e.setPhase(PhaseSyncing)
+	return e.recordResult(e.pullSafe(ctx))
+}
+
+func (e *Engine) pushTracked(ctx context.Context) error {
+	e.setPhase(PhaseSyncing)
+	return e.recordResult(e.pushSafe(ctx))
 }
 
 // pullSafe applies remote changes, refreshing the cached root first.

@@ -54,6 +54,7 @@ func (e *Engine) conflictCopy(entry state.Entry) (string, error) {
 	if err := e.state.Delete(entry.Path); err != nil {
 		return "", err
 	}
+	e.recordConflict(entry.Path, dstServer)
 	e.log.Warn("conflict copy created", "original", entry.Path, "copy", dstServer)
 	return dstServer, nil
 }
