@@ -332,6 +332,36 @@ groups:
           description: "{{ $value }} of 10 connections in use. Look for slow queries or a leaked transaction."
 
   # ==========================================================================
+  # Background worker (OCR, extraction, embeddings)
+  # ==========================================================================
+  - name: jobs
+    rules:
+      # The worker drains the OCR/embed queue. A queue that stays deep means the
+      # worker is stopped or overwhelmed; on this box the usual cause is simply
+      # that pcworker is not running. Filenames stay searchable regardless, so this
+      # is a warning, not a page.
+      - alert: JobQueueBacklog
+        expr: privatecloud_jobs{state="queued"} > 500
+        for: 30m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Background job queue is backed up ({{ $value }} queued)"
+          description: "Is pcworker running? Check: docker compose ps pcworker; docker compose logs pcworker --tail 100"
+
+      # Jobs that exhausted their retries and dead-lettered. A steady nonzero count
+      # means something is reliably failing — a corrupt file, a sidecar that is
+      # down — worth a look rather than silent accumulation.
+      - alert: JobsDeadLettering
+        expr: privatecloud_jobs{state="failed"} > 0
+        for: 1h
+        labels:
+          severity: warning
+        annotations:
+          summary: "{{ $value }} background jobs have failed permanently"
+          description: "Inspect: SELECT kind, last_error, count(*) FROM jobs WHERE state='failed' GROUP BY 1,2;"
+
+  # ==========================================================================
   # Recording rules that nothing in this file alerts on live beside the
   # dashboards that read them. A derived series consumed by an alert belongs in
   # the alert's own group instead — see privatecloud_backup_age_seconds in the

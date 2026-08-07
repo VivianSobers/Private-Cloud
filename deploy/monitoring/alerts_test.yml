@@ -147,3 +147,39 @@ tests:
             exp_annotations:
               summary: "ZFS pool health collector has stopped updating"
               description: "privatecloud-zpool-metrics.timer may have failed. Check: systemctl status privatecloud-zpool-metrics.timer"
+
+  # ---- background jobs ----------------------------------------------------
+  - name: JobQueueBacklog fires when the queue stays deep
+    interval: 1m
+    input_series:
+      # 600 queued jobs held steady — over the 500 threshold.
+      - series: 'privatecloud_jobs{state="queued"}'
+        values: '600x60'
+    alert_rule_test:
+      - alertname: JobQueueBacklog
+        eval_time: 20m               # deep but < 30m held → not yet
+        exp_alerts: []
+      - alertname: JobQueueBacklog
+        eval_time: 35m               # held > 30m → firing
+        exp_alerts:
+          - exp_labels: { severity: warning, state: queued }
+            exp_annotations:
+              summary: "Background job queue is backed up (600 queued)"
+              description: "Is pcworker running? Check: docker compose ps pcworker; docker compose logs pcworker --tail 100"
+
+  - name: JobsDeadLettering fires on a persistent failed count
+    interval: 1m
+    input_series:
+      - series: 'privatecloud_jobs{state="failed"}'
+        values: '3x120'
+    alert_rule_test:
+      - alertname: JobsDeadLettering
+        eval_time: 30m               # nonzero but < 1h held → not yet
+        exp_alerts: []
+      - alertname: JobsDeadLettering
+        eval_time: 65m               # held > 1h → firing
+        exp_alerts:
+          - exp_labels: { severity: warning, state: failed }
+            exp_annotations:
+              summary: "3 background jobs have failed permanently"
+              description: "Inspect: SELECT kind, last_error, count(*) FROM jobs WHERE state='failed' GROUP BY 1,2;"
