@@ -94,7 +94,122 @@ type Config struct {
 	// ChangeRetention bounds the sync journal's tail. A client offline longer than
 	// this re-syncs from scratch instead of resuming from a cursor.
 	ChangeRetention time.Duration
+
+	// Embed configures the semantic-search inference sidecar. Zero-valued (empty
+	// URL) leaves semantic search off; lexical and OCR search are unaffected.
+	Embed EmbedConfig
+
+	// OIDC configures single sign-on. Empty Issuer leaves SSO off; the passkey
+	// and recovery paths are unaffected either way.
+	OIDC OIDCSettings
 }
+
+// EmbedConfig points at the embedding inference sidecar.
+//
+// Shared by the API (which embeds the QUERY) and the worker (which embeds
+// DOCUMENTS), so both read one definition and one validator rather than each
+// binary parsing the same three variables its own way.
+type EmbedConfig struct {
+	// URL is the sidecar's base address. Empty disables embedding here.
+	URL string
+	// Model is the identity vectors are stored under. Vectors are only comparable
+	// within one model, so this is written with every row and filtered on at query
+	// time; it must not change without a re-index.
+	Model string
+	// Dim is the vector width the sidecar produces. Vectors of another width are
+	// rejected on arrival and excluded at query time.
+	Dim int
+	// EnableSemantic makes the worker chain extraction to embedding even when it
+	// has no sidecar of its own — the always-on box feeding a separate GPU worker.
+	// Meaningless to the API, which never enqueues.
+	EnableSemantic bool
+}
+
+// Enabled reports whether a sidecar is configured here.
+func (e EmbedConfig) Enabled() bool { return e.URL != "" }
+
+// OIDCSettings configures the single sign-on provider.
+type OIDCSettings struct {
+	// Issuer is the provider's discovery URL. Empty disables SSO.
+	Issuer         string
+	ClientID       string
+	ClientSecret   string
+	RedirectURL    string
+	AllowedDomains []string
+}
+
+// Enabled reports whether a provider is configured.
+func (o OIDCSettings) Enabled() bool { return o.Issuer != "" }
+
+// LoadEmbed reads and validates the sidecar settings on their own, for the
+// worker — which deliberately does not load the API's full configuration,
+// because WebAuthn origins and blob paths are none of its business.
+func LoadEmbed() (EmbedConfig, error) {
+	e := EmbedConfig{
+		URL:            env("PC_EMBED_URL", ""),
+		Model:          env("PC_EMBED_MODEL", "bge-small-en-v1.5"),
+		Dim:            envInt("PC_EMBED_DIM", 384),
+		EnableSemantic: envBool("PC_ENABLE_SEMANTIC", false),
+	}
+	if err := e.validate(); err != nil {
+		return EmbedConfig{}, err
+	}
+	return e, nil
+}
+
+func (e EmbedConfig) validate() error {
+	if !e.Enabled() {
+		return nil
+	}
+	if !strings.HasPrefix(e.URL, "http://") && !strings.HasPrefix(e.URL, "https://") {
+		return fmt.Errorf("PC_EMBED_URL must be an http:// or https:// address (got %q)", e.URL)
+	}
+	// A trailing slash would produce "…//embed", which some servers 404 on.
+	if strings.HasSuffix(e.URL, "/") {
+		return fmt.Errorf("PC_EMBED_URL must not end in a slash (got %q)", e.URL)
+	}
+	if e.Model == "" {
+		return fmt.Errorf("PC_EMBED_MODEL must not be empty: it is the identity every vector is stored under")
+	}
+	// A non-positive dimension produces zero-width vectors that compare equal to
+	// nothing and silently return no results, which is indistinguishable from an
+	// empty corpus.
+	if e.Dim <= 0 {
+		return fmt.Errorf("PC_EMBED_DIM must be positive (got %d)", e.Dim)
+	}
+	return nil
+}
+
+func (o OIDCSettings) validate() error {
+	if !o.Enabled() {
+		return nil
+	}
+	if !strings.HasPrefix(o.Issuer, "https://") && !strings.HasPrefix(o.Issuer, "http://") {
+		return fmt.Errorf("PC_OIDC_ISSUER must be an https:// URL (got %q)", o.Issuer)
+	}
+	// Discovery succeeds without these, and the failure only surfaces later as an
+	// opaque redirect back to the login page — exactly the "three hours later"
+	// failure this package exists to prevent.
+	if o.ClientID == "" {
+		return fmt.Errorf("PC_OIDC_CLIENT_ID is required when PC_OIDC_ISSUER is set")
+	}
+	if o.ClientSecret == "" {
+		return fmt.Errorf("PC_OIDC_CLIENT_SECRET is required when PC_OIDC_ISSUER is set")
+	}
+	if !strings.HasPrefix(o.RedirectURL, "https://") && !strings.HasPrefix(o.RedirectURL, "http://") {
+		return fmt.Errorf("PC_OIDC_REDIRECT_URL must be the full callback URL, with a scheme (got %q)", o.RedirectURL)
+	}
+	// The callback route is fixed; a redirect URL pointing anywhere else means the
+	// provider will send the browser somewhere that cannot complete the flow.
+	if !strings.HasSuffix(o.RedirectURL, oidcCallbackPath) {
+		return fmt.Errorf("PC_OIDC_REDIRECT_URL must end in %s (got %q)", oidcCallbackPath, o.RedirectURL)
+	}
+	return nil
+}
+
+// oidcCallbackPath is the route handleOIDCCallback is registered on. Duplicated
+// as a literal rather than imported, because config must not depend on httpapi.
+const oidcCallbackPath = "/api/v1/auth/oidc/callback"
 
 func Load() (*Config, error) {
 	c := &Config{
@@ -135,7 +250,21 @@ func Load() (*Config, error) {
 		KeepVersions:     envInt("PC_KEEP_VERSIONS", 25),
 		VersionRetention: envDuration("PC_VERSION_RETENTION", 90*24*time.Hour),
 		ChangeRetention:  envDuration("PC_CHANGE_RETENTION", 30*24*time.Hour),
+
+		OIDC: OIDCSettings{
+			Issuer:         env("PC_OIDC_ISSUER", ""),
+			ClientID:       env("PC_OIDC_CLIENT_ID", ""),
+			ClientSecret:   env("PC_OIDC_CLIENT_SECRET", ""),
+			RedirectURL:    env("PC_OIDC_REDIRECT_URL", ""),
+			AllowedDomains: envList("PC_OIDC_ALLOWED_DOMAINS", nil),
+		},
 	}
+
+	embed, err := LoadEmbed()
+	if err != nil {
+		return nil, err
+	}
+	c.Embed = embed
 
 	if err := c.validate(); err != nil {
 		return nil, err
@@ -233,6 +362,9 @@ func (c *Config) validate() error {
 	if c.ChangeRetention <= 0 {
 		return fmt.Errorf("PC_CHANGE_RETENTION must be positive")
 	}
+	if err := c.OIDC.validate(); err != nil {
+		return err
+	}
 	return nil
 }
 
@@ -254,6 +386,19 @@ func (c *Config) Redacted() map[string]any {
 		"keep_versions":         c.KeepVersions,
 		"version_retention":     c.VersionRetention.String(),
 		"change_retention":      c.ChangeRetention.String(),
+
+		// Phase 4 features, so the startup log shows whether they are on and what
+		// they are pointed at. The client secret is deliberately absent rather
+		// than masked: a value that never reaches the log cannot leak from it.
+		"semantic_enabled":      c.Embed.Enabled(),
+		"embed_url":             c.Embed.URL,
+		"embed_model":           c.Embed.Model,
+		"embed_dim":             c.Embed.Dim,
+		"oidc_enabled":          c.OIDC.Enabled(),
+		"oidc_issuer":           c.OIDC.Issuer,
+		"oidc_client_id":        c.OIDC.ClientID,
+		"oidc_redirect_url":     c.OIDC.RedirectURL,
+		"oidc_allowed_domains":  c.OIDC.AllowedDomains,
 	}
 }
 

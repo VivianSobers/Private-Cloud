@@ -12,7 +12,6 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
-	"strconv"
 	"strings"
 	"syscall"
 	"time"
@@ -207,29 +206,28 @@ func run() error {
 	// QUERY through it (an RPC, never a resident model here) and ranks by vector
 	// similarity. Unset means the semantic endpoint reports "unavailable" and
 	// lexical search is unaffected.
-	if embedURL := os.Getenv("PC_EMBED_URL"); embedURL != "" {
-		model := envOr("PC_EMBED_MODEL", "bge-small-en-v1.5")
-		dim := envInt("PC_EMBED_DIM", 384)
-		apiServer.SetEmbedder(embed.NewClient(embedURL, model, dim))
-		log.Info("semantic search enabled", "sidecar", embedURL, "model", model, "dim", dim)
+	if cfg.Embed.Enabled() {
+		apiServer.SetEmbedder(embed.NewClient(cfg.Embed.URL, cfg.Embed.Model, cfg.Embed.Dim))
+		log.Info("semantic search enabled",
+			"sidecar", cfg.Embed.URL, "model", cfg.Embed.Model, "dim", cfg.Embed.Dim)
 	}
 
 	// OIDC single sign-on, if configured. A discovery failure disables SSO with a
 	// log line rather than aborting startup — a transient IdP outage must not take
 	// down the file API, and passkey login is unaffected regardless.
-	if iss := os.Getenv("PC_OIDC_ISSUER"); iss != "" {
+	if cfg.OIDC.Enabled() {
 		provider, err := auth.NewOIDCProvider(ctx, auth.OIDCConfig{
-			Issuer:         iss,
-			ClientID:       os.Getenv("PC_OIDC_CLIENT_ID"),
-			ClientSecret:   os.Getenv("PC_OIDC_CLIENT_SECRET"),
-			RedirectURL:    os.Getenv("PC_OIDC_REDIRECT_URL"),
-			AllowedDomains: splitComma(os.Getenv("PC_OIDC_ALLOWED_DOMAINS")),
+			Issuer:         cfg.OIDC.Issuer,
+			ClientID:       cfg.OIDC.ClientID,
+			ClientSecret:   cfg.OIDC.ClientSecret,
+			RedirectURL:    cfg.OIDC.RedirectURL,
+			AllowedDomains: cfg.OIDC.AllowedDomains,
 		})
 		if err != nil {
 			log.Error("oidc setup failed; single sign-on disabled", "error", err)
 		} else {
 			apiServer.SetOIDC(provider)
-			log.Info("oidc single sign-on enabled", "issuer", iss)
+			log.Info("oidc single sign-on enabled", "issuer", cfg.OIDC.Issuer)
 		}
 	}
 
@@ -410,38 +408,6 @@ func (e extractEnqueuer) EnqueueExtract(ctx context.Context, nodeID, ownerID uui
 		jobs.EnqueueOptions{OwnerQueueCap: 50000}); err != nil {
 		e.log.Warn("enqueue extraction failed", "node", nodeID, "error", err)
 	}
-}
-
-// splitComma parses a comma-separated env value into trimmed, non-empty entries.
-func splitComma(v string) []string {
-	if strings.TrimSpace(v) == "" {
-		return nil
-	}
-	parts := strings.Split(v, ",")
-	out := make([]string, 0, len(parts))
-	for _, p := range parts {
-		if p = strings.TrimSpace(p); p != "" {
-			out = append(out, p)
-		}
-	}
-	return out
-}
-
-func envOr(key, def string) string {
-	if v := os.Getenv(key); v != "" {
-		return v
-	}
-	return def
-}
-
-func envInt(key string, def int) int {
-	if v := os.Getenv(key); v != "" {
-		if n, err := strconv.Atoi(v); err == nil {
-			return n
-		}
-		slog.Warn("ignoring unparseable integer", "key", key, "value", v)
-	}
-	return def
 }
 
 // runJobMetrics polls the job queue depth by state and publishes it as gauges,

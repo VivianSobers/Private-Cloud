@@ -18,7 +18,6 @@ import (
 	"log/slog"
 	"os"
 	"os/signal"
-	"strconv"
 	"strings"
 	"syscall"
 	"time"
@@ -27,6 +26,7 @@ import (
 
 	"github.com/guru-bharadwaj20/private-cloud/server/internal/blob"
 	"github.com/guru-bharadwaj20/private-cloud/server/internal/cas"
+	"github.com/guru-bharadwaj20/private-cloud/server/internal/config"
 	"github.com/guru-bharadwaj20/private-cloud/server/internal/db"
 	"github.com/guru-bharadwaj20/private-cloud/server/internal/embed"
 	"github.com/guru-bharadwaj20/private-cloud/server/internal/extract"
@@ -60,6 +60,14 @@ func run() error {
 		return fmt.Errorf("PC_DATABASE_URL is required")
 	}
 
+	// Validated up front, like the API's config: a sidecar URL with a typo or a
+	// zero dimension must stop the worker here, not surface hours later as
+	// embed jobs that dead-letter or as vectors nothing can ever match.
+	embedCfg, err := config.LoadEmbed()
+	if err != nil {
+		return fmt.Errorf("config: %w", err)
+	}
+
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
@@ -79,7 +87,7 @@ func run() error {
 	// store), they read blobs directly; PC_BLOB_PATH is required for that. A GPU
 	// worker on another box would instead pull content over the download API —
 	// same handlers, different Opener — but that adapter is not wired yet.
-	if err := registerHandlers(runner, store, database, log); err != nil {
+	if err := registerHandlers(runner, store, database, embedCfg, log); err != nil {
 		return err
 	}
 
@@ -106,19 +114,18 @@ func run() error {
 //   - The extract→embed CHAIN (enqueue an embed job once a file has text) is gated
 //     on PC_ENABLE_SEMANTIC or the presence of a sidecar, so the co-located
 //     extractor can feed a remote GPU embedder without embedding anything itself.
-func registerHandlers(runner *jobs.Runner, store *jobs.Store, database *db.DB, log *slog.Logger) error {
+func registerHandlers(runner *jobs.Runner, store *jobs.Store, database *db.DB, embedCfg config.EmbedConfig, log *slog.Logger) error {
 	fileStore := files.NewStore(database.Pool)
 
 	// Embedding: DB + sidecar only, so it runs anywhere the database is reachable.
-	if embedURL := os.Getenv("PC_EMBED_URL"); embedURL != "" {
-		model := envOr("PC_EMBED_MODEL", "bge-small-en-v1.5")
-		dim := envInt("PC_EMBED_DIM", 384)
-		client := embed.NewClient(embedURL, model, dim)
+	if embedCfg.Enabled() {
+		client := embed.NewClient(embedCfg.URL, embedCfg.Model, embedCfg.Dim)
 		embedHandler := embed.NewHandler(fileStore, fileStore, client, log)
 		runner.Register(embed.Kind, func(ctx context.Context, j jobs.Job) error {
 			return embedHandler.Handle(ctx, j.NodeID, j.OwnerID)
 		})
-		log.Info("embedding handler registered", "sidecar", embedURL, "model", model, "dim", dim)
+		log.Info("embedding handler registered",
+			"sidecar", embedCfg.URL, "model", embedCfg.Model, "dim", embedCfg.Dim)
 	}
 
 	// Extraction: needs blob content, so only where the blob store is reachable.
@@ -149,7 +156,7 @@ func registerHandlers(runner *jobs.Runner, store *jobs.Store, database *db.DB, l
 	// local sidecar (this worker also embeds) or by PC_ENABLE_SEMANTIC (this worker
 	// only extracts and feeds a separate GPU embedder). The embed job that results
 	// is drained by whichever worker registered the embed handler.
-	if os.Getenv("PC_EMBED_URL") != "" || os.Getenv("PC_ENABLE_SEMANTIC") == "true" {
+	if embedCfg.Enabled() || embedCfg.EnableSemantic {
 		extractHandler.Chain(func(ctx context.Context, nodeID *uuid.UUID, ownerID uuid.UUID) {
 			if _, _, err := store.Enqueue(ctx, embed.Kind, nodeID, ownerID,
 				jobs.EnqueueOptions{OwnerQueueCap: 50000}); err != nil {
@@ -199,23 +206,6 @@ func prune(ctx context.Context, store *jobs.Store, retention, queuedTTL time.Dur
 			}
 		}
 	}
-}
-
-func envOr(key, def string) string {
-	if v := os.Getenv(key); v != "" {
-		return v
-	}
-	return def
-}
-
-func envInt(key string, def int) int {
-	if v := os.Getenv(key); v != "" {
-		if n, err := strconv.Atoi(v); err == nil {
-			return n
-		}
-		slog.Warn("ignoring unparseable integer", "key", key, "value", v)
-	}
-	return def
 }
 
 func envDuration(key string, def time.Duration) time.Duration {
