@@ -596,8 +596,11 @@ func (s *Server) handleSearch(w http.ResponseWriter, r *http.Request) {
 		Kind:           q.Get("kind"),
 		Under:          q.Get("under"),
 		IncludeTrashed: q.Get("include_trashed") == "true",
-		Limit:          atoiDefault(q.Get("limit"), 50),
-		Offset:         atoiDefault(q.Get("offset"), 0),
+		// Clamped here, not just in the store, because has_more below is
+		// "the page came back full" — comparing against a limit the store
+		// silently capped would report false while results remain.
+		Limit:  files.ClampSearchLimit(atoiDefault(q.Get("limit"), 0)),
+		Offset: atoiDefault(q.Get("offset"), 0),
 	}
 
 	results, err := s.files.Store().Search(r.Context(), CurrentUser(r.Context()).ID, query)
@@ -647,7 +650,7 @@ func (s *Server) handleSemanticSearch(w http.ResponseWriter, r *http.Request) {
 		writeError(w, r, http.StatusBadRequest, "query_too_short", "search needs at least 2 characters")
 		return
 	}
-	limit := atoiDefault(q.Get("limit"), 50)
+	limit := files.ClampSearchLimit(atoiDefault(q.Get("limit"), 0))
 
 	vecs, err := s.embedder.Embed(r.Context(), []string{text})
 	if err != nil || len(vecs) == 0 {

@@ -3,6 +3,8 @@ package httpapi
 import (
 	"encoding/json"
 	"net/http"
+
+	"github.com/guru-bharadwaj20/private-cloud/server/internal/files"
 )
 
 // Tag endpoints: read a file's tags, add and remove user tags, list a user's
@@ -98,7 +100,9 @@ func (s *Server) handleTagNodes(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	q := r.URL.Query()
-	limit := atoiDefault(q.Get("limit"), 50)
+	// Clamped here so has_more below compares against the limit the store
+	// actually applied rather than the one the client asked for.
+	limit := files.ClampSearchLimit(atoiDefault(q.Get("limit"), 0))
 	offset := atoiDefault(q.Get("offset"), 0)
 
 	nodes, err := s.files.Store().NodesByTag(r.Context(), CurrentUser(r.Context()).ID, tag, limit, offset)

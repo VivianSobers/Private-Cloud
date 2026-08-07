@@ -150,9 +150,7 @@ func (s *Store) ListTags(ctx context.Context, ownerID uuid.UUID) ([]TagCount, er
 
 // NodesByTag lists the owner's live files carrying a tag, newest first.
 func (s *Store) NodesByTag(ctx context.Context, ownerID uuid.UUID, raw string, limit, offset int) ([]*Node, error) {
-	if limit <= 0 || limit > maxSearchLimit {
-		limit = defaultSearchLimit
-	}
+	limit = ClampSearchLimit(limit)
 	rows, err := s.pool.Query(ctx, `
 		SELECT `+nodeCols+`
 		`+nodeFrom+`

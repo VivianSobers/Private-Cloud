@@ -35,6 +35,24 @@ const (
 	minQueryLen = 2
 )
 
+// ClampSearchLimit normalizes a caller-supplied result limit to the range the
+// stores actually honour.
+//
+// It is exported because the HTTP layer needs the SAME number the store will
+// use: "has_more" is reported as "the page came back full", and comparing a
+// clamped result count against an unclamped request silently reports false for
+// any limit above the cap — telling a client there is nothing more when there
+// are hundreds of results left.
+func ClampSearchLimit(limit int) int {
+	if limit <= 0 {
+		return defaultSearchLimit
+	}
+	if limit > maxSearchLimit {
+		return maxSearchLimit
+	}
+	return limit
+}
+
 // SearchResult is a node plus why it matched.
 type SearchResult struct {
 	*Node
@@ -72,13 +90,7 @@ func (s *Store) Search(ctx context.Context, ownerID uuid.UUID, q SearchQuery) ([
 		return nil, fmt.Errorf("%w: search needs at least %d characters", ErrInvalidName, minQueryLen)
 	}
 
-	limit := q.Limit
-	if limit <= 0 {
-		limit = defaultSearchLimit
-	}
-	if limit > maxSearchLimit {
-		limit = maxSearchLimit
-	}
+	limit := ClampSearchLimit(q.Limit)
 
 	folded := Fold(text)
 	pattern := "%" + likePrefix(folded) + "%"

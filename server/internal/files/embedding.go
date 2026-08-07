@@ -89,12 +89,7 @@ func (s *Store) PutEmbeddings(ctx context.Context, contentHash []byte, model str
 // embeddings to a query vector, best chunk per file. It is the brute-force path:
 // scan this model's vectors joined to live owned files, score in Go, sort.
 func (s *Store) SemanticSearch(ctx context.Context, ownerID uuid.UUID, query []float32, model string, limit int) ([]*SearchResult, error) {
-	if limit <= 0 {
-		limit = defaultSearchLimit
-	}
-	if limit > maxSearchLimit {
-		limit = maxSearchLimit
-	}
+	limit = ClampSearchLimit(limit)
 
 	// Filter by dimension as well as model. Model identity should already pin the
 	// dimension, but a model re-trained to a new width while keeping its name would
