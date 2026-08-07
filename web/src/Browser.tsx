@@ -4,6 +4,7 @@ import { ApiError, api, formatBytes, formatDate, type Node, type SearchHit, type
 import { ShareDialog } from "./ShareDialog";
 import { Shares } from "./Shares";
 import { Trash } from "./Trash";
+import { Tags } from "./Tags";
 import { Versions } from "./Versions";
 import { upload, type UploadHandle } from "./upload";
 
@@ -35,10 +36,12 @@ export function Browser() {
   const [versionsFor, setVersionsFor] = useState<Node | null>(null);
   // The node being shared, or null. Files and folders both.
   const [shareFor, setShareFor] = useState<Node | null>(null);
+  const [tagsFor, setTagsFor] = useState<Node | null>(null);
 
   const [query, setQuery] = useState("");
   const [hits, setHits] = useState<SearchHit[] | null>(null);
   const [searchScoped, setSearchScoped] = useState(false);
+  const [semantic, setSemantic] = useState(false);
 
   const fileInput = useRef<HTMLInputElement>(null);
 
@@ -72,13 +75,21 @@ export function Browser() {
       return;
     }
     let cancelled = false;
+    const under = searchScoped ? folder?.path : undefined;
     const timer = setTimeout(() => {
       void api
-        .search(text, { under: searchScoped ? folder?.path : undefined })
+        .search(text, { under, semantic })
         .then((res) => {
           if (!cancelled) setHits(res.results);
         })
         .catch((err) => {
+          // Semantic search is optional; if no sidecar is configured the server
+          // answers 503. Fall back to lexical search rather than showing an error.
+          if (semantic && err instanceof ApiError && err.status === 503) {
+            return api.search(text, { under }).then((res) => {
+              if (!cancelled) setHits(res.results);
+            });
+          }
           if (!cancelled) setError(err instanceof ApiError ? err.message : String(err));
         });
     }, 200);
@@ -87,7 +98,7 @@ export function Browser() {
       cancelled = true;
       clearTimeout(timer);
     };
-  }, [query, searchScoped, folder?.path]);
+  }, [query, searchScoped, folder?.path, semantic]);
 
   const reload = useCallback(() => {
     if (folder) void load(folder.id);
@@ -152,6 +163,7 @@ export function Browser() {
         />
       )}
       {shareFor && <ShareDialog node={shareFor} onClose={() => setShareFor(null)} />}
+      {tagsFor && <Tags node={tagsFor} onClose={() => setTagsFor(null)} />}
       <div className="row">
         <Breadcrumbs folder={folder} onNavigate={(id) => void load(id)} />
         <span style={{ flex: 1 }} />
@@ -212,6 +224,10 @@ export function Browser() {
             in this folder
           </label>
         )}
+        <label className="row small muted" title="Find files by meaning, not just by a word they contain">
+          <input type="checkbox" checked={semantic} onChange={(e) => setSemantic(e.target.checked)} />
+          by meaning
+        </label>
       </div>
 
       <div
@@ -324,6 +340,7 @@ export function Browser() {
                 }
                 onVersions={() => setVersionsFor(n)}
                 onShare={() => setShareFor(n)}
+                onTags={() => setTagsFor(n)}
               />
             ))}
           </tbody>
@@ -379,6 +396,10 @@ function SearchResults({
                   {/* Why this matched, so a filename with no visible relation to
                       the query does not look like a bug. */}
                   {h.matched_path && " · matched the folder name"}
+                  {h.matched_content && " · matched the file’s text"}
+                  {h.semantic &&
+                    typeof h.score === "number" &&
+                    ` · semantic match (${Math.round(h.score * 100)}%)`}
                 </div>
               </td>
               <td className="size">{h.kind === "file" ? formatBytes(h.size ?? 0) : "—"}</td>
@@ -399,6 +420,7 @@ function Row({
   onTrash,
   onVersions,
   onShare,
+  onTags,
 }: {
   node: Node;
   onOpen: () => void;
@@ -407,6 +429,7 @@ function Row({
   onTrash: () => void;
   onVersions: () => void;
   onShare: () => void;
+  onTags: () => void;
 }) {
   return (
     <tr>
@@ -438,6 +461,11 @@ function Row({
         <button className="link" onClick={onShare}>
           Share
         </button>
+        {node.kind === "file" && (
+          <button className="link" onClick={onTags}>
+            Tags
+          </button>
+        )}
         <button className="link" onClick={onRename}>
           Rename
         </button>
