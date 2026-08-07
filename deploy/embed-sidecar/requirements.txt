@@ -1,0 +1,6 @@
+# Pinned loosely on purpose: this is an inference sidecar the operator builds for
+# their own hardware (CPU or a specific CUDA version), and torch's right wheel
+# depends on that. sentence-transformers pulls torch and transformers in.
+fastapi>=0.110
+uvicorn[standard]>=0.29
+sentence-transformers>=2.7
