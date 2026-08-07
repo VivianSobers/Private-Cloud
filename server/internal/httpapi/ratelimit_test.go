@@ -56,6 +56,7 @@ func TestClientIPNoTrustedProxies(t *testing.T) {
 func TestRateLimiterAllowsBurstThenBlocks(t *testing.T) {
 	// 60/min = 1/sec, burst 5.
 	rl := newRateLimiter(60, 5)
+	t.Cleanup(rl.close)
 
 	for i := 0; i < 5; i++ {
 		if !rl.allow("1.2.3.4") {
@@ -69,6 +70,7 @@ func TestRateLimiterAllowsBurstThenBlocks(t *testing.T) {
 
 func TestRateLimiterIsPerKey(t *testing.T) {
 	rl := newRateLimiter(60, 2)
+	t.Cleanup(rl.close)
 
 	rl.allow("1.1.1.1")
 	rl.allow("1.1.1.1")
@@ -84,6 +86,7 @@ func TestRateLimiterIsPerKey(t *testing.T) {
 func TestRateLimiterRefills(t *testing.T) {
 	// 6000/min = 100/sec, so a 20ms wait restores ~2 tokens.
 	rl := newRateLimiter(6000, 2)
+	t.Cleanup(rl.close)
 
 	rl.allow("k")
 	rl.allow("k")
@@ -101,6 +104,7 @@ func TestRateLimiterDoesNotExceedCapacity(t *testing.T) {
 	// After a long idle period the bucket must cap at capacity, not accumulate
 	// unbounded credit that would let one client burst enormously.
 	rl := newRateLimiter(60000, 3)
+	t.Cleanup(rl.close)
 	rl.allow("k")
 
 	time.Sleep(20 * time.Millisecond) // would earn ~20 tokens uncapped
@@ -115,15 +119,30 @@ func TestRateLimiterDoesNotExceedCapacity(t *testing.T) {
 	}
 }
 
-func TestClientIPIgnoresForwardedHeader(t *testing.T) {
-	// Trusting X-Forwarded-For would let any client reset its own rate limit by
-	// forging a new address on every request.
+func TestClientIPIgnoresForwardedHeaderFromUntrustedPeer(t *testing.T) {
+	// Believing X-Forwarded-For from an arbitrary peer would let any client reset
+	// its own rate limit by forging a new address on every request. Only a peer
+	// inside the trusted set — loopback or a private range, which is all that can
+	// reach the API behind Caddy — is believed.
+	r := httptest.NewRequest(http.MethodPost, "/api/v1/auth/login/begin", nil)
+	r.RemoteAddr = "198.51.100.7:54321"
+	r.Header.Set("X-Forwarded-For", "1.2.3.4")
+
+	if got := clientIP(r); got != "198.51.100.7" {
+		t.Errorf("clientIP = %q, want the peer address 198.51.100.7", got)
+	}
+}
+
+func TestClientIPUsesForwardedHeaderFromTrustedPeer(t *testing.T) {
+	// The counterpart: without this, every request arrives from Caddy and the
+	// whole deployment shares one bucket, so one noisy client locks everyone out
+	// of login and share unlock at once.
 	r := httptest.NewRequest(http.MethodPost, "/api/v1/auth/login/begin", nil)
 	r.RemoteAddr = "10.0.0.5:54321"
 	r.Header.Set("X-Forwarded-For", "1.2.3.4")
 
-	if got := clientIP(r); got != "10.0.0.5" {
-		t.Errorf("clientIP = %q, want the peer address 10.0.0.5", got)
+	if got := clientIP(r); got != "1.2.3.4" {
+		t.Errorf("clientIP = %q, want the forwarded address 1.2.3.4", got)
 	}
 }
 
