@@ -509,7 +509,15 @@ func (s *Server) handleDownload(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("ETag", `"`+hex.EncodeToString(node.ContentHash)+`"`)
 	}
 
-	w.Header().Set("Content-Type", node.MIME)
+	// Only when we actually have one. Setting the header to "" still creates the
+	// key, and http.ServeContent checks for the key's PRESENCE — so an empty
+	// value suppressed its own content sniffing and shipped a blank Content-Type.
+	// With nosniff also set, browsers refuse to render the result at all. Leaving
+	// the header absent lets ServeContent detect the type from the extension and
+	// the first bytes, which is what it is for.
+	if node.MIME != "" {
+		w.Header().Set("Content-Type", node.MIME)
+	}
 	// private, not public: these are one user's files, and a shared proxy cache
 	// must never hold them. Shared links in Phase 2 get their own policy.
 	w.Header().Set("Cache-Control", "private, max-age=0, must-revalidate")
