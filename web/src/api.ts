@@ -187,7 +187,13 @@ async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
       // A non-JSON body means something upstream of the API answered — Caddy
       // returning a 502, most likely. Report it as-is rather than pretending
       // to have parsed an error shape that isn't there.
-      if (!res.ok) throw new ApiError(res.status, "unexpected_response", text.slice(0, 200));
+      //
+      // Thrown for a 2xx as well, not only for an error. Every endpoint here
+      // returns JSON, so unparseable content with a success status is a broken
+      // response however encouraging the status line looks — and returning
+      // undefined for it, as this used to, pushes the failure into the caller
+      // as "cannot read property of undefined" somewhere unrelated.
+      throw new ApiError(res.status, "unexpected_response", text.slice(0, 200));
     }
   }
 
