@@ -131,6 +131,29 @@ pcsync 1.0 — https://cloud.example.ts.net
 runs, so paused never means stuck. This control surface is also the contract a
 desktop tray app drives — the GUI is a thin shell over these same calls.
 
+## Selective sync
+
+A small laptop need not carry your whole cloud. **Excludes** are server-path
+prefixes this device declines to sync — the folders never download here, and
+their absence never deletes them on the server. Exclusion is a per-device, local
+decision; every other device (and the server) keeps the complete tree.
+
+Seed it in the config (`"excludes": ["/Videos"]`) or manage it live against the
+running daemon:
+
+```bash
+pcsync exclude list           -config ./config.json   # what's excluded here
+pcsync exclude add    /Videos  -config ./config.json   # stop syncing /Videos
+pcsync exclude remove /Videos  -config ./config.json   # start syncing it again
+```
+
+Live changes persist in the local state database and survive restarts, so the
+config's `excludes` is only the **first-run seed** — once you've adjusted the set
+through `pcsync exclude`, that choice wins. Adding an exclusion for a folder that
+is already synced prunes it locally to reclaim the space; if that folder holds a
+local edit that hasn't been pushed yet, the files are left on disk untouched (they
+simply stop syncing) rather than risk losing the edit.
+
 ## Configuration
 
 | Key | Meaning | Default |
@@ -142,6 +165,7 @@ desktop tray app drives — the GUI is a thin shell over these same calls.
 | `state_db` | Where the local sync database lives | `<root>/.pcsync/state.db` |
 | `poll_seconds` | How often the change journal is polled | 15 |
 | `rescan_seconds` | How often a full local rescan runs | 300 |
+| `excludes` | Server-path prefixes this device does not sync | `[]` (whole tree) |
 
 The `.pcsync` directory under the root holds the state database, download temp
 files, and the control socket, and is never synced.

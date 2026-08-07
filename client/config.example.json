@@ -4,5 +4,6 @@
   "app_password": "pcap_REPLACE_WITH_A_REAL_APP_PASSWORD",
   "root": "/home/vivian/PrivateCloud",
   "poll_seconds": 15,
-  "rescan_seconds": 300
+  "rescan_seconds": 300,
+  "excludes": ["/Videos", "/Archive"]
 }

@@ -71,9 +71,25 @@ None of this changes how reconciliation *decides* anything: the lineage-based
 conflict rule, the pull-before-push order, the two-hash state model are all
 untouched. This slice only makes the existing behaviour observable and steerable.
 
-## 3. Later slices (not this one)
+## 3. Slice 2 — Selective sync ✅
 
-- Slice 2: the desktop tray shell (platform icon + menu) over this control API,
-  plus selective sync (choose sub-folders).
-- Slice 3: installers / auto-update.
-- Slice 4: a mobile / PWA client speaking the same `/api/v1` surface.
+A device need not carry the whole tree. Selective sync is a set of excluded
+server-path prefixes, honoured on both directions and enforced as a **local**
+decision — an excluded subtree is never downloaded, a file created under one is
+never uploaded, and its absence never deletes it on the server, so every device
+holds its own subset of one authoritative tree.
+
+Landed as: an atomic exclude set on the engine read per node on the sync path
+(`selective.go`); pull, push and deletion all skip excluded paths; a
+`pruneExcluded` transition handler that reclaims a newly-excluded clean subtree
+locally but leaves one with unpushed edits on disk (never destroying an edit, and
+never touching the server); persistence in the state db so a live change outlives
+a restart, with the config's `excludes` as first-run seed only; `GET`/`PUT
+/v1/excludes` on the control socket; and `pcsync exclude list|add|remove`.
+
+## 4. Later slices (not yet)
+
+- Slice 3: the desktop tray shell (platform icon + menu) over this control API —
+  the one piece that needs a machine with a display to finish.
+- Slice 4: installers / auto-update.
+- Slice 5: a mobile / PWA client speaking the same `/api/v1` surface.
