@@ -141,6 +141,21 @@ pcsync 1.0 — https://cloud.example.ts.net
 runs, so paused never means stuck. This control surface is also the contract a
 desktop tray app drives — the GUI is a thin shell over these same calls.
 
+### Conflicts
+
+When a file changed on both sides, nothing is lost or merged: the server's
+version keeps the original name and your edit is set aside as a copy. List the
+ones awaiting a decision, then dismiss the reminder once you've dealt with the
+files:
+
+```bash
+pcsync conflicts       -config ./config.json   # list copies needing a decision
+pcsync conflicts clear -config ./config.json   # dismiss the list (files untouched)
+```
+
+Clearing only dismisses the reminder — the conflict copies on disk, the durable
+record, are never touched by it.
+
 ## Selective sync
 
 A small laptop need not carry your whole cloud. **Excludes** are server-path
