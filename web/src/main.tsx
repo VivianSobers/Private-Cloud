@@ -17,3 +17,14 @@ const shareRoute = path.startsWith("/s/") ? decodeURIComponent(path.slice(3)) : 
 createRoot(root).render(
   <StrictMode>{shareRoute ? <SharePage token={shareRoute} /> : <App />}</StrictMode>,
 );
+
+// Register the service worker to make the app installable and its shell available
+// offline. Only in production (the dev server serves no worker), and never on the
+// public share plane, which is kept deliberately minimal.
+if ("serviceWorker" in navigator && import.meta.env.PROD && !shareRoute) {
+  window.addEventListener("load", () => {
+    navigator.serviceWorker.register("/sw.js").catch(() => {
+      // A failed registration is not worth surfacing — the app works without it.
+    });
+  });
+}
