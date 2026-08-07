@@ -35,7 +35,13 @@ type Opener interface {
 // TextStore caches extracted text by content hash.
 type TextStore interface {
 	HasDocText(ctx context.Context, contentHash []byte) (bool, error)
+	DocText(ctx context.Context, contentHash []byte) (string, bool, error)
 	PutDocText(ctx context.Context, contentHash []byte, text, lang, source string) error
+}
+
+// TagStore records a node's automatic tags. Optional: nil means tagging is off.
+type TagStore interface {
+	SetAutoTags(ctx context.Context, nodeID uuid.UUID, tags []string) error
 }
 
 // Handler extracts a file's text and caches it. It is the worker's `extract`
@@ -44,6 +50,7 @@ type TextStore interface {
 type Handler struct {
 	opener    Opener
 	store     TextStore
+	tags      TagStore
 	extractor *Extractor
 	log       *slog.Logger
 
@@ -59,6 +66,21 @@ func NewHandler(opener Opener, store TextStore, ex *Extractor, log *slog.Logger)
 		log = slog.New(slog.NewTextHandler(io.Discard, nil))
 	}
 	return &Handler{opener: opener, store: store, extractor: ex, log: log}
+}
+
+// Tagging wires automatic tagging. Called at startup; nil-safe, so a deployment
+// that does not want tags simply never calls it.
+func (h *Handler) Tagging(tags TagStore) { h.tags = tags }
+
+// applyTags derives and stores a node's automatic tags, best effort — a tagging
+// failure must not fail an extraction that already produced searchable text.
+func (h *Handler) applyTags(ctx context.Context, nodeID uuid.UUID, mime, text string) {
+	if h.tags == nil {
+		return
+	}
+	if err := h.tags.SetAutoTags(ctx, nodeID, Tags(mime, text)); err != nil {
+		h.log.Warn("auto-tagging failed", "node", nodeID, "error", err)
+	}
 }
 
 // Chain wires a follow-on step run after a node gains extractable text — the
@@ -102,8 +124,12 @@ func (h *Handler) Handle(ctx context.Context, nodeID *uuid.UUID, ownerID uuid.UU
 		return err
 	}
 	if has {
-		// Already extracted — but this node may still need embedding (its content
-		// was extracted via a different file, or before semantic search was on).
+		// Already extracted — but this node still needs its own tags (tags are
+		// per-node), and may still need embedding (its content was extracted via a
+		// different file, or before semantic search was on). Tag from the cached
+		// text so keyword tags are applied even to an identical re-upload.
+		text, _, _ := h.store.DocText(ctx, fc.ContentHash)
+		h.applyTags(ctx, *nodeID, fc.MIME, text)
 		h.scheduleNext(ctx, nodeID, ownerID)
 		return nil
 	}
@@ -111,9 +137,10 @@ func (h *Handler) Handle(ctx context.Context, nodeID *uuid.UUID, ownerID uuid.UU
 	res, err := h.extractor.Extract(ctx, fc.MIME, fc.Reader)
 	switch {
 	case errors.Is(err, ErrUnsupported), errors.Is(err, ErrNoText), errors.Is(err, ErrNoOCR):
-		// Nothing worth indexing. A completed job, not a failure — retrying would
-		// just fail identically and burn the one worker slot.
+		// No text to index — but the file still gets its MIME-category tags. A
+		// video is tagged "video" though nothing was extracted from it.
 		h.log.Debug("nothing to extract", "node", *nodeID, "mime", fc.MIME, "reason", err)
+		h.applyTags(ctx, *nodeID, fc.MIME, "")
 		return nil
 	case err != nil:
 		return err
@@ -123,6 +150,7 @@ func (h *Handler) Handle(ctx context.Context, nodeID *uuid.UUID, ownerID uuid.UU
 	if err := h.store.PutDocText(ctx, fc.ContentHash, res.Text, res.Lang, res.Source); err != nil {
 		return err
 	}
+	h.applyTags(ctx, *nodeID, fc.MIME, res.Text)
 	// The file now has text; schedule embedding if the chain is wired.
 	h.scheduleNext(ctx, nodeID, ownerID)
 	return nil

@@ -42,6 +42,10 @@ func newFakeStore() *fakeStore {
 func (f *fakeStore) HasDocText(_ context.Context, h []byte) (bool, error) {
 	return f.has[hex.EncodeToString(h)], nil
 }
+func (f *fakeStore) DocText(_ context.Context, h []byte) (string, bool, error) {
+	t, ok := f.texts[hex.EncodeToString(h)]
+	return t, ok, nil
+}
 func (f *fakeStore) PutDocText(_ context.Context, h []byte, text, _, _ string) error {
 	f.texts[hex.EncodeToString(h)] = text
 	f.has[hex.EncodeToString(h)] = true
