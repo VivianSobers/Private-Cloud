@@ -23,6 +23,7 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"strings"
 	"syscall"
 	"time"
 
@@ -42,7 +43,7 @@ func main() {
 	// unchanged.
 	if len(os.Args) >= 2 {
 		switch os.Args[1] {
-		case "status", "sync", "pause", "resume":
+		case "status", "sync", "pause", "resume", "exclude":
 			os.Exit(ctlMain(os.Args[1], os.Args[2:]))
 		}
 	}
@@ -83,6 +84,9 @@ func run(log *slog.Logger, configPath string, once bool) error {
 
 	client := api.New(cfg.ServerURL, cfg.Username, cfg.AppPassword, userAgent())
 	eng := engine.New(client, st, cfg.Root, cfg.StateDir(), log)
+	// Seed selective-sync from the config only on first run; a live change made
+	// through the control surface persists and wins thereafter.
+	eng.SeedExcludes(cfg.Excludes)
 
 	// SIGINT/SIGTERM cancel the context, so a reconcile in flight finishes its
 	// current step and the daemon exits cleanly rather than mid-write.
@@ -123,6 +127,13 @@ func run(log *slog.Logger, configPath string, once bool) error {
 func ctlMain(action string, args []string) int {
 	fs := flag.NewFlagSet("pcsync "+action, flag.ExitOnError)
 	configPath := fs.String("config", "config.json", "path to the JSON config file")
+
+	// `exclude` takes up to two leading positionals (a sub-action and a path) before
+	// its flags, so `pcsync exclude add /Videos -config c.json` parses cleanly.
+	var sub, exPath string
+	if action == "exclude" {
+		args, sub, exPath = leadingPositionals(args)
+	}
 	_ = fs.Parse(args)
 
 	cfg, err := config.Load(*configPath)
@@ -160,8 +171,85 @@ func ctlMain(action string, args []string) int {
 			return 1
 		}
 		fmt.Println("automatic syncing resumed")
+	case "exclude":
+		return ctlExclude(ctx, client, sub, exPath)
 	}
 	return 0
+}
+
+// leadingPositionals peels up to two leading non-flag arguments off args, so a
+// subcommand can take positionals before its flags.
+func leadingPositionals(args []string) (rest []string, first, second string) {
+	rest = args
+	if len(rest) > 0 && !strings.HasPrefix(rest[0], "-") {
+		first, rest = rest[0], rest[1:]
+	}
+	if len(rest) > 0 && !strings.HasPrefix(rest[0], "-") {
+		second, rest = rest[0], rest[1:]
+	}
+	return rest, first, second
+}
+
+// ctlExclude runs the selective-sync subcommands: list, add <path>, remove <path>.
+func ctlExclude(ctx context.Context, client *control.Client, sub, path string) int {
+	switch sub {
+	case "", "list":
+		ex, err := client.Excludes(ctx)
+		if err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			return 1
+		}
+		printExcludes(ex)
+	case "add", "remove":
+		if path == "" {
+			fmt.Fprintf(os.Stderr, "usage: pcsync exclude %s <server-path> -config <file>\n", sub)
+			return 2
+		}
+		current, err := client.Excludes(ctx)
+		if err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			return 1
+		}
+		next := editExcludes(current, sub, path)
+		updated, err := client.SetExcludes(ctx, next)
+		if err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			return 1
+		}
+		printExcludes(updated)
+	default:
+		fmt.Fprintf(os.Stderr, "unknown exclude action %q (want list, add, remove)\n", sub)
+		return 2
+	}
+	return 0
+}
+
+// editExcludes applies an add or remove to a set, matching a removal against the
+// normalized form so `Videos`, `/Videos` and `/Videos/` all remove the same rule.
+func editExcludes(current []string, action, path string) []string {
+	if action == "add" {
+		return append(current, path)
+	}
+	target := "/" + strings.Trim(strings.TrimSpace(path), "/")
+	var out []string
+	for _, p := range current {
+		if p != target {
+			out = append(out, p)
+		}
+	}
+	return out
+}
+
+// printExcludes renders the selective-sync set.
+func printExcludes(ex []string) {
+	if len(ex) == 0 {
+		fmt.Println("no folders excluded — syncing the whole tree")
+		return
+	}
+	fmt.Println("excluded from this device:")
+	for _, p := range ex {
+		fmt.Printf("  %s\n", p)
+	}
 }
 
 // printStatus renders a status response as a short human-readable block.

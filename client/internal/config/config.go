@@ -34,6 +34,10 @@ type Config struct {
 	// RescanSeconds is how often a full local rescan runs, catching anything the
 	// filesystem watcher missed. A missed inotify event is caught here, not lost.
 	RescanSeconds int `json:"rescan_seconds"`
+	// Excludes is the selective-sync set: server-path prefixes this device does not
+	// sync (e.g. "/Videos"). Excluded subtrees are never downloaded here and their
+	// absence never deletes them on the server. Empty means sync the whole tree.
+	Excludes []string `json:"excludes"`
 }
 
 // Defaults applied when a field is left zero.
