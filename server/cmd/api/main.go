@@ -12,6 +12,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"strconv"
 	"strings"
 	"syscall"
 	"time"
@@ -23,6 +24,7 @@ import (
 	"github.com/guru-bharadwaj20/private-cloud/server/internal/cas"
 	"github.com/guru-bharadwaj20/private-cloud/server/internal/config"
 	"github.com/guru-bharadwaj20/private-cloud/server/internal/db"
+	"github.com/guru-bharadwaj20/private-cloud/server/internal/embed"
 	"github.com/guru-bharadwaj20/private-cloud/server/internal/extract"
 	"github.com/guru-bharadwaj20/private-cloud/server/internal/files"
 	"github.com/guru-bharadwaj20/private-cloud/server/internal/httpapi"
@@ -188,14 +190,27 @@ func run() error {
 			"interval", cfg.BlobMigrateInterval.String(), "batch", cfg.BlobMigrateBatch)
 	}
 
+	apiServer := httpapi.NewServer(log, database, m, authSvc, filesSvc, sharesSvc, httpapi.Options{
+		Version:      version,
+		Commit:       commit,
+		CookieName:   cfg.CookieName,
+		CookieSecure: cfg.CookieSecure,
+	})
+
+	// Semantic search: if an inference sidecar is configured, the API embeds the
+	// QUERY through it (an RPC, never a resident model here) and ranks by vector
+	// similarity. Unset means the semantic endpoint reports "unavailable" and
+	// lexical search is unaffected.
+	if embedURL := os.Getenv("PC_EMBED_URL"); embedURL != "" {
+		model := envOr("PC_EMBED_MODEL", "bge-small-en-v1.5")
+		dim := envInt("PC_EMBED_DIM", 384)
+		apiServer.SetEmbedder(embed.NewClient(embedURL, model, dim))
+		log.Info("semantic search enabled", "sidecar", embedURL, "model", model, "dim", dim)
+	}
+
 	srv := &http.Server{
-		Addr: cfg.HTTPAddr,
-		Handler: httpapi.NewServer(log, database, m, authSvc, filesSvc, sharesSvc, httpapi.Options{
-			Version:      version,
-			Commit:       commit,
-			CookieName:   cfg.CookieName,
-			CookieSecure: cfg.CookieSecure,
-		}).Handler(),
+		Addr:    cfg.HTTPAddr,
+		Handler: apiServer.Handler(),
 
 		// Timeouts are not optional on a server that will accept uploads from
 		// the internet-adjacent world. Without them a handful of slow-loris
@@ -368,6 +383,23 @@ func (e extractEnqueuer) EnqueueExtract(ctx context.Context, nodeID, ownerID uui
 		jobs.EnqueueOptions{OwnerQueueCap: 50000}); err != nil {
 		e.log.Warn("enqueue extraction failed", "node", nodeID, "error", err)
 	}
+}
+
+func envOr(key, def string) string {
+	if v := os.Getenv(key); v != "" {
+		return v
+	}
+	return def
+}
+
+func envInt(key string, def int) int {
+	if v := os.Getenv(key); v != "" {
+		if n, err := strconv.Atoi(v); err == nil {
+			return n
+		}
+		slog.Warn("ignoring unparseable integer", "key", key, "value", v)
+	}
+	return def
 }
 
 func newLogger(cfg *config.Config) *slog.Logger {

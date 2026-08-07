@@ -18,13 +18,17 @@ import (
 	"log/slog"
 	"os"
 	"os/signal"
+	"strconv"
 	"strings"
 	"syscall"
 	"time"
 
+	"github.com/google/uuid"
+
 	"github.com/guru-bharadwaj20/private-cloud/server/internal/blob"
 	"github.com/guru-bharadwaj20/private-cloud/server/internal/cas"
 	"github.com/guru-bharadwaj20/private-cloud/server/internal/db"
+	"github.com/guru-bharadwaj20/private-cloud/server/internal/embed"
 	"github.com/guru-bharadwaj20/private-cloud/server/internal/extract"
 	"github.com/guru-bharadwaj20/private-cloud/server/internal/files"
 	"github.com/guru-bharadwaj20/private-cloud/server/internal/jobs"
@@ -71,11 +75,11 @@ func run() error {
 		Lease: envDuration("PC_WORKER_LEASE", 10*time.Minute),
 	})
 
-	// The extract handler needs to read file content. Co-located here (same box as
-	// the blob store), it reads blobs directly; PC_BLOB_PATH is required for that.
-	// A GPU worker on another box would instead pull content over the download API
-	// — same handler, different Opener — but that adapter is not wired yet.
-	if err := registerExtract(runner, database, log); err != nil {
+	// The handlers need to read file content. Co-located here (same box as the blob
+	// store), they read blobs directly; PC_BLOB_PATH is required for that. A GPU
+	// worker on another box would instead pull content over the download API —
+	// same handlers, different Opener — but that adapter is not wired yet.
+	if err := registerHandlers(runner, store, database, log); err != nil {
 		return err
 	}
 
@@ -89,14 +93,14 @@ func run() error {
 	return nil
 }
 
-// registerExtract wires the text-extraction handler, if a blob path is
-// configured. Without PC_BLOB_PATH the worker still runs (reaping, pruning) but
-// registers no handler — a deployment can defer OCR by simply not pointing it at
-// the blobs.
-func registerExtract(runner *jobs.Runner, database *db.DB, log *slog.Logger) error {
+// registerHandlers wires the extraction handler, and — when an embedding sidecar
+// is configured — the embed handler and the extract→embed chain. Without
+// PC_BLOB_PATH the worker still runs (reaping, pruning) but registers no handler,
+// so a deployment can defer intelligence by simply not pointing it at the blobs.
+func registerHandlers(runner *jobs.Runner, store *jobs.Store, database *db.DB, log *slog.Logger) error {
 	blobPath := os.Getenv("PC_BLOB_PATH")
 	if blobPath == "" {
-		log.Warn("PC_BLOB_PATH not set; extraction handler not registered")
+		log.Warn("PC_BLOB_PATH not set; no content handlers registered")
 		return nil
 	}
 
@@ -112,13 +116,32 @@ func registerExtract(runner *jobs.Runner, database *db.DB, log *slog.Logger) err
 	filesSvc.SetCAS(casStore)
 
 	ex := extract.New()
-	log.Info("extraction handler registered", "ocr_available", ex.HasOCR())
-	handler := extract.NewHandler(files.NewExtractOpener(filesSvc), filesSvc.Store(), ex, log)
+	extractHandler := extract.NewHandler(files.NewExtractOpener(filesSvc), filesSvc.Store(), ex, log)
 
-	// Adapt a claimed job into the handler's node/owner arguments, keeping the
-	// extract package free of any dependency on the jobs package.
+	// Semantic search: an inference sidecar embeds document text. When one is
+	// configured, register the embed handler and chain extraction to enqueue an
+	// embed job once a file has text. Without it, extraction stops at searchable
+	// text and no embed jobs are created.
+	if embedURL := os.Getenv("PC_EMBED_URL"); embedURL != "" {
+		model := envOr("PC_EMBED_MODEL", "bge-small-en-v1.5")
+		dim := envInt("PC_EMBED_DIM", 384)
+		client := embed.NewClient(embedURL, model, dim)
+		embedHandler := embed.NewHandler(filesSvc.Store(), filesSvc.Store(), client, log)
+		runner.Register(embed.Kind, func(ctx context.Context, j jobs.Job) error {
+			return embedHandler.Handle(ctx, j.NodeID, j.OwnerID)
+		})
+		extractHandler.Chain(func(ctx context.Context, nodeID *uuid.UUID, ownerID uuid.UUID) {
+			if _, _, err := store.Enqueue(ctx, embed.Kind, nodeID, ownerID,
+				jobs.EnqueueOptions{OwnerQueueCap: 50000}); err != nil {
+				log.Warn("enqueue embed failed", "error", err)
+			}
+		})
+		log.Info("semantic embedding enabled", "sidecar", embedURL, "model", model, "dim", dim)
+	}
+
+	log.Info("extraction handler registered", "ocr_available", ex.HasOCR())
 	runner.Register(extract.Kind, func(ctx context.Context, j jobs.Job) error {
-		return handler.Handle(ctx, j.NodeID, j.OwnerID)
+		return extractHandler.Handle(ctx, j.NodeID, j.OwnerID)
 	})
 	return nil
 }
@@ -139,6 +162,23 @@ func prune(ctx context.Context, store *jobs.Store, retention time.Duration, log 
 			}
 		}
 	}
+}
+
+func envOr(key, def string) string {
+	if v := os.Getenv(key); v != "" {
+		return v
+	}
+	return def
+}
+
+func envInt(key string, def int) int {
+	if v := os.Getenv(key); v != "" {
+		if n, err := strconv.Atoi(v); err == nil {
+			return n
+		}
+		slog.Warn("ignoring unparseable integer", "key", key, "value", v)
+	}
+	return def
 }
 
 func envDuration(key string, def time.Duration) time.Duration {
