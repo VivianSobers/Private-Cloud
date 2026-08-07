@@ -318,7 +318,18 @@ func TestListAndRetryFailed(t *testing.T) {
 		t.Fatal("failed job not listed")
 	}
 
-	if _, err := f.store.RetryFailed(ctx); err != nil {
+	// A filter naming a different kind must leave this job dead-lettered.
+	if n, err := f.store.RetryFailed(ctx, "some-other-kind"); err != nil {
+		t.Fatal(err)
+	} else if n != 0 {
+		t.Errorf("retry of an unrelated kind requeued %d job(s), want 0", n)
+	}
+	if s := f.stateOf(t, id); s != StateFailed {
+		t.Errorf("job state after filtered retry = %s, want failed", s)
+	}
+
+	// An empty filter is the explicit "retry everything".
+	if _, err := f.store.RetryFailed(ctx, ""); err != nil {
 		t.Fatal(err)
 	}
 	if s := f.stateOf(t, id); s != StateQueued {
