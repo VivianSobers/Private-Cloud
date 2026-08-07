@@ -91,6 +91,12 @@ func (r *Runner) Run(ctx context.Context) error {
 		worked, err := r.step(ctx)
 		if err != nil {
 			r.log.Warn("job step failed", "error", err)
+			// An error here is the QUEUE failing, not a job failing — Fail or
+			// Complete could not write. Treating that as work done skips the idle
+			// wait, so a database outage becomes a hot loop hammering a database
+			// that is already in trouble. Back off exactly as if the queue were
+			// empty, which is operationally what it is.
+			worked = false
 		}
 		if !worked {
 			// Nothing to do: wait, but stay responsive to cancellation.
