@@ -51,6 +51,12 @@ type Server struct {
 	// Guards the auth endpoints against online guessing. 20/min with a burst
 	// of 10 is invisible to a human signing in and useless to a script.
 	authLimiter *rateLimiter
+
+	// Guards search, which is the one authenticated route whose cost lands on a
+	// shared resource — the inference sidecar — rather than on the caller's own
+	// data. Keyed per user, and loose enough that the debounced search box in the
+	// web client never meets it.
+	searchLimiter *rateLimiter
 }
 
 // SetEmbedder enables semantic search by wiring the query embedder. Left unset
@@ -81,6 +87,10 @@ func NewServer(log *slog.Logger, database *db.DB, m *metrics.Metrics, authSvc *a
 		cookieName:   opts.CookieName,
 		cookieSecure: opts.CookieSecure,
 		authLimiter:  newRateLimiter(20, 10),
+		// 120/min, burst 30: the web client debounces at 200ms, so even a fast
+		// typist stays well inside this, while a scripted loop against the
+		// sidecar is bounded.
+		searchLimiter: newRateLimiter(120, 30),
 	}
 }
 
@@ -196,7 +206,15 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("DELETE /api/v1/trash/{id}", s.requireAuth(s.handlePurgeNode))
 
 	mux.HandleFunc("GET /api/v1/usage", s.requireAuth(s.handleUsage))
-	mux.HandleFunc("GET /api/v1/search", s.requireAuth(s.handleSearch))
+	// Search is rate limited even though it is authenticated. Every other
+	// authenticated route costs a query against the caller's own data; a semantic
+	// query costs an RPC to the inference sidecar, which is a shared, serialised,
+	// possibly GPU-bound resource that one session can otherwise saturate for
+	// everyone. The limiter is generous enough that a person typing into the
+	// debounced search box never meets it.
+	// requireAuth is OUTSIDE the limiter deliberately: the limiter keys on the
+	// authenticated user, so authentication has to have happened first.
+	mux.HandleFunc("GET /api/v1/search", s.requireAuth(s.searchLimited(s.handleSearch)))
 
 	// --- tags ----------------------------------------------------------------
 	// Auto tags are applied by the worker; users curate on top. A node's tags

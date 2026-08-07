@@ -95,6 +95,38 @@ func (s *Server) withRateLimit(next http.Handler) http.Handler {
 	})
 }
 
+// searchLimited guards the search endpoint.
+//
+// Search is the one authenticated route whose cost is not paid in the caller's
+// own data. A semantic query is an RPC to the inference sidecar — a shared,
+// serialised, often GPU-bound service with no auth and no concurrency limit of
+// its own — so a single session in a loop can saturate it for every other user,
+// and on the split-tier deployment can saturate a whole other machine.
+//
+// Keyed per user rather than per IP, unlike the auth limiter: here we HAVE an
+// authenticated identity, so one heavy user can be slowed without touching
+// anyone else. The auth limiter cannot do that, because its whole purpose is to
+// guard the endpoints that establish who you are.
+//
+// The budget is deliberately loose. The web client debounces at 200ms, so a fast
+// typist generates a few queries a second in bursts; 120/min with a burst of 30
+// is invisible to that and still bounds a scripted loop.
+func (s *Server) searchLimited(next http.HandlerFunc) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		key := clientIP(r)
+		if u := CurrentUser(r.Context()); u != nil {
+			key = "user:" + u.ID.String()
+		}
+		if !s.searchLimiter.allow(key) {
+			w.Header().Set("Retry-After", "10")
+			writeError(w, r, http.StatusTooManyRequests, "rate_limited",
+				"too many searches; slow down and try again shortly")
+			return
+		}
+		next(w, r)
+	}
+}
+
 // clientIP extracts the peer address.
 //
 // It deliberately does NOT trust X-Forwarded-For. Caddy is the only ingress and
