@@ -44,7 +44,7 @@ func main() {
 	// unchanged.
 	if len(os.Args) >= 2 {
 		switch os.Args[1] {
-		case "status", "watch", "sync", "pause", "resume", "exclude":
+		case "status", "watch", "sync", "pause", "resume", "exclude", "conflicts":
 			os.Exit(ctlMain(os.Args[1], os.Args[2:]))
 		}
 	}
@@ -132,7 +132,7 @@ func ctlMain(action string, args []string) int {
 	// `exclude` takes up to two leading positionals (a sub-action and a path) before
 	// its flags, so `pcsync exclude add /Videos -config c.json` parses cleanly.
 	var sub, exPath string
-	if action == "exclude" {
+	if action == "exclude" || action == "conflicts" {
 		args, sub, exPath = leadingPositionals(args)
 	}
 	_ = fs.Parse(args)
@@ -176,6 +176,40 @@ func ctlMain(action string, args []string) int {
 		fmt.Println("automatic syncing resumed")
 	case "exclude":
 		return ctlExclude(ctx, client, sub, exPath)
+	case "conflicts":
+		return ctlConflicts(ctx, client, sub)
+	}
+	return 0
+}
+
+// ctlConflicts lists the conflict copies awaiting a decision, or clears the log
+// once they have been dealt with.
+func ctlConflicts(ctx context.Context, client *control.Client, sub string) int {
+	switch sub {
+	case "", "list":
+		conflicts, err := client.Conflicts(ctx)
+		if err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			return 1
+		}
+		if len(conflicts) == 0 {
+			fmt.Println("no conflicts — nothing needs your attention")
+			return 0
+		}
+		fmt.Printf("%d conflict(s) — the server's version kept the original name; your\n", len(conflicts))
+		fmt.Println("edit was set aside as the copy. Keep whichever you want, delete the other:")
+		for _, c := range conflicts {
+			fmt.Printf("  %s\n    server → %s\n    yours  → %s\n", tray.RelTime(c.At), c.Original, c.Copy)
+		}
+	case "clear":
+		if err := client.ClearConflicts(ctx); err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			return 1
+		}
+		fmt.Println("conflict list cleared")
+	default:
+		fmt.Fprintf(os.Stderr, "unknown conflicts action %q (want list, clear)\n", sub)
+		return 2
 	}
 	return 0
 }
