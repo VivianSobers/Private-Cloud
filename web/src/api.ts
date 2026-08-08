@@ -38,12 +38,43 @@ export interface Node {
   updated_at: string;
   /** Present on a single-node GET: the file's tags, auto and user. */
   tags?: NodeTag[];
+  /** Media metadata, present once the `media` job has analysed the file's bytes. */
+  media?: Media;
 }
 
 /** A tag on a file, and how it got there. */
 export interface NodeTag {
   name: string;
   source: "auto" | "user";
+}
+
+/** Media metadata on a file. Every field is optional — a PNG has no `taken_at`,
+ *  a video has no `gps` — so a gallery reads defensively. */
+export interface Media {
+  width?: number;
+  height?: number;
+  orientation?: number;
+  /** When the shutter fired — what a timeline sorts by, NOT created_at. The
+   *  client falls back to the node's updated_at itself when this is absent. */
+  taken_at?: string;
+  camera?: string;
+  gps?: { lat: number; lon: number };
+  duration_ms?: number;
+  /** Which derived sizes exist right now, e.g. ["thumb","preview"], so a tile
+   *  knows whether to ask for a thumbnail or fall back rather than 404 per tile. */
+  variants?: string[];
+}
+
+/** A user-ordered collection of nodes. NOT a folder: a node can be in many
+ *  albums, and being in one does not move or copy it. */
+export interface Album {
+  id: string;
+  name: string;
+  description: string;
+  item_count: number;
+  cover_node_id?: string;
+  created_at: string;
+  updated_at: string;
 }
 
 /** A search result: a node, plus why the query matched it. */
@@ -344,6 +375,67 @@ export const api = {
   // stream a video straight into <video>, none of which a blob in memory does.
   downloadUrl: (id: string, forceDownload = false) =>
     `/api/v1/nodes/${id}/content${forceDownload ? "?download=1" : ""}`,
+
+  // --- media & albums (Phase 5) ---------------------------------------------
+
+  // A plain <img src>: a variant of a file's content. The browser gets ETags,
+  // range requests and its own cache for free, exactly like downloadUrl. `thumb`
+  // may 404 until the media job has produced it — a tile handles that itself.
+  contentUrl: (id: string, variant?: "thumb" | "preview" | "original") =>
+    `/api/v1/nodes/${id}/content${variant ? `?variant=${variant}` : ""}`,
+
+  // The gallery's primary read: media files sorted by taken_at, paged by date.
+  timeline: (opts: { from?: string; to?: string; limit?: number; offset?: number } = {}) => {
+    const p = new URLSearchParams();
+    if (opts.from) p.set("from", opts.from);
+    if (opts.to) p.set("to", opts.to);
+    if (opts.limit != null) p.set("limit", String(opts.limit));
+    if (opts.offset != null) p.set("offset", String(opts.offset));
+    const q = p.toString();
+    return request<{ items: Node[]; has_more: boolean }>(`/api/v1/media/timeline${q ? `?${q}` : ""}`);
+  },
+
+  albums: () => request<{ albums: Album[] }>("/api/v1/albums"),
+
+  album: (id: string, opts: { limit?: number; offset?: number } = {}) => {
+    const p = new URLSearchParams();
+    if (opts.limit != null) p.set("limit", String(opts.limit));
+    if (opts.offset != null) p.set("offset", String(opts.offset));
+    const q = p.toString();
+    return request<{ album: Album; items: Node[] }>(`/api/v1/albums/${id}${q ? `?${q}` : ""}`);
+  },
+
+  createAlbum: (name: string, description?: string) =>
+    request<{ album: Album }>("/api/v1/albums", {
+      method: "POST",
+      body: JSON.stringify({ name, description }),
+    }),
+
+  updateAlbum: (id: string, patch: { name?: string; description?: string; cover_node_id?: string }) =>
+    request<{ album: Album }>(`/api/v1/albums/${id}`, {
+      method: "PATCH",
+      body: JSON.stringify(patch),
+    }),
+
+  deleteAlbum: (id: string) =>
+    request<{ status: string }>(`/api/v1/albums/${id}`, { method: "DELETE" }),
+
+  addToAlbum: (id: string, nodeIds: string[]) =>
+    request<{ status: string }>(`/api/v1/albums/${id}/items`, {
+      method: "POST",
+      body: JSON.stringify({ node_ids: nodeIds }),
+    }),
+
+  removeFromAlbum: (id: string, nodeId: string) =>
+    request<{ status: string }>(`/api/v1/albums/${id}/items/${nodeId}`, { method: "DELETE" }),
+
+  // Replaces the whole order in one call — a drag-reorder that issued N updates
+  // would be N chances to end up half-applied.
+  reorderAlbum: (id: string, nodeIds: string[]) =>
+    request<{ album: Album }>(`/api/v1/albums/${id}/items`, {
+      method: "PATCH",
+      body: JSON.stringify({ node_ids: nodeIds }),
+    }),
 
   // --- versions -------------------------------------------------------------
 
