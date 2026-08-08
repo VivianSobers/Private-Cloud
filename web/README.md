@@ -39,6 +39,7 @@ src/upload.ts      upload strategy: plain POST vs tus
 src/App.tsx        shell, session state, view switching
 src/SignIn.tsx     bootstrap, sign-in, recovery redemption
 src/Browser.tsx    the file browser
+src/Photos.tsx     photo timeline + albums (Phase 5 media surface)
 src/Trash.tsx      restore and purge
 src/Settings.tsx   passkeys, sessions, recovery codes, app passwords, audit
 src/styles.css     hand-rolled, no framework
