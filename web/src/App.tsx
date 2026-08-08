@@ -3,10 +3,11 @@ import { useCallback, useEffect, useState } from "react";
 import { ApiError, api, type Me } from "./api";
 import { SignIn } from "./SignIn";
 import { Browser } from "./Browser";
+import { Photos } from "./Photos";
 import { Settings } from "./Settings";
 import { RecoveryCodes } from "./RecoveryCodes";
 
-type View = "files" | "settings";
+type View = "files" | "photos" | "settings";
 
 export function App() {
   const [me, setMe] = useState<Me | null>(null);
@@ -69,6 +70,9 @@ export function App() {
           <button className="link" onClick={() => setView("files")} aria-current={view === "files"}>
             Files
           </button>
+          <button className="link" onClick={() => setView("photos")} aria-current={view === "photos"}>
+            Photos
+          </button>
           <button className="link" onClick={() => setView("settings")} aria-current={view === "settings"}>
             Settings
           </button>
@@ -109,6 +113,8 @@ export function App() {
 
       {view === "files" ? (
         <Browser />
+      ) : view === "photos" ? (
+        <Photos />
       ) : (
         <Settings me={me} onChanged={refresh} onCodes={setFreshCodes} />
       )}
