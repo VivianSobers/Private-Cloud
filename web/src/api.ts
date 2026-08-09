@@ -94,6 +94,29 @@ export interface Access {
   shared: boolean;
 }
 
+/** A user account, as seen by an admin. */
+export interface AdminUser {
+  id: string;
+  username: string;
+  display_name: string;
+  is_admin: boolean;
+  disabled: boolean;
+  quota_bytes: number;
+  used_bytes?: number;
+  created_at: string;
+}
+
+/** One authorisation-relevant event in the append-only audit log. */
+export interface AuditEntry {
+  id: string;
+  at: string;
+  actor: string;
+  action: string;
+  target: string;
+  request_id?: string;
+  detail?: Record<string, unknown>;
+}
+
 /** A user-ordered collection of nodes. NOT a folder: a node can be in many
  *  albums, and being in one does not move or copy it. */
 export interface Album {
@@ -488,6 +511,38 @@ export const api = {
 
   // The roots others have shared with me — the "Shared with me" view.
   shared: () => request<{ items: Node[] }>("/api/v1/shared"),
+
+  // --- admin (Phase 7) — all 403 for non-admins -----------------------------
+
+  adminUsers: () => request<{ users: AdminUser[] }>("/api/v1/admin/users"),
+
+  createUser: (body: { username: string; display_name?: string; is_admin?: boolean }) =>
+    request<{ user: AdminUser }>("/api/v1/admin/users", {
+      method: "POST",
+      body: JSON.stringify(body),
+    }),
+
+  updateUser: (
+    id: string,
+    patch: { display_name?: string; is_admin?: boolean; disabled?: boolean; quota_bytes?: number },
+  ) =>
+    request<{ user: AdminUser }>(`/api/v1/admin/users/${id}`, {
+      method: "PATCH",
+      body: JSON.stringify(patch),
+    }),
+
+  deleteUser: (id: string) =>
+    request<{ status: string }>(`/api/v1/admin/users/${id}`, { method: "DELETE" }),
+
+  adminAudit: (opts: { actor?: string; action?: string; limit?: number; offset?: number } = {}) => {
+    const p = new URLSearchParams();
+    if (opts.actor) p.set("actor", opts.actor);
+    if (opts.action) p.set("action", opts.action);
+    if (opts.limit != null) p.set("limit", String(opts.limit));
+    if (opts.offset != null) p.set("offset", String(opts.offset));
+    const q = p.toString();
+    return request<{ entries: AuditEntry[]; has_more?: boolean }>(`/api/v1/admin/audit${q ? `?${q}` : ""}`);
+  },
 
   // --- versions -------------------------------------------------------------
 
