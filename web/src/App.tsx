@@ -5,9 +5,10 @@ import { SignIn } from "./SignIn";
 import { Browser } from "./Browser";
 import { Photos } from "./Photos";
 import { Settings } from "./Settings";
+import { SharedWithMe } from "./SharedWithMe";
 import { RecoveryCodes } from "./RecoveryCodes";
 
-type View = "files" | "photos" | "settings";
+type View = "files" | "photos" | "shared" | "settings";
 
 export function App() {
   const [me, setMe] = useState<Me | null>(null);
@@ -73,6 +74,9 @@ export function App() {
           <button className="link" onClick={() => setView("photos")} aria-current={view === "photos"}>
             Photos
           </button>
+          <button className="link" onClick={() => setView("shared")} aria-current={view === "shared"}>
+            Shared
+          </button>
           <button className="link" onClick={() => setView("settings")} aria-current={view === "settings"}>
             Settings
           </button>
@@ -115,6 +119,8 @@ export function App() {
         <Browser />
       ) : view === "photos" ? (
         <Photos />
+      ) : view === "shared" ? (
+        <SharedWithMe />
       ) : (
         <Settings me={me} onChanged={refresh} onCodes={setFreshCodes} />
       )}
