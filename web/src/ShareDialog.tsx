@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 
 import { ApiError, api, type CreatedShare, type Node } from "./api";
+import { PeopleShare } from "./PeopleShare";
 
 // Create a public link for one file or folder. The token comes back exactly once
 // — it is stored only hashed — so the created link is shown here to copy now, and
@@ -60,6 +61,11 @@ export function ShareDialog({ node, onClose }: { node: Node; onClose: () => void
         </div>
 
         {error && <div className="banner error">{error}</div>}
+
+        <PeopleShare node={node} />
+
+        <hr className="divider" />
+        <strong className="small">Public link</strong>
 
         {created ? (
           <>
