@@ -499,3 +499,27 @@ dialog::backdrop {
 .link.danger {
   color: var(--danger);
 }
+
+/* --- Admin console (Phase 7) ---------------------------------------------- */
+.table-scroll {
+  overflow-x: auto;
+}
+.admin-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 0.9rem;
+}
+.admin-table th,
+.admin-table td {
+  text-align: left;
+  padding: 0.4rem 0.6rem;
+  border-bottom: 1px solid var(--border);
+  vertical-align: top;
+}
+.admin-table th {
+  color: var(--fg-muted);
+  font-weight: 600;
+}
+.admin-table .row-disabled {
+  opacity: 0.55;
+}
