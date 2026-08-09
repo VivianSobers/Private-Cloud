@@ -40,6 +40,9 @@ export interface Node {
   tags?: NodeTag[];
   /** Media metadata, present once the `media` job has analysed the file's bytes. */
   media?: Media;
+  /** Present only on a node the caller does not own (shared with them). Absent
+   *  means the node is the caller's own. */
+  access?: Access;
 }
 
 /** A tag on a file, and how it got there. */
@@ -63,6 +66,32 @@ export interface Media {
   /** Which derived sizes exist right now, e.g. ["thumb","preview"], so a tile
    *  knows whether to ask for a thumbnail or fall back rather than 404 per tile. */
   variants?: string[];
+}
+
+/** How a node is shared with a user. `owner` is the file's actual owner and
+ *  cannot be granted away. */
+export type Role = "viewer" | "editor" | "owner";
+
+/** A grant gives a user access to one node (and, for a folder, everything under
+ *  it). Grants inherit down a folder; inherited_from names the ancestor a grant
+ *  came from, so a UI can explain *why* someone has access. */
+export interface Grant {
+  id: string;
+  node_id: string;
+  path: string;
+  owner: string;
+  grantee: string;
+  role: Role;
+  inherited_from?: string;
+  created_at: string;
+}
+
+/** Present on a node the caller does NOT own, once shared content is included.
+ *  Its absence means "mine". */
+export interface Access {
+  role: Role;
+  owner: string;
+  shared: boolean;
 }
 
 /** A user-ordered collection of nodes. NOT a folder: a node can be in many
@@ -436,6 +465,29 @@ export const api = {
       method: "PATCH",
       body: JSON.stringify({ node_ids: nodeIds }),
     }),
+
+  // --- grants & collaboration (Phase 7) -------------------------------------
+
+  // Both directions: what I've shared, and what's been shared with me.
+  grants: () => request<{ granted: Grant[]; received: Grant[] }>("/api/v1/grants"),
+
+  grant: (nodeId: string, username: string, role: Role) =>
+    request<{ grant: Grant }>(`/api/v1/nodes/${nodeId}/grants`, {
+      method: "POST",
+      body: JSON.stringify({ username, role }),
+    }),
+
+  updateGrant: (grantId: string, role: Role) =>
+    request<{ grant: Grant }>(`/api/v1/grants/${grantId}`, {
+      method: "PATCH",
+      body: JSON.stringify({ role }),
+    }),
+
+  revokeGrant: (grantId: string) =>
+    request<{ status: string }>(`/api/v1/grants/${grantId}`, { method: "DELETE" }),
+
+  // The roots others have shared with me — the "Shared with me" view.
+  shared: () => request<{ items: Node[] }>("/api/v1/shared"),
 
   // --- versions -------------------------------------------------------------
 
