@@ -456,3 +456,46 @@ dialog::backdrop {
   color: #e7e9ec;
   cursor: default;
 }
+
+/* --- Collaboration / sharing (Phase 7) ------------------------------------ */
+.divider {
+  border: none;
+  border-top: 1px solid var(--border);
+  margin: 0.5rem 0;
+}
+.grant-list,
+.shared-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.35rem;
+}
+.grant-list li {
+  align-items: center;
+}
+.shared-item {
+  align-items: center;
+  gap: var(--gap);
+  padding: 0.5rem;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+}
+.shared-icon {
+  font-size: 1.4rem;
+}
+.role-badge {
+  display: inline-block;
+  margin-left: 0.4rem;
+  padding: 0 0.4rem;
+  font-size: 0.7rem;
+  line-height: 1.4;
+  color: var(--accent);
+  border: 1px solid var(--accent);
+  border-radius: 999px;
+  vertical-align: middle;
+}
+.link.danger {
+  color: var(--danger);
+}
