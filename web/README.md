@@ -40,6 +40,9 @@ src/App.tsx        shell, session state, view switching
 src/SignIn.tsx     bootstrap, sign-in, recovery redemption
 src/Browser.tsx    the file browser
 src/Photos.tsx     photo timeline + albums (Phase 5 media surface)
+src/PeopleShare.tsx  grant/revoke user access on a node (Phase 7)
+src/SharedWithMe.tsx roots others shared with me (Phase 7)
+src/Admin.tsx      admin console: users + audit log (Phase 7, admin-only)
 src/Trash.tsx      restore and purge
 src/Settings.tsx   passkeys, sessions, recovery codes, app passwords, audit
 src/styles.css     hand-rolled, no framework
