@@ -2,13 +2,14 @@ import { useCallback, useEffect, useState } from "react";
 
 import { ApiError, api, type Me } from "./api";
 import { SignIn } from "./SignIn";
+import { Admin } from "./Admin";
 import { Browser } from "./Browser";
 import { Photos } from "./Photos";
 import { Settings } from "./Settings";
 import { SharedWithMe } from "./SharedWithMe";
 import { RecoveryCodes } from "./RecoveryCodes";
 
-type View = "files" | "photos" | "shared" | "settings";
+type View = "files" | "photos" | "shared" | "admin" | "settings";
 
 export function App() {
   const [me, setMe] = useState<Me | null>(null);
@@ -77,6 +78,11 @@ export function App() {
           <button className="link" onClick={() => setView("shared")} aria-current={view === "shared"}>
             Shared
           </button>
+          {me.user.is_admin && (
+            <button className="link" onClick={() => setView("admin")} aria-current={view === "admin"}>
+              Admin
+            </button>
+          )}
           <button className="link" onClick={() => setView("settings")} aria-current={view === "settings"}>
             Settings
           </button>
@@ -121,6 +127,10 @@ export function App() {
         <Photos />
       ) : view === "shared" ? (
         <SharedWithMe />
+      ) : view === "admin" && me.user.is_admin ? (
+        <Admin />
+      ) : view === "admin" ? (
+        <Browser />
       ) : (
         <Settings me={me} onChanged={refresh} onCodes={setFreshCodes} />
       )}
