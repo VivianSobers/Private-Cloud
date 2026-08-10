@@ -523,3 +523,51 @@ dialog::backdrop {
 .admin-table .row-disabled {
   opacity: 0.55;
 }
+
+/* --- Ask (Phase 8 retrieval) ---------------------------------------------- */
+.ask {
+  max-width: 900px;
+}
+.answer-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  counter-reset: answer;
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+}
+.answer-card {
+  padding: 0.6rem 0.75rem;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--bg-subtle);
+}
+.answer-icon {
+  margin-right: 0.4rem;
+}
+.answer-name {
+  font-weight: 600;
+}
+.answer-path {
+  margin-top: 0.15rem;
+  word-break: break-all;
+}
+.answer-meta {
+  margin-top: 0.35rem;
+  align-items: center;
+  gap: 0.4rem;
+}
+.relevance {
+  display: inline-block;
+  width: 80px;
+  height: 6px;
+  border-radius: 999px;
+  background: var(--bg-hover);
+  overflow: hidden;
+}
+.relevance-bar {
+  display: block;
+  height: 100%;
+  background: var(--accent);
+}
