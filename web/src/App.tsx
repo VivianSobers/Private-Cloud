@@ -3,13 +3,14 @@ import { useCallback, useEffect, useState } from "react";
 import { ApiError, api, type Me } from "./api";
 import { SignIn } from "./SignIn";
 import { Admin } from "./Admin";
+import { Ask } from "./Ask";
 import { Browser } from "./Browser";
 import { Photos } from "./Photos";
 import { Settings } from "./Settings";
 import { SharedWithMe } from "./SharedWithMe";
 import { RecoveryCodes } from "./RecoveryCodes";
 
-type View = "files" | "photos" | "shared" | "admin" | "settings";
+type View = "files" | "photos" | "ask" | "shared" | "admin" | "settings";
 
 export function App() {
   const [me, setMe] = useState<Me | null>(null);
@@ -75,6 +76,9 @@ export function App() {
           <button className="link" onClick={() => setView("photos")} aria-current={view === "photos"}>
             Photos
           </button>
+          <button className="link" onClick={() => setView("ask")} aria-current={view === "ask"}>
+            Ask
+          </button>
           <button className="link" onClick={() => setView("shared")} aria-current={view === "shared"}>
             Shared
           </button>
@@ -125,6 +129,8 @@ export function App() {
         <Browser />
       ) : view === "photos" ? (
         <Photos />
+      ) : view === "ask" ? (
+        <Ask />
       ) : view === "shared" ? (
         <SharedWithMe />
       ) : view === "admin" && me.user.is_admin ? (
