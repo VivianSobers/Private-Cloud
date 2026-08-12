@@ -68,6 +68,24 @@ two files, a decision a person can make and an automatic merge cannot.
    ./pcsync -config ./config.json -once    # one reconcile, then exit (cron, "sync now")
    ```
 
+Not syncing and not sure why? Run the preflight — it works without the daemon and
+diagnoses the usual causes in one shot:
+
+```bash
+pcsync doctor -config ./config.json
+```
+
+```
+✓ configuration    server https://cloud.example.ts.net · user vivian · root /home/vivian/PrivateCloud
+✓ state database   /home/vivian/PrivateCloud/.pcsync/state.db
+✓ server reachable https://cloud.example.ts.net (HTTP 200)
+✓ sign in          credential accepted; tree root reachable
+```
+
+It separates "server unreachable" from "credential rejected" so you fix the right
+thing — a `✗ sign in` with a `✓ server reachable` means the username or app
+password is wrong, not the network.
+
 The app password is exchanged for a short-lived **device token** on first
 contact; the password itself never touches the file endpoints. A device token
 can read and write your files but cannot manage account credentials — it cannot
