@@ -534,6 +534,91 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/Error"
+  "/api/v1/devices":
+    get:
+      operationId: getApiV1Devices
+      security:
+        - sessionCookie: []
+        - bearerToken: []
+      responses:
+        "default":
+          description: |
+            See docs/api-contract.md for this endpoint's request and response
+            bodies. Every failure uses the Error schema below.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+  "/api/v1/devices/{id}":
+    parameters:
+      - name: id
+        in: path
+        required: true
+        schema:
+          type: string
+    patch:
+      operationId: patchApiV1DevicesId
+      security:
+        - sessionCookie: []
+        - bearerToken: []
+      responses:
+        "default":
+          description: |
+            See docs/api-contract.md for this endpoint's request and response
+            bodies. Every failure uses the Error schema below.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+    delete:
+      operationId: deleteApiV1DevicesId
+      security:
+        - sessionCookie: []
+        - bearerToken: []
+      responses:
+        "default":
+          description: |
+            See docs/api-contract.md for this endpoint's request and response
+            bodies. Every failure uses the Error schema below.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+  "/api/v1/devices/{id}/push":
+    parameters:
+      - name: id
+        in: path
+        required: true
+        schema:
+          type: string
+    post:
+      operationId: postApiV1DevicesIdPush
+      security:
+        - sessionCookie: []
+        - bearerToken: []
+      responses:
+        "default":
+          description: |
+            See docs/api-contract.md for this endpoint's request and response
+            bodies. Every failure uses the Error schema below.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+    delete:
+      operationId: deleteApiV1DevicesIdPush
+      security:
+        - sessionCookie: []
+        - bearerToken: []
+      responses:
+        "default":
+          description: |
+            See docs/api-contract.md for this endpoint's request and response
+            bodies. Every failure uses the Error schema below.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
   "/api/v1/folders":
     post:
       operationId: postApiV1Folders

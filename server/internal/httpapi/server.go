@@ -273,6 +273,17 @@ func (s *Server) registerRoutes(mux router) {
 	mux.HandleFunc("GET /api/v1/tags", s.requireAuth(s.handleListTags))
 	mux.HandleFunc("GET /api/v1/tags/{tag}", s.requireAuth(s.handleTagNodes))
 
+	// --- devices (Phase 6) ---------------------------------------------------
+	// A device is a session of kind 'device'; these routes exist alongside
+	// /auth/sessions because a device list wants the CLIENT's identity rather
+	// than the session's. Push is a hook — the subscription is stored here and
+	// delivered by something else, never by this server.
+	mux.HandleFunc("GET /api/v1/devices", s.requireAuth(s.handleListDevices))
+	mux.HandleFunc("PATCH /api/v1/devices/{id}", s.requireAuth(s.handlePatchDevice))
+	mux.HandleFunc("DELETE /api/v1/devices/{id}", s.requireAuth(s.handleRevokeDevice))
+	mux.HandleFunc("POST /api/v1/devices/{id}/push", s.requireAuth(s.handleRegisterPush))
+	mux.HandleFunc("DELETE /api/v1/devices/{id}/push", s.requireAuth(s.handleUnregisterPush))
+
 	// --- media: timeline and albums (Phase 5) --------------------------------
 	// Derived renditions are NOT here: ?variant= is a parameter on the existing
 	// content route, so ranges, ETags and the share plane keep working for a

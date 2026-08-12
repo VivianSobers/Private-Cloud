@@ -21,9 +21,14 @@ ALTER TABLE sessions ADD COLUMN device_name text NOT NULL DEFAULT '';
 -- GET /changes — the existing, working path. Push is a latency optimisation and
 -- never a correctness requirement.
 CREATE TABLE push_subscriptions (
-    -- One subscription per device. ON DELETE CASCADE so revoking a session takes
-    -- its push registration with it: a revoked device must stop being a delivery
-    -- target in the same instant it stops being able to read anything.
+    -- One subscription per device.
+    --
+    -- The cascade covers the cases where a session row is genuinely DELETED —
+    -- deleting a user, sweeping expired sessions. It deliberately does NOT cover
+    -- revocation, which is a soft delete that stamps revoked_at and removes no
+    -- row, so the cascade never fires for it. Dropping the subscription on
+    -- revocation is done explicitly in RevokeDevice; a revoked device must stop
+    -- being a delivery target in the same instant it stops being able to read.
     session_id uuid PRIMARY KEY REFERENCES sessions (id) ON DELETE CASCADE,
     user_id    uuid NOT NULL REFERENCES users (id) ON DELETE CASCADE,
 

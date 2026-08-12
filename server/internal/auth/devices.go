@@ -101,15 +101,33 @@ func (s *Store) RenameDevice(ctx context.Context, userID, deviceID uuid.UUID, na
 //
 // Revocation is immediate: the token is checked per request and never cached,
 // which is the property that makes "I lost my laptop" a real answer.
+//
+// It also drops the device's push subscription, in the SAME statement. The
+// foreign key cascade does not cover this: revoking a session is a soft delete
+// that stamps revoked_at, so no row is ever removed and ON DELETE CASCADE never
+// fires. Without the explicit delete a revoked device stays a delivery target —
+// still receiving notifications about a library it can no longer read, which is
+// the one thing "I lost my laptop" most needs not to happen.
+//
+// One statement rather than two, so a failure between them cannot leave a live
+// subscription against a dead session. The count comes from the UPDATE, not the
+// DELETE, because a device that never registered for push must still revoke.
 func (s *Store) RevokeDevice(ctx context.Context, userID, deviceID uuid.UUID) error {
-	tag, err := s.pool.Exec(ctx, `
-		UPDATE sessions SET revoked_at = now()
-		WHERE id = $1 AND user_id = $2 AND kind = $3 AND revoked_at IS NULL`,
-		deviceID, userID, SessionKindDevice)
+	var revoked int
+	err := s.pool.QueryRow(ctx, `
+		WITH revoked AS (
+			UPDATE sessions SET revoked_at = now()
+			WHERE id = $1 AND user_id = $2 AND kind = $3 AND revoked_at IS NULL
+			RETURNING id
+		), dropped AS (
+			DELETE FROM push_subscriptions WHERE session_id IN (SELECT id FROM revoked)
+		)
+		SELECT count(*) FROM revoked`,
+		deviceID, userID, SessionKindDevice).Scan(&revoked)
 	if err != nil {
 		return err
 	}
-	if tag.RowsAffected() == 0 {
+	if revoked == 0 {
 		return ErrDeviceNotFound
 	}
 	return nil

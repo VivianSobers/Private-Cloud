@@ -112,7 +112,23 @@ func isRecoveryAllowedPath(path string) bool {
 // allowed; within auth, only identifying itself and signing out. Anything that
 // creates, lists or revokes credentials is refused, which is what keeps a device
 // token from doing what its originating app password cannot.
+// isDeviceAllowedPath reports whether a device session may reach a path.
+//
+// The rule is "credential management is off limits", and the device plane added
+// in Phase 6 is credential management even though it does not live under
+// /auth/: DELETE /devices/{id} revokes a token, and PATCH renames one. Letting a
+// device session reach it would mean a single leaked app password could revoke
+// every other device on the account — the exact privilege escalation the /auth/
+// confinement exists to prevent, one path prefix to the side.
+//
+// Push subscriptions live under /devices for the same reason: a device able to
+// register an endpoint against a SIBLING device's id would redirect that
+// device's notifications. The PWA that actually wants push holds a cookie
+// session, not a device token, so nothing legitimate is lost by confining this.
 func isDeviceAllowedPath(path string) bool {
+	if strings.HasPrefix(path, "/api/v1/devices") {
+		return false
+	}
 	if !strings.HasPrefix(path, "/api/v1/auth/") {
 		return true
 	}
