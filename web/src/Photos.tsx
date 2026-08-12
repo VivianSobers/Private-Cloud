@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 
 import { api, ApiError, formatDate, type Album, type Node } from "./api";
 
@@ -60,6 +60,11 @@ function Timeline() {
   const [error, setError] = useState<string | null>(null);
   const [lightbox, setLightbox] = useState<Node | null>(null);
 
+  // Selection mode: pick photos, then add them to an album in one call.
+  const [selecting, setSelecting] = useState(false);
+  const [selected, setSelected] = useState<Set<string>>(new Set());
+  const [adding, setAdding] = useState(false);
+
   useEffect(() => {
     let live = true;
     api
@@ -71,6 +76,19 @@ function Timeline() {
     };
   }, []);
 
+  const toggle = useCallback((id: string) => {
+    setSelected((prev) => {
+      const next = new Set(prev);
+      next.has(id) ? next.delete(id) : next.add(id);
+      return next;
+    });
+  }, []);
+
+  const cancelSelect = useCallback(() => {
+    setSelected(new Set());
+    setSelecting(false);
+  }, []);
+
   if (error) return <Unavailable what="timeline" detail={error} />;
   if (!items) return <p className="muted">Loading photos…</p>;
   if (items.length === 0)
@@ -78,8 +96,40 @@ function Timeline() {
 
   return (
     <>
-      <PhotoGrid nodes={items} onOpen={setLightbox} />
+      <div className="row small photos-toolbar">
+        {selecting ? (
+          <>
+            <span className="muted">{selected.size} selected</span>
+            <button disabled={selected.size === 0} onClick={() => setAdding(true)}>
+              Add to album…
+            </button>
+            <button className="link" onClick={cancelSelect}>
+              Cancel
+            </button>
+          </>
+        ) : (
+          <button className="link" onClick={() => setSelecting(true)}>
+            Select
+          </button>
+        )}
+      </div>
+
+      <PhotoGrid
+        nodes={items}
+        onOpen={setLightbox}
+        selection={selecting ? { selected, onToggle: toggle } : undefined}
+      />
       {lightbox && <Lightbox node={lightbox} onClose={() => setLightbox(null)} />}
+      {adding && (
+        <AddToAlbumDialog
+          nodeIds={[...selected]}
+          onClose={() => setAdding(false)}
+          onDone={() => {
+            setAdding(false);
+            cancelSelect();
+          }}
+        />
+      )}
     </>
   );
 }
@@ -155,6 +205,9 @@ function AlbumDetail({ album, onBack }: { album: Album; onBack: () => void }) {
   const [items, setItems] = useState<Node[] | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [lightbox, setLightbox] = useState<Node | null>(null);
+  const [manage, setManage] = useState(false);
+  const [cover, setCover] = useState<string | undefined>(album.cover_node_id);
+  const [busy, setBusy] = useState(false);
 
   useEffect(() => {
     let live = true;
@@ -167,6 +220,66 @@ function AlbumDetail({ album, onBack }: { album: Album; onBack: () => void }) {
     };
   }, [album.id]);
 
+  // Reordering replaces the whole order in one call — the contract's rule, so a
+  // drag that issues N updates can't end up half-applied.
+  const persistOrder = useCallback(
+    async (next: Node[]) => {
+      setItems(next);
+      try {
+        await api.reorderAlbum(album.id, next.map((n) => n.id));
+      } catch (e) {
+        setError(describe(e));
+      }
+    },
+    [album.id],
+  );
+
+  const move = useCallback(
+    (index: number, dir: -1 | 1) => {
+      setItems((cur) => {
+        if (!cur) return cur;
+        const j = index + dir;
+        if (j < 0 || j >= cur.length) return cur;
+        const next = [...cur];
+        const a = next[index];
+        const b = next[j];
+        if (!a || !b) return cur;
+        next[index] = b;
+        next[j] = a;
+        void persistOrder(next);
+        return next;
+      });
+    },
+    [persistOrder],
+  );
+
+  const remove = useCallback(
+    async (n: Node) => {
+      setBusy(true);
+      try {
+        await api.removeFromAlbum(album.id, n.id);
+        setItems((cur) => cur?.filter((x) => x.id !== n.id) ?? cur);
+      } catch (e) {
+        setError(describe(e));
+      } finally {
+        setBusy(false);
+      }
+    },
+    [album.id],
+  );
+
+  const setAsCover = useCallback(
+    async (n: Node) => {
+      try {
+        await api.updateAlbum(album.id, { cover_node_id: n.id });
+        setCover(n.id);
+      } catch (e) {
+        setError(describe(e));
+      }
+    },
+    [album.id],
+  );
+
   return (
     <>
       <div className="row small" style={{ marginBottom: "0.75rem" }}>
@@ -175,13 +288,40 @@ function AlbumDetail({ album, onBack }: { album: Album; onBack: () => void }) {
         </button>
         <strong>{album.name}</strong>
         {album.description && <span className="muted">{album.description}</span>}
+        <span style={{ flex: 1 }} />
+        {items && items.length > 0 && (
+          <button className="link" onClick={() => setManage((m) => !m)}>
+            {manage ? "Done" : "Manage"}
+          </button>
+        )}
       </div>
-      {error ? (
-        <Unavailable what="album" detail={error} />
-      ) : !items ? (
+      {error && <div className="banner error small">{error}</div>}
+      {!items ? (
         <p className="muted">Loading…</p>
       ) : items.length === 0 ? (
-        <p className="muted">This album is empty.</p>
+        <p className="muted">This album is empty. Add photos from the timeline.</p>
+      ) : manage ? (
+        <div className="photo-grid">
+          {items.map((n, i) => (
+            <figure key={n.id} className={`managed-tile${cover === n.id ? " is-cover" : ""}`}>
+              <Thumb id={n.id} alt={n.name} />
+              <figcaption className="tile-actions">
+                <button title="Move earlier" disabled={i === 0} onClick={() => move(i, -1)}>
+                  ↑
+                </button>
+                <button title="Move later" disabled={i === items.length - 1} onClick={() => move(i, 1)}>
+                  ↓
+                </button>
+                <button title="Set as cover" onClick={() => void setAsCover(n)}>
+                  ★
+                </button>
+                <button title="Remove from album" disabled={busy} onClick={() => void remove(n)}>
+                  ✕
+                </button>
+              </figcaption>
+            </figure>
+          ))}
+        </div>
       ) : (
         <PhotoGrid nodes={items} onOpen={setLightbox} />
       )}
@@ -190,14 +330,116 @@ function AlbumDetail({ album, onBack }: { album: Album; onBack: () => void }) {
   );
 }
 
-function PhotoGrid({ nodes, onOpen }: { nodes: Node[]; onOpen: (n: Node) => void }) {
+/** A modal that adds the selected nodes to an existing album, or a new one. */
+function AddToAlbumDialog({
+  nodeIds,
+  onClose,
+  onDone,
+}: {
+  nodeIds: string[];
+  onClose: () => void;
+  onDone: () => void;
+}) {
+  const ref = useRef<HTMLDialogElement>(null);
+  const [albums, setAlbums] = useState<Album[] | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const [busy, setBusy] = useState(false);
+
+  useEffect(() => {
+    ref.current?.showModal();
+    api
+      .albums()
+      .then((r) => setAlbums(r.albums))
+      .catch((e) => setError(describe(e)));
+  }, []);
+
+  const addTo = useCallback(
+    async (albumId: string) => {
+      setBusy(true);
+      try {
+        await api.addToAlbum(albumId, nodeIds);
+        onDone();
+      } catch (e) {
+        setError(describe(e));
+        setBusy(false);
+      }
+    },
+    [nodeIds, onDone],
+  );
+
+  const createAndAdd = useCallback(async () => {
+    const name = window.prompt("New album name")?.trim();
+    if (!name) return;
+    setBusy(true);
+    try {
+      const { album } = await api.createAlbum(name);
+      await api.addToAlbum(album.id, nodeIds);
+      onDone();
+    } catch (e) {
+      setError(describe(e));
+      setBusy(false);
+    }
+  }, [nodeIds, onDone]);
+
+  return (
+    <dialog ref={ref} onClose={onClose} onCancel={onClose}>
+      <div className="stack">
+        <div className="row">
+          <strong>
+            Add {nodeIds.length} {nodeIds.length === 1 ? "photo" : "photos"} to…
+          </strong>
+          <span style={{ flex: 1 }} />
+          <button onClick={onClose}>Close</button>
+        </div>
+        {error && <div className="banner error small">{error}</div>}
+        <button className="primary" disabled={busy} onClick={() => void createAndAdd()}>
+          New album…
+        </button>
+        {albums === null ? (
+          <p className="muted small">Loading albums…</p>
+        ) : albums.length === 0 ? (
+          <p className="muted small">No albums yet — create one above.</p>
+        ) : (
+          <ul className="album-picker">
+            {albums.map((a) => (
+              <li key={a.id}>
+                <button className="link" disabled={busy} onClick={() => void addTo(a.id)}>
+                  {a.name} <span className="muted small">({a.item_count})</span>
+                </button>
+              </li>
+            ))}
+          </ul>
+        )}
+      </div>
+    </dialog>
+  );
+}
+
+function PhotoGrid({
+  nodes,
+  onOpen,
+  selection,
+}: {
+  nodes: Node[];
+  onOpen: (n: Node) => void;
+  selection?: { selected: Set<string>; onToggle: (id: string) => void };
+}) {
   return (
     <div className="photo-grid">
-      {nodes.map((n) => (
-        <button key={n.id} className="photo-tile" onClick={() => onOpen(n)} title={n.name}>
-          <Thumb id={n.id} alt={n.name} />
-        </button>
-      ))}
+      {nodes.map((n) => {
+        const sel = selection?.selected.has(n.id) ?? false;
+        return (
+          <button
+            key={n.id}
+            className={`photo-tile${sel ? " selected" : ""}`}
+            onClick={() => (selection ? selection.onToggle(n.id) : onOpen(n))}
+            title={n.name}
+          >
+            <Thumb id={n.id} alt={n.name} />
+            {selection && <span className="tile-check">{sel ? "✓" : ""}</span>}
+          </button>
+        );
+      })}
     </div>
   );
 }
