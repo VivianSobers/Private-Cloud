@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 
-import { api, ApiError, formatDate, type Album, type Node } from "./api";
+import { api, ApiError, formatDate, type Album, type Node, type SimilarHit } from "./api";
 
 // The Photos view: a timeline of media sorted by when the shutter fired, and
 // hand-ordered albums. It reads the Phase 5 media surface (see the API contract);
@@ -461,6 +461,16 @@ function Thumb({ id, alt }: { id: string; alt: string }) {
 }
 
 function Lightbox({ node, onClose }: { node: Node; onClose: () => void }) {
+  // The viewer tracks a "current" node so the similar strip can navigate within
+  // the overlay without closing it.
+  const [current, setCurrent] = useState<Node>(node);
+  const [similar, setSimilar] = useState<SimilarHit[] | null>(null);
+  const [showSimilar, setShowSimilar] = useState(false);
+
+  useEffect(() => {
+    setCurrent(node);
+  }, [node]);
+
   // Escape closes it, like every other overlay in the app.
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => e.key === "Escape" && onClose();
@@ -468,24 +478,64 @@ function Lightbox({ node, onClose }: { node: Node; onClose: () => void }) {
     return () => window.removeEventListener("keydown", onKey);
   }, [onClose]);
 
-  const [src, setSrc] = useState(api.contentUrl(node.id, "preview"));
+  const [src, setSrc] = useState(api.contentUrl(current.id, "preview"));
+  useEffect(() => {
+    setSrc(api.contentUrl(current.id, "preview"));
+    setShowSimilar(false);
+    setSimilar(null);
+  }, [current.id]);
+
+  const findSimilar = async () => {
+    setShowSimilar(true);
+    try {
+      const r = await api.similar(current.id);
+      setSimilar(r.results.filter((n) => n.id !== current.id));
+    } catch {
+      setSimilar([]);
+    }
+  };
+
   return (
-    <div className="lightbox" onClick={onClose} role="dialog" aria-label={node.name}>
+    <div className="lightbox" onClick={onClose} role="dialog" aria-label={current.name}>
       <img
         className="lightbox-img"
         src={src}
-        alt={node.name}
+        alt={current.name}
         onClick={(e) => e.stopPropagation()}
         // If the preview rendition isn't ready, show the original rather than nothing.
-        onError={() => setSrc(api.contentUrl(node.id, "original"))}
+        onError={() => setSrc(api.contentUrl(current.id, "original"))}
       />
       <div className="lightbox-caption" onClick={(e) => e.stopPropagation()}>
-        <span>{node.name}</span>
-        <span className="muted small">{formatDate(takenAt(node))}</span>
-        <a className="link" href={api.downloadUrl(node.id, true)}>
+        <span>{current.name}</span>
+        <span className="muted small">{formatDate(takenAt(current))}</span>
+        <button className="link" onClick={() => void findSimilar()}>
+          Find similar
+        </button>
+        <a className="link" href={api.downloadUrl(current.id, true)}>
           Download
         </a>
       </div>
+
+      {showSimilar && (
+        <div className="sim-strip" onClick={(e) => e.stopPropagation()}>
+          {similar === null ? (
+            <span className="muted small">Finding similar…</span>
+          ) : similar.length === 0 ? (
+            <span className="muted small">No similar files found.</span>
+          ) : (
+            similar.map((n) => (
+              <button
+                key={n.id}
+                className="sim-thumb"
+                title={n.name}
+                onClick={() => setCurrent(n)}
+              >
+                <Thumb id={n.id} alt={n.name} />
+              </button>
+            ))
+          )}
+        </div>
+      )}
     </div>
   );
 }
