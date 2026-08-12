@@ -121,8 +121,12 @@ func (f *fakeServer) CreateFolder(_ context.Context, parentID, name string) (api
 	if parent == nil {
 		return api.Node{}, &api.Error{Status: 404, Code: "not_found"}
 	}
+	// 409, matching the server. The fake used to return the existing node, which
+	// is a friendlier API than the real one has — and it meant the engine's
+	// conflict branch was never once exercised, so nobody noticed it was checking
+	// for the wrong status code.
 	if existing := f.liveChild(parentID, name); existing != nil {
-		return f.toAPI(existing), nil
+		return api.Node{}, &api.Error{Status: 409, Code: "name_taken"}
 	}
 	n := &fakeNode{id: f.mkID(), kind: "folder", name: name, parentID: parentID, path: joinPath(parent.path, name)}
 	f.nodes[n.id] = n

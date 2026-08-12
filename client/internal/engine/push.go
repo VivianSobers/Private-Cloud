@@ -92,8 +92,19 @@ func (e *Engine) pushFolder(ctx context.Context, sp string) error {
 	}
 	node, err := e.srv.CreateFolder(ctx, parentID, baseName(sp))
 	if err != nil {
-		// A concurrent pull may have created it; treat an existing name as success
-		// and let the next pull record the server's node.
+		// A concurrent pull may have created it. That is a race we LOST harmlessly:
+		// the folder exists, which is the outcome we wanted, and the next pull
+		// records the server's node id for it.
+		//
+		// The server answers 409 name_taken for this, not 404. Checking IsNotFound
+		// meant the comment described a case the code could not reach, so the one
+		// situation this branch exists for — the pull and push loops meeting on the
+		// same folder — aborted the entire sync pass instead.
+		if api.IsConflict(err) {
+			return e.adoptExistingFolder(ctx, sp, parentID)
+		}
+		// 404 stays tolerated as well: the parent can be trashed between the scan
+		// and this call, and pushDeletions reconciles that on the same pass.
 		if api.IsNotFound(err) {
 			return nil
 		}
@@ -101,6 +112,32 @@ func (e *Engine) pushFolder(ctx context.Context, sp string) error {
 	}
 	e.log.Info("created folder", "path", sp)
 	return e.state.Put(state.Entry{Path: sp, NodeID: node.ID, Kind: "folder"})
+}
+
+// adoptExistingFolder records the server's node for a folder that already
+// existed, after a create lost the race to a concurrent pull.
+//
+// Recorded NOW rather than left for the next pull, because the state entry is
+// what parentNodeID resolves for everything inside this folder. Returning
+// without it would fail every child on this pass with "no recorded parent
+// folder" — turning a race that resolved itself correctly into a pass that
+// cannot complete.
+func (e *Engine) adoptExistingFolder(ctx context.Context, sp, parentID string) error {
+	children, err := e.srv.ListChildren(ctx, parentID)
+	if err != nil {
+		return err
+	}
+	name := baseName(sp)
+	for _, c := range children {
+		if c.Name == name && c.Kind == "folder" {
+			e.log.Info("adopted a folder created concurrently", "path", sp)
+			return e.state.Put(state.Entry{Path: sp, NodeID: c.ID, Kind: "folder"})
+		}
+	}
+	// It was taken by a FILE of the same name, or it vanished again between the
+	// conflict and this listing. Neither is ours to resolve here; the next pass
+	// sees whatever the tree settled into.
+	return nil
 }
 
 // pushFile uploads a new or locally-changed file.

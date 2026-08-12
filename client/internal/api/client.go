@@ -80,6 +80,19 @@ func IsNotFound(err error) bool {
 	return asError(err, &e) && e.Status == http.StatusNotFound
 }
 
+// IsConflict reports whether an error is a 409 — for this API, always "something
+// with that name is already here".
+//
+// The sync engine needs this to tell a race it WON from a real failure. Creating
+// a folder the pull has just created, or uploading to a name that appeared
+// between the scan and the write, is the ordinary consequence of two loops
+// working on one tree; treating it as fatal aborts a whole sync pass over a
+// situation that has already resolved itself correctly.
+func IsConflict(err error) bool {
+	var e *Error
+	return asError(err, &e) && e.Status == http.StatusConflict
+}
+
 func asError(err error, target **Error) bool {
 	for err != nil {
 		if e, ok := err.(*Error); ok {

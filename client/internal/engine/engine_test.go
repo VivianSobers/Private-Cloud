@@ -41,6 +41,63 @@ func readLocal(t *testing.T, root, rel string) []byte {
 	return data
 }
 
+// TestPushAdoptsAFolderCreatedConcurrently covers the race two sync loops on one
+// tree actually produce: the folder is created on the server between the local
+// scan and the push.
+//
+// pushFolder has always had a branch for this, and it tested IsNotFound while
+// the server answers 409 name_taken — so the branch was unreachable and the race
+// aborted the whole pass with an error. It survived because the fake returned
+// the existing node instead of a conflict, which is a friendlier API than the
+// real one has.
+//
+// Adoption, not just tolerance: the state entry is what parentNodeID resolves
+// for everything inside the folder, so a push that shrugged and moved on would
+// fail every child with "no recorded parent folder".
+func TestPushAdoptsAFolderCreatedConcurrently(t *testing.T) {
+	f := newFake()
+	e, root := newTestEngine(t, f)
+	ctx := context.Background()
+
+	// One clean pass first, so the engine knows the root id and its state is
+	// settled — the situation a real client is in when the race happens.
+	if err := e.Sync(ctx); err != nil {
+		t.Fatalf("initial sync: %v", err)
+	}
+
+	// The folder appears on the server AFTER that, as if another device created
+	// it, so the local state has no entry for it and the push will try to create
+	// it too.
+	f.seedFolder(t, "/reports")
+
+	if err := os.MkdirAll(filepath.Join(root, "reports"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "reports", "q3.txt"), []byte("figures"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := e.push(ctx); err != nil {
+		t.Fatalf("push lost a create race and failed the pass: %v", err)
+	}
+
+	// The folder was adopted, so the file inside it went up with the right parent.
+	entry, ok, err := e.state.Get("/reports")
+	if err != nil || !ok {
+		t.Fatalf("the concurrently-created folder was not recorded: ok=%v err=%v", ok, err)
+	}
+	if _, ok, _ := e.state.Get("/reports/q3.txt"); !ok {
+		t.Error("the file inside the adopted folder was not pushed")
+	}
+	node := f.liveByPath("/reports/q3.txt")
+	if node == nil {
+		t.Fatal("the file never reached the server")
+	}
+	if node.parentID != entry.NodeID {
+		t.Errorf("file's parent is %s, want the adopted folder %s", node.parentID, entry.NodeID)
+	}
+}
+
 // Initial sync materializes the whole server tree locally: folders as
 // directories, whole-file blobs and chunked files alike as their exact bytes.
 func TestInitialSyncMaterializes(t *testing.T) {
