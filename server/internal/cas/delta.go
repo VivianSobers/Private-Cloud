@@ -187,33 +187,6 @@ func (s *Store) verifyContentHash(ctx context.Context, expected [32]byte, hashes
 	return nil
 }
 
-// HasChunks reports which of the given hashes are already stored, so a client
-// uploads only the chunks the server lacks.
-func (s *Store) HasChunks(ctx context.Context, hashes [][32]byte) (map[[32]byte]bool, error) {
-	keys := make([][]byte, len(hashes))
-	for i, h := range hashes {
-		keys[i] = h[:]
-	}
-	rows, err := s.pool.Query(ctx,
-		`SELECT hash FROM chunks WHERE hash = ANY($1)`, keys)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-
-	present := make(map[[32]byte]bool, len(hashes))
-	for rows.Next() {
-		var h []byte
-		if err := rows.Scan(&h); err != nil {
-			return nil, err
-		}
-		var key [32]byte
-		copy(key[:], h)
-		present[key] = true
-	}
-	return present, rows.Err()
-}
-
 // encoderPool reuses zstd encoders across single-chunk uploads. Each is created
 // with concurrency 1 and used serially per Get/Put, so there is no sharing to
 // race — and no per-chunk encoder allocation, which would dominate the cost of

@@ -43,27 +43,6 @@ func TestPutChunkVerifiesAddress(t *testing.T) {
 	}
 }
 
-func TestHasChunksReportsPresence(t *testing.T) {
-	_, store := casFixture(t)
-	present := casData(6<<10, 3)
-	ph := blake3.Sum256(present)
-	if _, err := store.PutChunk(t.Context(), ph, present); err != nil {
-		t.Fatal(err)
-	}
-	absent := blake3.Sum256(casData(6<<10, 4)) // never uploaded
-
-	have, err := store.HasChunks(t.Context(), [][32]byte{ph, absent})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !have[ph] {
-		t.Error("an uploaded chunk reported missing")
-	}
-	if have[absent] {
-		t.Error("a never-uploaded chunk reported present")
-	}
-}
-
 // splitToChunks chunks data the way a client would, uploads each plaintext chunk,
 // and returns the ordered hashes plus the whole-file hash.
 func splitToChunks(t *testing.T, store *cas.Store, data []byte) (hashes [][32]byte, content [32]byte) {

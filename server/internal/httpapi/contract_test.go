@@ -105,7 +105,7 @@ func TestWebClientCallsOnlyRoutesThatExist(t *testing.T) {
 		registered[normalisePath(path)] = true
 	}
 
-	calls := webAPICalls(string(source))
+	calls := apiPathsIn(string(source))
 	// A floor, so a change to api.ts's style that stopped the extraction working
 	// fails loudly instead of silently checking nothing.
 	if len(calls) < 20 {
@@ -124,14 +124,18 @@ func TestWebClientCallsOnlyRoutesThatExist(t *testing.T) {
 	}
 }
 
-// webAPICallRe matches the /api/v1 template literals in the client.
-var webAPICallRe = regexp.MustCompile("`(/api/v1[^`]*)")
-
-// webAPICalls extracts the distinct API paths the client calls.
-func webAPICalls(source string) []string {
+// apiPathsIn extracts the distinct /api/v1 paths a source file calls, whether
+// they are written as TypeScript template literals or as Go string
+// concatenation.
+//
+// One extractor for both directions of the contract check. There were two, one
+// per test, differing only in which quote characters they recognised — and two
+// implementations of "which endpoints does this client call" is precisely the
+// duplication that ends with the two tests disagreeing about the same file.
+func apiPathsIn(source string) []string {
 	seen := map[string]bool{}
 	var out []string
-	for _, m := range webAPICallRe.FindAllStringSubmatch(source, -1) {
+	for _, m := range apiPathRe.FindAllStringSubmatch(source, -1) {
 		path := strings.TrimRight(pathPart(m[1]), "/")
 		if path == "" || seen[path] {
 			continue
@@ -142,6 +146,9 @@ func webAPICalls(source string) []string {
 	sort.Strings(out)
 	return out
 }
+
+// apiPathRe matches an /api/v1 path opened by a backtick or a double quote.
+var apiPathRe = regexp.MustCompile("[`\"](/api/v1[^`\"]*)")
 
 // pathPart trims a captured template literal down to its PATH.
 //
@@ -335,21 +342,6 @@ func TestEveryRouteIsConsumedOrDeclaredPending(t *testing.T) {
 		}
 	}
 }
-
-// apiPathsIn extracts /api/v1 paths from a source file, whether they are written
-// as TypeScript template literals or as Go string concatenation.
-func apiPathsIn(source string) []string {
-	var out []string
-	for _, m := range anyAPIPathRe.FindAllStringSubmatch(source, -1) {
-		if p := strings.TrimRight(pathPart(m[1]), "/"); p != "" {
-			out = append(out, p)
-		}
-	}
-	return out
-}
-
-// anyAPIPathRe matches an /api/v1 path opened by a backtick or a double quote.
-var anyAPIPathRe = regexp.MustCompile("[`\"](/api/v1[^`\"]*)")
 
 // TestDeclaredRouteFactsNameRealRoutes keeps the two hand-declared maps honest.
 //
