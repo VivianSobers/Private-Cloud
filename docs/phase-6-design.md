@@ -1,9 +1,11 @@
-# Phase 6 — Native clients (Vivian's track) design
+# Phase 6 — Native clients design
 
-**Status: in progress.** This is the front-of-API track from
-[roadmap-split.md](roadmap-split.md): the desktop and mobile clients that a person
-actually touches. It consumes the **existing** `/api/v1` surface — no new server
-endpoints — so it proceeds independently of Guru's platform work.
+**Status: server side complete; client side has two slices open.** The bulk of
+this phase is the front-of-API track from [roadmap-split.md](roadmap-split.md):
+the desktop and mobile clients a person actually touches, which consume the
+**existing** `/api/v1` surface. The split promised "almost no new server work",
+and that held — the behind-the-API half is one column, one table and five
+endpoints, described in §7.
 
 **Exit criterion:** a person can install a desktop app, sign in once, pick a
 folder, and see — at a glance, from the system tray — whether their files are up
@@ -121,4 +123,69 @@ pinning, push) is a later slice.
 ## 6. Later slices (not yet)
 
 - The platform tray icon adapter + desktop installers / auto-update.
-- Mobile polish: offline pinning of chosen files, share-target, push.
+- Mobile polish: offline pinning of chosen files, share-target, push **delivery**
+  (the subscription is stored server-side; something still has to send).
+
+---
+
+## 7. The behind-the-API half ✅
+
+Small, as the split predicted, but with one sharp edge.
+
+**A device is a session of kind `device`** — the row `POST /auth/token` already
+mints. Nothing new represents one. A separate table keyed to the session would
+have to be kept in step with revocation, and the whole reason "I lost my laptop"
+works is that revoking the session **is** revoking the device, with no second
+place for the two to disagree.
+
+What a session lacked was a human name: `user_agent` is whatever the client
+called itself, frequently `Go-http-client/2.0`. That is one added column
+(`00021`), not a table.
+
+`platform` and `app_version` are **parsed from the stored agent at read time**
+rather than stored. They are self-reported, the contract marks them advisory, and
+deriving them keeps that obvious while leaving nothing to migrate when the parser
+improves. An unrecognised agent yields empty rather than a guess — a wrong
+platform is worse than none, because it makes the list look authoritative when it
+is not. Android is checked before Linux, since Android agents contain both.
+
+| Route | Purpose |
+|---|---|
+| `GET /devices` | list, with `current` marking the caller's own |
+| `PATCH /devices/{id}` | rename "unknown device" to "the laptop" |
+| `DELETE /devices/{id}` | revoke the token; effective on the next request |
+| `POST`/`DELETE /devices/{id}/push` | register / unregister a Web Push endpoint |
+
+### The sharp edge: this plane is credential management
+
+`requireAuth` already confines a device session away from credentials — an app
+password cannot mint another credential, so a token exchanged from one must not
+either. That check was written as a prefix test on `/api/v1/auth/`, and
+`/devices` is not under it.
+
+But `DELETE /devices/{id}` revokes a token and `PATCH` renames one. As first
+written, these routes would have let a **single leaked app password revoke every
+other device on the account** — the exact escalation the existing rule prevents,
+one path prefix to the side. The check is now about what a path *does* rather
+than where it lives, and a device token gets `403` from all five routes while
+keeping the file and sync planes it actually needs.
+
+Push is confined for the same reason: a device registering an endpoint against a
+*sibling* device's id would redirect that device's notifications. Nothing
+legitimate is lost — the PWA that wants push holds a cookie session.
+
+### Push is a hook, not a service
+
+This server does not talk to APNs or FCM and should not learn to. It stores what
+a client registered so something else can deliver. A client that registers
+nothing polls `GET /changes`, which is the existing working path, so push is a
+latency optimisation and **never** a correctness requirement.
+
+Revocation drops the subscription explicitly, and this is worth recording because
+the first implementation got it wrong and a test caught it: revoking a session is
+a **soft delete** that stamps `revoked_at` and removes no row, so the foreign
+key's `ON DELETE CASCADE` never fires. A revoked device stayed a delivery target —
+still receiving notifications about a library it could no longer read, which is
+the one thing "I lost my laptop" most needs not to happen. Both now happen in one
+statement, so a failure between them cannot leave a live subscription against a
+dead session.

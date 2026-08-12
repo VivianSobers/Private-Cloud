@@ -119,6 +119,9 @@ between the network and the auth code in slice 2.
 | `POST /api/v1/albums/{id}/items` | session | Add nodes; re-adding is a no-op |
 | `PATCH /api/v1/albums/{id}/items` | session | Replace the whole order (drag-reorder) |
 | `DELETE /api/v1/albums/{id}/items/{nodeId}` | session | Remove from the album; the file stays |
+| `GET /api/v1/devices` | session | Registered clients; `current` marks the caller |
+| `PATCH\|DELETE /api/v1/devices/{id}` | session | Rename / revoke a device token |
+| `POST\|DELETE /api/v1/devices/{id}/push` | session | Register / unregister a Web Push endpoint |
 | `/dav/*` | **app password** | WebDAV — mount as a network drive |
 
 `{id}` accepts the literal `root`, so a client can start browsing without a
@@ -459,6 +462,7 @@ Applied automatically at startup.
 | `00018` | job state and dead-lettering |
 | `00019` | media metadata and variants (Phase 5) |
 | `00020` | albums and album items (Phase 5) |
+| `00021` | device names on sessions, push subscriptions (Phase 6) |
 
 Blob refcounts are maintained by a **trigger**, not by application code.
 `file_versions` rows disappear through `ON DELETE CASCADE` — purging a folder

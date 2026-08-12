@@ -295,10 +295,17 @@ GET /media/timeline?from=&to=&limit=&offset=
   → {items: [node], has_more: bool}
 ```
 
-### Phase 6 — Native clients
+### Phase 6 — Native clients ✅ shipped
 
 Almost no new server surface — the point of this phase is that the clients
 consume the API that already exists. Two additions:
+
+> **Note added on implementation.** A **device session cannot reach any of these
+> routes** — it gets `403 device_session_limited`. `DELETE /devices/{id}` revokes
+> a token, which is credential management, and a device token is confined away
+> from that for the same reason the app password it came from is: otherwise one
+> leaked app password could revoke every other device on the account. Drive these
+> from a cookie session. `has_push` is returned alongside the fields below.
 
 **Devices.** A device is a session of kind `device`, minted at
 `POST /auth/token`. `GET /auth/sessions` already returns these, but a device list
