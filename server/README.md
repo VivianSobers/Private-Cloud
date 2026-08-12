@@ -1,14 +1,27 @@
 # private-cloud API
 
-Go backend for the private cloud. **Phase 1 complete — all seven slices.**
+Go backend for the private cloud. **Phases 1–4 complete; Phase 5 in progress.**
 
 Configuration, database pool, embedded migrations, health probes, Prometheus
 metrics, structured logging, graceful shutdown, passkey auth, the file tree
 (folders, downloads with Range support, trash, quotas, garbage collection and
-fsck), resumable uploads over tus, a React web UI, WebDAV, and filename search.
+fsck), resumable uploads over tus, a React web UI, WebDAV, and filename search
+(Phase 1); a content-addressed storage engine with chunk-level dedup, real
+version history and public share links (Phase 2); a change journal, a block-level
+delta protocol and lineage-based conflict resolution for the sync client
+(Phase 3); and a job queue with a separate `pcworker` process driving OCR,
+semantic search, auto-tagging, plus OIDC single sign-on and a hardening pass
+(Phase 4).
 
-Phase 2 is next: content-addressed storage, versioning, dedup and share links.
-See [../docs/phase-1-design.md](../docs/phase-1-design.md).
+**Phase 5 (photos & media) is partially built and not yet reachable over HTTP.**
+The schema, the pure `media` package and the metadata/variant store exist and are
+tested; the job kind is not registered with the worker, nothing enqueues it, and
+no route serves variants, the timeline or albums. See
+[../docs/phase-5-design.md](../docs/phase-5-design.md) for what remains.
+
+The endpoint table below lists what this server actually serves today;
+[../docs/openapi.yaml](../docs/openapi.yaml) is the machine-readable form of the
+same list, generated from the route table and enforced by a contract test.
 
 The web UI lives in [../web/](../web/) and is served by Caddy from the same
 origin as this API — not for convenience, but because WebAuthn binds passkeys
@@ -18,13 +31,20 @@ to an origin.
 
 ```
 cmd/api/              entrypoint, graceful shutdown, healthcheck subcommand
-cmd/cloudctl/         admin CLI: users, recovery, fsck, gc
+cmd/pcworker/         the job-queue worker: OCR, embeddings, tagging
+cmd/cloudctl/         admin CLI: users, recovery, fsck, gc, jobs
 internal/config/      env loading + eager validation
 internal/db/          pgx pool, goose migrations (embedded)
 internal/db/migrations/
-internal/auth/        users, passkeys, recovery codes, sessions
-internal/blob/        opaque content storage (filesystem today, CAS in Phase 2)
-internal/files/       the tree: nodes, versions, trash, quota, GC, fsck
+internal/auth/        users, passkeys, recovery codes, sessions, OIDC
+internal/blob/        opaque content storage on the filesystem
+internal/cas/         content-defined chunking (FastCDC), BLAKE3, zstd
+internal/files/       the tree: nodes, versions, trash, quota, GC, fsck, delta, journal
+internal/shares/      public share links and their token plane
+internal/jobs/        the queue: SKIP LOCKED claim, retry/backoff, reaper
+internal/extract/     text decode, PDF text layer, tesseract OCR, auto-tagging
+internal/embed/       vector math, chunking, inference-sidecar client
+internal/media/       EXIF, thumbnail/preview rendering (Phase 5, not yet served)
 internal/webdavfs/    webdav.FileSystem over the node store
 internal/httpapi/     routing, middleware, handlers
 internal/metrics/     Prometheus registry
@@ -65,7 +85,7 @@ between the network and the auth code in slice 2.
 | `DELETE /api/v1/trash/{id}` | session | Purge permanently |
 | `DELETE /api/v1/trash` | session | Empty the trash |
 | `GET /api/v1/usage` | session | Bytes used, quota, file count |
-| `GET /api/v1/search?q=` | session | Filename search |
+| `GET /api/v1/search?q=&semantic=` | session | Name, path and OCR'd content; `semantic=true` ranks by meaning |
 | `POST /api/v1/admin/fsck[?repair=true]` | **admin** | Disk vs database audit |
 | `OPTIONS /api/v1/uploads` | — | tus capabilities |
 | `POST /api/v1/uploads` | session | Start a resumable upload |
@@ -74,6 +94,24 @@ between the network and the auth code in slice 2.
 | `DELETE /api/v1/uploads/{id}` | session | Abandon an upload |
 | `GET`, `POST /api/v1/auth/app-passwords` | session | List / issue WebDAV credentials |
 | `DELETE /api/v1/auth/app-passwords/{id}` | session | Revoke one |
+| `POST /api/v1/auth/token` | **app password** | Exchange for a device bearer token |
+| `GET /api/v1/auth/oidc/login`, `/callback` | — | Single sign-on, when configured |
+| `GET /api/v1/nodes/{id}/versions` | session | Version history |
+| `POST /api/v1/nodes/{id}/versions/{vid}/restore` | session | Restore a past version as the new head |
+| `GET\|HEAD /api/v1/nodes/{id}/versions/{vid}/content` | session | Fetch one past version's bytes |
+| `GET /api/v1/changes` | session | The change journal, by cursor |
+| `GET /api/v1/nodes/{id}/manifest` | session | A file's chunk manifest |
+| `POST /api/v1/chunks/have` | session | Negotiate which chunks are missing |
+| `GET\|PUT /api/v1/chunks/{hash}` | session | Move one chunk; `PUT` re-verifies BLAKE3 |
+| `POST /api/v1/manifests` | session | Commit a manifest into a file |
+| `GET\|POST /api/v1/nodes/{id}/tags` | session | Per-node tags |
+| `DELETE /api/v1/nodes/{id}/tags/{tag}` | session | Remove one |
+| `GET /api/v1/tags`, `GET /api/v1/tags/{tag}` | session | Tag list with counts / filter by tag |
+| `POST /api/v1/nodes/{id}/shares` | session | Create a public share link |
+| `GET /api/v1/shares`, `DELETE /api/v1/shares/{id}` | session | List / revoke |
+| `GET /api/v1/s/{token}` | — | Public share view (separate Caddy plane) |
+| `POST /api/v1/s/{token}/unlock` | — | Password-protected share |
+| `GET\|HEAD /api/v1/s/{token}/content` | — | Public share download |
 | `/dav/*` | **app password** | WebDAV — mount as a network drive |
 
 `{id}` accepts the literal `root`, so a client can start browsing without a
@@ -121,15 +159,19 @@ hostname (the MagicDNS name) before enrolling keys you care about.
 node ──► file_version ──► blob ──► bytes on disk
 ```
 
-That indirection is the **Phase 2 shape adopted early**. Slice 3 writes exactly
-one version per file and stores whole files, but because the versioned layer
-already exists, adding history and content-defined chunking later is a data
-migration rather than a schema rewrite over live data.
+That indirection was the **Phase 2 shape adopted early**, and it paid: Phase 1
+wrote exactly one version per file and stored whole files, so adding history and
+content-defined chunking in Phase 2 was a data migration rather than a schema
+rewrite over live data.
 
-Blobs are addressed by a random key, not a content hash: the hash isn't known
-until the stream has been read, and buffering an arbitrary upload to learn it
-first isn't acceptable. Content addressing arrives in Phase 2, at the chunk
-level, where it belongs.
+Since Phase 2 a file is normally a **manifest** of content-defined chunks
+(FastCDC, BLAKE3-addressed, zstd-compressed), deduplicated across users. Whole
+blobs still exist — they are what Phase 1 wrote, and the background migration
+converts them — which is why a `node` carries `sha256` **xor** `blake3` and never
+both. Whole blobs keep a random storage key rather than a content hash: the hash
+isn't known until the stream has been read, and buffering an arbitrary upload to
+learn it first isn't acceptable. Content addressing lives at the chunk level,
+where it belongs.
 
 **Bytes are written before the database row.** A crash between the two leaves an
 unreferenced blob, which GC reclaims and `fsck` reports. The opposite ordering
@@ -248,17 +290,24 @@ the wrong folder should be a recoverable accident.
 
 Locks are held in memory. They exist to stop two clients writing one file at
 once; losing them on restart is the same thing that happens when a client's
-connection drops. A database-backed lock table is a Phase 3 concern, for when
-there might be more than one replica.
+connection drops. A database-backed lock table stays deferred until there is
+more than one replica — which the single-server design does not plan for.
 
 ## Search
 
-Filename search, not content search. `GET /api/v1/search?q=budg` with optional
-`kind`, `under`, `limit`, `offset` and `include_trashed`.
+`GET /api/v1/search?q=budg` with optional `kind`, `under`, `limit`, `offset`,
+`include_trashed` and `semantic`.
 
-**Trigram (`pg_trgm`), deliberately not full-text.** `to_tsvector` stems words
-and matches on token boundaries — it is the right tool for document *content*,
-which arrives in Phase 4 with OCR and embeddings. But filenames are not prose.
+Three layers, added in that order: **names and paths** (Phase 1, trigram),
+**extracted content** (Phase 4 — a scanned receipt is findable by a word printed
+on it, flagged as `matched_content`), and **meaning** (Phase 4 —
+`semantic=true` embeds the query and ranks by cosine, answering `503
+semantic_unavailable` when no inference sidecar is wired, which clients treat as
+"retry lexically *and say so*").
+
+**Trigram (`pg_trgm`) for names, deliberately not full-text.** `to_tsvector` stems
+words and matches on token boundaries — it is the right tool for document
+*content*, and that is exactly what it is used for. But filenames are not prose.
 People search them by fragment: `budg` should find `budget-2026-final.xlsx`,
 and so should `2026`. Full-text search finds neither, because neither is a
 token in that filename.
@@ -294,6 +343,7 @@ cloudctl recovery regenerate <name>
 cloudctl cleanup                         # expired sessions and ceremonies
 cloudctl fsck [--repair]                 # compare the blob store to the database
 cloudctl gc                              # purge expired trash, free unreferenced blobs
+cloudctl jobs reindex [--kind=]          # re-enqueue extraction/embedding over the tree
 ```
 
 `reset-auth` clears passkeys, revokes live sessions, and issues new recovery
@@ -347,7 +397,11 @@ docker rm -f pc-test-pg && docker network rm pc-test
 ## Configuration
 
 All via environment; validated at startup so a bad value fails immediately
-rather than on the first request that touches it.
+rather than on the first request that touches it. The table below is the core
+set from Phase 1; the CAS, worker, embedding-sidecar and OIDC settings added
+since are declared alongside it in
+[internal/config/config.go](internal/config/config.go), which is the complete
+list by construction.
 
 | Variable | Default | Notes |
 |---|---|---|
@@ -384,6 +438,20 @@ Applied automatically at startup.
 | `00004` | resumable upload sessions |
 | `00005` | app passwords |
 | `00006` | trigram indexes for search |
+| `00007` | CAS: chunks, manifests, manifest entries |
+| `00008` | blob refcount trigger covers updates |
+| `00009` | share links |
+| `00010` | the change journal |
+| `00011` | the job queue |
+| `00012` | `doc_text` (content-addressed extracted text) |
+| `00013` | `doc_embedding` (content-addressed packed float32 vectors) |
+| `00014` | `node_tags` (auto + user, `source`-tracked) |
+| `00015` | OIDC identities |
+| `00016` | case-folded path index for search |
+| `00017` | job claim by kind |
+| `00018` | job state and dead-lettering |
+| `00019` | media metadata and variants (Phase 5) |
+| `00020` | albums and album items (Phase 5) |
 
 Blob refcounts are maintained by a **trigger**, not by application code.
 `file_versions` rows disappear through `ON DELETE CASCADE` — purging a folder

@@ -2,14 +2,16 @@
 
 A self-hosted, Dropbox-style personal cloud on a single Ubuntu server.
 
-**Current status: Phase 0 — Foundation.** Infrastructure only. No application
-code exists yet, by design: every later phase depends on this layer being
-trustworthy, and the fastest way to lose data is to build features on storage
-you haven't proven you can restore.
+**Current status: Phases 0–4 complete; Phases 5–8 in progress.** The foundation,
+the API, the storage engine, the sync engine and the intelligence tier are all
+built and tested. Work now happens on two parallel tracks either side of the
+HTTP API — see [docs/roadmap-split.md](docs/roadmap-split.md) — which is why the
+roadmap below tracks the two halves of a phase separately: a phase is only
+*complete* when both the endpoint and the thing that consumes it exist.
 
 ---
 
-## What Phase 0 provides
+## What Phase 0 provided
 
 - **Storage** — encrypted, compressed ZFS mirror with a tuned dataset layout
 - **Snapshots** — automatic, every 15 min → 6 months, read-only, ransomware-resistant
@@ -63,7 +65,9 @@ sudo ./scripts/restore-test.sh        # the step that makes it real
 │   ├── sanoid/sanoid.conf            snapshot retention policy
 │   ├── systemd/                      backup timers
 │   └── secrets/.env.example          template; real .env is gitignored
-├── server/                           Go API (Phase 1) — see server/README.md
+├── server/                           Go API, worker and CLI — see server/README.md
+├── client/                           pcsync, the headless sync daemon (separate Go module)
+├── web/                              React web app / installable PWA
 ├── scripts/
 │   ├── zfs-setup.sh                  pool + datasets (destructive; --dry-run first)
 │   ├── sanoid-setup.sh               snapshots
@@ -72,6 +76,10 @@ sudo ./scripts/restore-test.sh        # the step that makes it real
 │   └── restore-test.sh               proves backups restore
 └── docs/
     ├── phase-0-checklist.md          ← start here
+    ├── roadmap-split.md              who owns what, either side of the API
+    ├── api-contract.md               the seam: shipped surface + proposed surface
+    ├── openapi.yaml                  generated from the routes; what actually responds
+    ├── phase-{1..8}-design.md        why each phase looks the way it does
     ├── tailscale-setup.md
     ├── custom-metrics.md             backup/pool metrics + failure-sim validation
     ├── runbook-restore.md            something is lost
@@ -120,9 +128,22 @@ are documented, deliberate exceptions to the isolation rules, not oversights.
 | **2** | CAS storage engine, versioning, dedup, share links | **complete** — all 4 slices: FastCDC+BLAKE3+zstd chunking with cross-user dedup, background migration of Phase 1 blobs, real version history (list/restore/retention), and public share links (file & folder, password/expiry/download-cap, instant revocation) on a separate Caddy plane |
 | **3** | Sync engine: change journal, Go client, conflict resolution | **complete** — all 4 slices: a per-owner change journal with a gap-free cursor (`GET /changes`); a block-level delta protocol (fetch manifest, negotiate missing chunks, BLAKE3-verified chunk upload, manifest commit) so a changed file moves only its changed chunks; a headless Go sync client (`client/`, `pcsync`) — a separate pure-Go module with a SQLite state DB, initial tree reconcile, incremental journal replay, fsnotify + poll + rescan loops, and an app-password-to-device-token exchange; and lineage-based conflict resolution that never overwrites or merges — a both-sides edit or a delete-vs-edit becomes a visible `name (conflict from HOST DATE).ext` copy |
 | 4 | ML: OCR, semantic search, tagging; OIDC; hardening | **complete** — see [docs/phase-4-design.md](docs/phase-4-design.md). Two tiers, one queue: the always-on box owns the API, database and blob store; intelligence runs in a separate `pcworker` that drains the job queue via `SKIP LOCKED`, so GPU workers on separate boxes over the tailnet (or a CPU fallback) do the heavy inference, pulling file bytes over the API rather than a mounted store. Content never leaves your infrastructure. All slices done: job queue + worker; OCR/text extraction folded into search (a scanned receipt is findable by a word printed on it); semantic search (a Python embedding sidecar on a GPU box, content-addressed vectors, cosine KNN, off cleanly with no sidecar); cheap explainable auto-tagging; OIDC single sign-on alongside passkeys (authorization-code + PKCE, opt-in, provisions its own non-admin users); and a [hardening pass](docs/phase-4-hardening.md) that cleared a real pgx SQL-injection CVE, added body-size caps, security headers and a written abuse review |
+| **5** | Photos & media: EXIF, thumbnails, albums, timeline | **partial** — see [docs/phase-5-design.md](docs/phase-5-design.md). Behind the API: the schema (`00019`, `00020`), a pure `media` package (EXIF reader, thumbnail/preview renderer) and the metadata + variant store are built and tested; the `media` job kind is **not yet registered with the worker**, nothing enqueues it, and **no HTTP route serves any of it** — no `?variant=`, no `/media/timeline`, no `/albums`. In front of the API: the gallery, timeline and album UI are built and call those endpoints, so they currently degrade to "not available on this server yet" |
+| 6 | Native clients: desktop tray, mobile/PWA | **partial** — see [docs/phase-6-design.md](docs/phase-6-design.md). Done: the daemon's local control socket, selective sync, the platform-free tray package + `pcsync watch`, and an installable PWA with an offline app shell. Open: the platform tray icon adapter, installers/auto-update, mobile offline pinning. Server side (`/devices`, push hook) not started |
+| 7 | Multi-user, sharing, RBAC, admin, quotas | **client only** — see [docs/phase-7-design.md](docs/phase-7-design.md). The share-with-people panel, "shared with me" view and admin console are built against the contract; **none of the server handlers exist yet** (`/grants`, `/shared`, `/admin/users`, `/admin/audit`) |
+| 8 | Advanced intelligence: faces, similar files, RAG chat | **partial** — see [docs/phase-8-design.md](docs/phase-8-design.md). "Ask your library" works today because it rides Phase 4's semantic search; generated answers (`POST /chat`), people/faces and similar-files need server surface that does not exist |
+| 9 | Scale & resilience: cold tier, DR automation, quotas | **not started** — specified in the contract only |
 
 Search moved into Phase 1 (slice 7) rather than waiting for Phase 2 — trigram
 indexes needed nothing the storage engine had to provide first.
+
+**How to read "partial".** Phases 5–8 are split across the API seam and the two
+tracks move independently, so a phase can have a finished UI and no endpoint
+behind it. The authority on what actually responds is
+[docs/openapi.yaml](docs/openapi.yaml), which is generated from the server's own
+route table and verified against it by a contract test — not
+[docs/api-contract.md](docs/api-contract.md), which also describes endpoints that
+are only *proposed*.
 
 ---
 
