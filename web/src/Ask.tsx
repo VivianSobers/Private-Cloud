@@ -1,23 +1,29 @@
 import { useState } from "react";
 
-import { api, ApiError, formatDate, type SearchHit } from "./api";
+import { api, ApiError, type ChatResponse, type Citation } from "./api";
 
-// "Ask your library": a natural-language question answered by the documents most
-// related to it, ranked by meaning. This is the retrieval half — it runs on the
-// semantic search the server already has (Phase 4), so unlike the rest of the
-// Phase 8 UI it works today. A written, generated answer over these documents is
-// a later slice, when a generation endpoint exists; surfacing the source
-// documents first is the honest and more trustworthy half anyway.
+// "Ask your library": a natural-language question answered over your own
+// documents. Retrieval always returns the source documents (citations); when the
+// server has a generator configured, it also returns a written answer grounded in
+// them. Either way the citations are shown — an answer over your files that can't
+// say which file it came from is not one worth trusting.
 
 const LIMIT = 12;
+
+const UNAVAILABLE: Record<string, string> = {
+  no_matching_documents: "Nothing in your library looks related to that.",
+  generation_disabled:
+    "A written answer isn't enabled on this server — here are the most relevant documents.",
+  generation_unavailable:
+    "The answer generator is unavailable right now — here are the most relevant documents.",
+};
 
 export function Ask() {
   const [q, setQ] = useState("");
   const [asked, setAsked] = useState("");
-  const [results, setResults] = useState<SearchHit[] | null>(null);
+  const [res, setRes] = useState<ChatResponse | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [lexicalFallback, setLexicalFallback] = useState(false);
 
   async function ask() {
     const question = q.trim();
@@ -25,25 +31,11 @@ export function Ask() {
     setAsked(question);
     setLoading(true);
     setError(null);
-    setLexicalFallback(false);
-    setResults(null);
+    setRes(null);
     try {
-      const res = await api.search(question, { semantic: true, limit: LIMIT });
-      setResults(res.results);
+      setRes(await api.chat(question, { limit: LIMIT }));
     } catch (e) {
-      // 503 means the embedding sidecar isn't enabled — fall back to keyword
-      // search rather than failing, exactly as the file browser does.
-      if (e instanceof ApiError && e.status === 503) {
-        try {
-          const res = await api.search(question, { limit: LIMIT });
-          setLexicalFallback(true);
-          setResults(res.results);
-        } catch (e2) {
-          setError(describe(e2));
-        }
-      } else {
-        setError(describe(e));
-      }
+      setError(describe(e));
     } finally {
       setLoading(false);
     }
@@ -54,8 +46,8 @@ export function Ask() {
       <div className="stack" style={{ gap: "0.25rem" }}>
         <h2 style={{ margin: 0 }}>Ask your library</h2>
         <p className="muted small">
-          Ask in plain language — you'll get the documents most related to your
-          question, ranked by meaning rather than by keyword.
+          Ask in plain language. You'll get a written answer where available, always
+          grounded in — and linked to — the documents it came from.
         </p>
       </div>
 
@@ -73,75 +65,61 @@ export function Ask() {
         </button>
       </div>
 
-      {lexicalFallback && (
-        <div className="banner small">
-          Semantic search isn't enabled on this server, so these are keyword
-          matches rather than matches by meaning.
-        </div>
-      )}
       {error && <div className="banner error">{error}</div>}
-
-      {results && <Answers question={asked} hits={results} semantic={!lexicalFallback} />}
+      {res && <Answer question={asked} res={res} />}
     </section>
   );
 }
 
-function Answers({
-  question,
-  hits,
-  semantic,
-}: {
-  question: string;
-  hits: SearchHit[];
-  semantic: boolean;
-}) {
-  if (hits.length === 0)
-    return (
-      <p className="muted">
-        Nothing in your library looks related to “{question}”. Try rephrasing, or
-        upload the document you're thinking of.
-      </p>
-    );
+function Answer({ question, res }: { question: string; res: ChatResponse }) {
+  const note = res.answer_unavailable ? UNAVAILABLE[res.answer_unavailable] : null;
 
   return (
     <div className="stack">
-      <p className="muted small">
-        {hits.length} most-related {hits.length === 1 ? "document" : "documents"} for
-        “{question}”:
-      </p>
-      <ol className="answer-list">
-        {hits.map((h) => (
-          <li key={h.id} className="answer-card">
-            <div className="row" style={{ alignItems: "baseline" }}>
-              <span className="answer-icon" aria-hidden="true">
-                {h.kind === "folder" ? "📁" : "📄"}
-              </span>
-              {h.kind === "file" ? (
-                <a className="link answer-name" href={api.downloadUrl(h.id)}>
-                  {h.name}
-                </a>
-              ) : (
-                <span className="answer-name">{h.name}</span>
-              )}
-              <span style={{ flex: 1 }} />
-              {semantic && h.semantic && typeof h.score === "number" && (
-                <Relevance score={h.score} />
-              )}
-            </div>
-            <div className="muted small answer-path">{h.path}</div>
-            <div className="row small answer-meta">
-              {h.matched_content && <span className="tag">matched content</span>}
-              {h.matched_path && <span className="tag">matched folder</span>}
-              <span className="muted">updated {formatDate(h.updated_at)}</span>
-            </div>
-          </li>
-        ))}
-      </ol>
+      {res.answer ? (
+        <div className="chat-answer">
+          <p style={{ whiteSpace: "pre-wrap", margin: 0 }}>{res.answer}</p>
+          {res.model && <p className="muted small">answered by {res.model}</p>}
+        </div>
+      ) : (
+        <p className="muted">{note ?? "No answer."}</p>
+      )}
+
+      {res.citations.length > 0 && (
+        <div className="stack">
+          <p className="muted small">
+            {res.answer ? "Sources" : `Most related to “${question}”`}:
+          </p>
+          <ol className="answer-list">
+            {res.citations.map((c, i) => (
+              <CitationCard key={`${c.node_id}-${c.chunk_seq}-${i}`} c={c} />
+            ))}
+          </ol>
+        </div>
+      )}
     </div>
   );
 }
 
-/** A compact bar for cosine similarity in [0,1]. */
+function CitationCard({ c }: { c: Citation }) {
+  return (
+    <li className="answer-card">
+      <div className="row" style={{ alignItems: "baseline" }}>
+        <span className="answer-icon" aria-hidden="true">
+          📄
+        </span>
+        <a className="link answer-name" href={api.downloadUrl(c.node_id)}>
+          {c.name}
+        </a>
+        <span style={{ flex: 1 }} />
+        {typeof c.score === "number" && <Relevance score={c.score} />}
+      </div>
+      <div className="muted small answer-path">{c.path}</div>
+    </li>
+  );
+}
+
+/** A compact bar for a similarity score in [0,1]. */
 function Relevance({ score }: { score: number }) {
   const pct = Math.max(0, Math.min(100, Math.round(score * 100)));
   return (
