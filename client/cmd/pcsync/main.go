@@ -30,6 +30,7 @@ import (
 	"github.com/guru-bharadwaj20/private-cloud/client/internal/api"
 	"github.com/guru-bharadwaj20/private-cloud/client/internal/config"
 	"github.com/guru-bharadwaj20/private-cloud/client/internal/control"
+	"github.com/guru-bharadwaj20/private-cloud/client/internal/doctor"
 	"github.com/guru-bharadwaj20/private-cloud/client/internal/engine"
 	"github.com/guru-bharadwaj20/private-cloud/client/internal/state"
 	"github.com/guru-bharadwaj20/private-cloud/client/internal/tray"
@@ -46,6 +47,8 @@ func main() {
 		switch os.Args[1] {
 		case "status", "watch", "sync", "pause", "resume", "exclude", "conflicts":
 			os.Exit(ctlMain(os.Args[1], os.Args[2:]))
+		case "doctor":
+			os.Exit(doctorMain(os.Args[2:]))
 		}
 	}
 
@@ -121,6 +124,35 @@ func run(log *slog.Logger, configPath string, once bool) error {
 	}
 	log.Info("pcsync stopped")
 	return nil
+}
+
+// doctorMain runs the standalone preflight and returns a process exit code. It
+// does not touch the control socket — it is meant to work before the daemon runs
+// and when it won't start.
+func doctorMain(args []string) int {
+	fs := flag.NewFlagSet("pcsync doctor", flag.ExitOnError)
+	configPath := fs.String("config", "config.json", "path to the JSON config file")
+	_ = fs.Parse(args)
+
+	cfg, err := config.Load(*configPath)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "✗ configuration: %v\n", err)
+		return 1
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), doctor.Deadline)
+	defer cancel()
+	res := doctor.Run(ctx, cfg, userAgent())
+
+	for _, c := range res.Checks {
+		fmt.Printf("%s %-16s %s\n", c.Status.Glyph(), c.Name, c.Detail)
+	}
+	if res.OK() {
+		fmt.Println("\nAll checks passed — pcsync should sync cleanly.")
+		return 0
+	}
+	fmt.Println("\nSome checks failed — fix the ✗ items above, then run doctor again.")
+	return 1
 }
 
 // ctlMain runs a control subcommand against the daemon's socket and returns a
