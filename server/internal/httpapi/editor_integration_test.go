@@ -1,8 +1,16 @@
 package httpapi_test
 
 import (
+	"bytes"
+	"encoding/hex"
 	"net/http"
+	"net/http/httptest"
+	"strconv"
+	"strings"
 	"testing"
+
+	"github.com/google/uuid"
+	"github.com/zeebo/blake3"
 )
 
 // What an editor grant actually permits, and — more importantly — what it does
@@ -57,6 +65,122 @@ func TestEditorUploadIsOwnedAndChargedToTheOwner(t *testing.T) {
 	if editorUsage["file_count"].(float64) != 0 {
 		t.Errorf("the editor was charged %v file(s) for writing into somebody else's folder",
 			editorUsage["file_count"])
+	}
+}
+
+// TestEditorWritesOnEveryUploadPath is the same rule as above, asked of the
+// paths Phase 7 never reached.
+//
+// POST /upload was made owner-aware and the other two writes were not, so
+// whether an editor could write depended on which transport the client picked —
+// and the web client picks by SIZE. An editor could drop a 5 MiB file into a
+// shared folder and got a 404 for a 9 MiB one. The sync client, which commits
+// every file it uploads through /manifests, could not write to a shared folder
+// at all.
+func TestEditorWritesOnEveryUploadPath(t *testing.T) {
+	f := newAPIFixture(t)
+	folder := f.shareFolder(t, "shared-every-path", "editor")
+
+	ownerOf := func(id string) string {
+		t.Helper()
+		var owner string
+		if err := f.pool.QueryRow(f.ctx,
+			`SELECT owner_id::text FROM nodes WHERE id = $1`, id).Scan(&owner); err != nil {
+			t.Fatalf("read owner: %v", err)
+		}
+		return owner
+	}
+
+	t.Run("resumable", func(t *testing.T) {
+		const body = "resumable payload from an editor"
+
+		req := httptest.NewRequest(http.MethodPost, "/api/v1/uploads", nil)
+		req.Header.Set("Tus-Resumable", "1.0.0")
+		req.Header.Set("Upload-Length", strconv.Itoa(len(body)))
+		req.Header.Set("Upload-Metadata", meta(map[string]string{
+			"filename": "from-editor.bin", "parent_id": folder,
+		}))
+		req.AddCookie(f.admin)
+		rec := httptest.NewRecorder()
+		f.handler.ServeHTTP(rec, req)
+		if rec.Code != http.StatusCreated {
+			t.Fatalf("editor tus create = %d: %s", rec.Code, rec.Body)
+		}
+		loc := rec.Header().Get("Location")
+
+		req = httptest.NewRequest(http.MethodPatch, loc, strings.NewReader(body))
+		req.Header.Set("Tus-Resumable", "1.0.0")
+		req.Header.Set("Content-Type", "application/offset+octet-stream")
+		req.Header.Set("Upload-Offset", "0")
+		req.AddCookie(f.admin)
+		rec = httptest.NewRecorder()
+		f.handler.ServeHTTP(rec, req)
+		if rec.Code != http.StatusNoContent {
+			t.Fatalf("editor tus patch = %d: %s", rec.Code, rec.Body)
+		}
+
+		// The finished file is the folder owner's, even though the session was
+		// the editor's — the session is who resumes, the file is whose tree it
+		// lands in, and those are deliberately different questions.
+		id := nodeID(t, f.json(http.MethodGet, "/api/v1/nodes/resolve?path=%2Fshared-every-path%2Ffrom-editor.bin", nil))
+		if got := ownerOf(id); got != f.userID.String() {
+			t.Errorf("resumable upload owner = %s, want the folder owner %s", got, f.userID)
+		}
+	})
+
+	t.Run("manifest commit", func(t *testing.T) {
+		data := []byte(uuid.NewString() + " committed by an editor")
+		sum := blake3.Sum256(data)
+		h := hex.EncodeToString(sum[:])
+
+		if rec := f.do(http.MethodPut, "/api/v1/chunks/"+h,
+			bytes.NewReader(data), f.admin); rec.Code != http.StatusCreated {
+			t.Fatalf("editor put chunk = %d", rec.Code)
+		}
+		rec := f.do(http.MethodPost,
+			"/api/v1/manifests?parent_id="+folder+"&name=committed.bin",
+			jsonBody(t, map[string]any{"content_hash": h, "chunks": []string{h}}), f.admin)
+		if rec.Code != http.StatusCreated {
+			t.Fatalf("editor manifest commit = %d: %s", rec.Code, rec.Body)
+		}
+		if got := ownerOf(nodeID(t, rec)); got != f.userID.String() {
+			t.Errorf("manifest commit owner = %s, want the folder owner %s", got, f.userID)
+		}
+	})
+}
+
+// TestViewerCannotWriteOnAnyUploadPath is the refusal half. A read-only grant
+// that could be escalated by choosing a different transport would not be a
+// read-only grant.
+func TestViewerCannotWriteOnAnyUploadPath(t *testing.T) {
+	f := newAPIFixture(t)
+	folder := f.shareFolder(t, "shared-readonly-paths", "viewer")
+
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/uploads", nil)
+	req.Header.Set("Tus-Resumable", "1.0.0")
+	req.Header.Set("Upload-Length", "4")
+	req.Header.Set("Upload-Metadata", meta(map[string]string{
+		"filename": "nope.bin", "parent_id": folder,
+	}))
+	req.AddCookie(f.admin)
+	rec := httptest.NewRecorder()
+	f.handler.ServeHTTP(rec, req)
+	if rec.Code != http.StatusNotFound {
+		t.Errorf("viewer tus create = %d, want 404", rec.Code)
+	}
+
+	data := []byte(uuid.NewString() + " viewer bytes")
+	sum := blake3.Sum256(data)
+	h := hex.EncodeToString(sum[:])
+	if rec := f.do(http.MethodPut, "/api/v1/chunks/"+h,
+		bytes.NewReader(data), f.admin); rec.Code != http.StatusCreated {
+		t.Fatalf("put chunk = %d", rec.Code)
+	}
+	rec = f.do(http.MethodPost,
+		"/api/v1/manifests?parent_id="+folder+"&name=nope.bin",
+		jsonBody(t, map[string]any{"content_hash": h, "chunks": []string{h}}), f.admin)
+	if rec.Code != http.StatusNotFound {
+		t.Errorf("viewer manifest commit = %d, want 404", rec.Code)
 	}
 }
 

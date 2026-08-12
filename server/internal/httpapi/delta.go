@@ -242,6 +242,15 @@ func (s *Server) handleCommitManifest(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// An editor may commit into a folder shared with them, and the file belongs
+	// to that folder's owner — the same rule POST /upload follows. This path is
+	// how the sync client writes every file it uploads, so without it Phase 7's
+	// editor role worked in the browser and nowhere else.
+	owner, ok := s.writeOwner(w, r, parentID)
+	if !ok {
+		return
+	}
+
 	var req commitManifestRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		writeError(w, r, http.StatusBadRequest, "invalid_request", "expected a JSON body")
@@ -262,7 +271,7 @@ func (s *Server) handleCommitManifest(w http.ResponseWriter, r *http.Request) {
 		hashes = append(hashes, h)
 	}
 
-	node, err := s.files.PutManifestFile(r.Context(), CurrentUser(r.Context()).ID, parentID, name, contentHash, hashes, req.MIME)
+	node, err := s.files.PutManifestFile(r.Context(), owner, parentID, name, contentHash, hashes, req.MIME)
 	switch {
 	case errors.Is(err, cas.ErrContentHashMismatch):
 		// The named chunks do not reassemble to the declared hash. For an honest

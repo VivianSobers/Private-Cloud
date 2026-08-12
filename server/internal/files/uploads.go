@@ -48,14 +48,29 @@ const lockWindow = 2 * time.Minute
 // --- store ------------------------------------------------------------------
 
 func (s *Store) CreateUpload(ctx context.Context, u *UploadSession, ttl time.Duration) (*UploadSession, error) {
-	// The parent must be a live folder we own. Checked here rather than at the
-	// first PATCH so an upload into a deleted folder fails before the client
-	// has spent an hour transferring.
+	// The parent must be a live folder the caller may WRITE to — which is not the
+	// same as one they own. An editor may upload into a folder shared with them,
+	// and Phase 7 made that true of POST /upload without making it true here, so
+	// the browser's own 8 MiB threshold decided whether an editor's upload
+	// worked. WriteOwnerFor is the single answer to "may this caller write here",
+	// and it returns ErrNotFound for read-only access exactly as for no access.
+	//
+	// Checked at create rather than at the first PATCH so an upload into a folder
+	// that is gone, or was never writable, fails before the client has spent an
+	// hour transferring.
+	//
+	// The SESSION stays the caller's — u.OwnerID is untouched — because the caller
+	// is who resumes it, cancels it and holds the staging file. Which tree the
+	// finished FILE lands in is a different question, resolved once at finish by
+	// FinishUpload.
+	if _, err := s.WriteOwnerFor(ctx, u.OwnerID, u.ParentID); err != nil {
+		return nil, err
+	}
+
 	var kind string
 	err := s.pool.QueryRow(ctx, `
-		SELECT kind FROM nodes
-		WHERE id = $1 AND owner_id = $2 AND trashed_at IS NULL`,
-		u.ParentID, u.OwnerID).Scan(&kind)
+		SELECT kind FROM nodes WHERE id = $1 AND trashed_at IS NULL`,
+		u.ParentID).Scan(&kind)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, ErrNotFound
 	}
@@ -391,9 +406,19 @@ func (s *Service) FinishUpload(ctx context.Context, ownerID, id uuid.UUID) (*Nod
 		return nil, fmt.Errorf("staged upload is %d bytes, expected %d", onDisk, sess.Size)
 	}
 
+	// Whose tree the finished file lands in, and whose quota it spends. The
+	// session belongs to whoever is uploading; the FILE belongs to the folder's
+	// owner, which for an ordinary upload into your own tree is the same person
+	// and for an editor writing into a shared folder is not. Resolved here rather
+	// than carried on the session so a grant revoked mid-upload takes effect.
+	fileOwner, err := s.store.WriteOwnerFor(ctx, sess.OwnerID, sess.ParentID)
+	if err != nil {
+		return nil, err
+	}
+
 	// FinishStaged owns the storage-format decision (CAS chunks vs whole-file
 	// blob) and the cleanup on failure, for this path and WebDAV's alike.
-	node, err := s.FinishStaged(ctx, sess.OwnerID, sess.ParentID, sess.Name,
+	node, err := s.FinishStaged(ctx, fileOwner, sess.ParentID, sess.Name,
 		sess.StagingKey, sess.Size, hasher.Sum(nil), sess.MIME)
 	if err != nil {
 		return nil, err
