@@ -86,6 +86,36 @@ func (s *Store) Entries(ctx context.Context, manifestID uuid.UUID) ([]Entry, err
 	return out, rows.Err()
 }
 
+// OpenChunkStored opens a chunk's ON-DISK bytes for streaming, alongside its
+// compression and plaintext size.
+//
+// The caller closes the reader. Used by the download path, which has no reason
+// to hold a chunk in memory: it copies the bytes straight to the socket, and a
+// hundred concurrent syncs would otherwise each own a buffer for as long as
+// their client took to read it. ReadChunkStored keeps buffering for the callers
+// that genuinely need the bytes in hand — hashing, verification.
+func (s *Store) OpenChunkStored(ctx context.Context, hash [32]byte) (rc io.ReadCloser, compression string, size int, err error) {
+	var storageKey string
+	err = s.pool.QueryRow(ctx,
+		`SELECT storage_key, compression, size FROM chunks WHERE hash = $1`, hash[:]).
+		Scan(&storageKey, &compression, &size)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil, "", 0, ErrChunkNotFound
+	}
+	if err != nil {
+		return nil, "", 0, err
+	}
+
+	f, err := s.blobs.Open(ctx, storageKey)
+	if errors.Is(err, blob.ErrNotFound) {
+		return nil, "", 0, ErrChunkNotFound
+	}
+	if err != nil {
+		return nil, "", 0, err
+	}
+	return f, compression, size, nil
+}
+
 // ReadChunkStored returns a chunk's ON-DISK bytes, its compression, and its
 // plaintext size — the stored form, so the wire carries the compressed bytes and
 // the client decompresses and verifies against the address itself.

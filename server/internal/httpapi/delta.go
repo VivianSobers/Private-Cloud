@@ -163,7 +163,12 @@ func (s *Server) handleGetChunk(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	stored, compression, size, err := s.files.CAS().ReadChunkStored(r.Context(), hash)
+	// Streamed, not buffered. A chunk is capped at 64 KiB so no single read is
+	// large, but this is the sync client's hot path — every file it pulls is a
+	// run of these — and holding each one in memory for as long as its client
+	// takes to read it turns a hundred concurrent syncs into a hundred buffers
+	// for no reason. io.Copy hands the file to the socket.
+	body, compression, size, err := s.files.CAS().OpenChunkStored(r.Context(), hash)
 	if errors.Is(err, cas.ErrChunkNotFound) {
 		writeError(w, r, http.StatusNotFound, "not_found", "no such chunk")
 		return
@@ -172,6 +177,7 @@ func (s *Server) handleGetChunk(w http.ResponseWriter, r *http.Request) {
 		s.serverError(w, r, "read chunk", err)
 		return
 	}
+	defer body.Close()
 
 	// A chunk is immutable — its address IS its content — so it caches forever.
 	w.Header().Set("Content-Type", "application/octet-stream")
@@ -179,7 +185,12 @@ func (s *Server) handleGetChunk(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("ETag", `"`+r.PathValue("hash")+`"`)
 	w.Header().Set("X-Chunk-Compression", compression)
 	w.Header().Set("X-Chunk-Plain-Size", strconv.Itoa(size))
-	_, _ = w.Write(stored)
+	if _, err := io.Copy(w, body); err != nil {
+		// The status line is already sent, so this cannot be reported to the
+		// client. It is almost always a client that hung up mid-chunk.
+		s.log.Warn("chunk stream interrupted", "error", err,
+			"request_id", RequestID(r.Context()))
+	}
 }
 
 // handlePutChunk stores one client-supplied plaintext chunk, verified against its
