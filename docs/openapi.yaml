@@ -62,6 +62,21 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/Error"
+  "/api/v1/admin/storage":
+    get:
+      operationId: getApiV1AdminStorage
+      security:
+        - sessionCookie: []
+        - bearerToken: []
+      responses:
+        "default":
+          description: |
+            See docs/api-contract.md for this endpoint's request and response
+            bodies. Every failure uses the Error schema below.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
   "/api/v1/admin/users":
     get:
       operationId: getApiV1AdminUsers

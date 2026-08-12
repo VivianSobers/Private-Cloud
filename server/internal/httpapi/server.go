@@ -390,6 +390,11 @@ func (s *Server) registerRoutes(mux router) {
 	mux.HandleFunc("DELETE /api/v1/admin/users/{id}/sessions/{sid}", s.requireAdmin(s.handleAdminRevokeUserSession))
 	mux.HandleFunc("GET /api/v1/admin/audit", s.requireAdmin(s.handleAdminAudit))
 
+	// --- storage health (Phase 9) --------------------------------------------
+	// Reads the same textfile collectors the alerts scrape, so the console and
+	// Grafana never disagree about whether the pool is healthy.
+	mux.HandleFunc("GET /api/v1/admin/storage", s.requireAdmin(s.handleAdminStorage))
+
 	// --- WebDAV --------------------------------------------------------------
 	// Mounted outside /api because it is a different protocol with a different
 	// auth scheme. Registered as a prefix rather than with method patterns:
