@@ -5,12 +5,13 @@ import { SignIn } from "./SignIn";
 import { Admin } from "./Admin";
 import { Ask } from "./Ask";
 import { Browser } from "./Browser";
+import { People } from "./People";
 import { Photos } from "./Photos";
 import { Settings } from "./Settings";
 import { SharedWithMe } from "./SharedWithMe";
 import { RecoveryCodes } from "./RecoveryCodes";
 
-type View = "files" | "photos" | "ask" | "shared" | "admin" | "settings";
+type View = "files" | "photos" | "people" | "ask" | "shared" | "admin" | "settings";
 
 export function App() {
   const [me, setMe] = useState<Me | null>(null);
@@ -76,6 +77,9 @@ export function App() {
           <button className="link" onClick={() => setView("photos")} aria-current={view === "photos"}>
             Photos
           </button>
+          <button className="link" onClick={() => setView("people")} aria-current={view === "people"}>
+            People
+          </button>
           <button className="link" onClick={() => setView("ask")} aria-current={view === "ask"}>
             Ask
           </button>
@@ -129,6 +133,8 @@ export function App() {
         <Browser />
       ) : view === "photos" ? (
         <Photos />
+      ) : view === "people" ? (
+        <People />
       ) : view === "ask" ? (
         <Ask />
       ) : view === "shared" ? (
