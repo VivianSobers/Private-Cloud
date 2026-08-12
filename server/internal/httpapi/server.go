@@ -273,6 +273,11 @@ func (s *Server) registerRoutes(mux router) {
 	mux.HandleFunc("GET /api/v1/tags", s.requireAuth(s.handleListTags))
 	mux.HandleFunc("GET /api/v1/tags/{tag}", s.requireAuth(s.handleTagNodes))
 
+	// --- intelligence (Phase 8) ----------------------------------------------
+	// Similarity rides the embedding space Phase 4 already built, so it needs no
+	// new job kind and degrades exactly as /search?semantic=true does.
+	mux.HandleFunc("GET /api/v1/nodes/{id}/similar", s.requireAuth(s.searchLimited(s.handleSimilar)))
+
 	// --- sharing and collaboration (Phase 7) ---------------------------------
 	// Shared content stays OUT of the existing endpoints unless a client opts in
 	// with ?include_shared=true. Widening the default would silently change what
