@@ -38,6 +38,11 @@ func (e *Engine) reconcileTree(ctx context.Context) error {
 			if e.excluded(node.Path) {
 				continue
 			}
+			// Ignored paths are not materialized either — .pcsyncignore keeps them off
+			// this device the same way selective sync keeps a subtree off.
+			if e.ignored(node.Path, node.IsFolder()) {
+				continue
+			}
 			seen[node.Path] = true
 			if node.IsFolder() {
 				if err := e.materializeFolder(node); err != nil {
@@ -67,6 +72,10 @@ func (e *Engine) reconcileTree(ctx context.Context) error {
 		// An excluded entry is absent from `seen` by design, not because the server
 		// removed it — pruneExcluded owns its removal, so do not treat it as vanished.
 		if e.excluded(entry.Path) {
+			continue
+		}
+		// An ignored entry is owned by the ignore rules, not by "vanished on server".
+		if e.ignored(entry.Path, entry.Kind == "folder") {
 			continue
 		}
 		if err := e.removeVanished(entry); err != nil {
@@ -154,6 +163,10 @@ func (e *Engine) applyChange(ctx context.Context, ch api.Change) error {
 	// A change landing inside an excluded subtree is ignored — including a move
 	// into one, which is why this is checked before the rename handling below.
 	if e.excluded(node.Path) {
+		return nil
+	}
+	// Likewise a change to an ignored path is not applied locally.
+	if e.ignored(node.Path, node.IsFolder()) {
 		return nil
 	}
 

@@ -19,6 +19,7 @@ import (
 	"time"
 
 	"github.com/guru-bharadwaj20/private-cloud/client/internal/api"
+	"github.com/guru-bharadwaj20/private-cloud/client/internal/ignore"
 	"github.com/guru-bharadwaj20/private-cloud/client/internal/state"
 )
 
@@ -78,6 +79,10 @@ type Engine struct {
 	// startup, so the config seed does not clobber a live change.
 	excludes       atomic.Pointer[[]string]
 	excludesLoaded bool
+
+	// ignore is the compiled .pcsyncignore matcher, reloaded at the start of each
+	// reconcile — see ignore.go.
+	ignore atomic.Pointer[ignore.Matcher]
 
 	// Session transfer tallies since the daemon started, incremented on the sync
 	// path and read for the status surface — atomic, so no lock is taken per file.
@@ -142,6 +147,9 @@ func (e *Engine) ensureRoot(ctx context.Context) error {
 	if err := os.MkdirAll(e.stateDir, 0o700); err != nil {
 		return err
 	}
+	// Reload ignore rules each pass so an edit to .pcsyncignore takes effect on the
+	// next reconcile — cheap, and it keeps the rules honest without a restart.
+	e.loadIgnore()
 	root, err := e.srv.GetRoot(ctx)
 	if err != nil {
 		return err

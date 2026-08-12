@@ -56,6 +56,14 @@ func (e *Engine) pushExisting(ctx context.Context) (map[string]bool, error) {
 			}
 			return nil
 		}
+		// Ignored local paths (build output, editor scratch, OS metadata) are never
+		// uploaded — the whole point of .pcsyncignore.
+		if e.ignored(sp, d.IsDir()) {
+			if d.IsDir() {
+				return filepath.SkipDir
+			}
+			return nil
+		}
 		seen[sp] = true
 
 		if d.IsDir() {
@@ -146,6 +154,11 @@ func (e *Engine) pushDeletions(ctx context.Context, seen map[string]bool) error 
 		// walk must never trash it on the server. pruneExcluded drops its state, but
 		// guard here too so a deletion is never sent for an excluded path.
 		if e.excluded(entry.Path) {
+			continue
+		}
+		// A newly-ignored path must not be trashed on the server just because it is
+		// no longer walked locally — same guard as an excluded entry.
+		if e.ignored(entry.Path, entry.Kind == "folder") {
 			continue
 		}
 		// The parent folder may already have been trashed this pass, cascading on
