@@ -152,6 +152,105 @@ func TestDismissedFaceIsNotReclustered(t *testing.T) {
 	}
 }
 
+// TestCachedCentroidsStayHonest is the invariant a cache has to hold.
+//
+// The centroid moved into `people` so the clusterer stops averaging every face
+// the owner has on every photo. The risk that buys is the usual one: a cached
+// value that quietly stops describing what it claims to. Removing a face from a
+// mean is not the inverse of adding one, so every operation that changes
+// membership in a way the fold cannot express has to mark the cluster stale, and
+// missing one of them is silent — the cluster simply starts matching the wrong
+// people, weeks later.
+//
+// So the assertion is not about any one operation: it is that after EVERY
+// mutation, a stored centroid either is absent or agrees with the faces that are
+// actually there.
+func TestCachedCentroidsStayHonest(t *testing.T) {
+	f := newFixture(t)
+	ctx := context.Background()
+
+	// Either centroid IS NULL — stale, and it will be rebuilt on next use — or
+	// face_count is exactly the number of faces the cluster holds.
+	checkCoherent := func(after string) {
+		t.Helper()
+		rows, err := f.store.Pool().Query(ctx, `
+			SELECT p.id, p.centroid IS NULL, p.face_count,
+			       (SELECT count(*) FROM faces WHERE person_id = p.id AND model = 'test-face')
+			FROM people p WHERE p.owner_id = $1`, f.user)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer rows.Close()
+		for rows.Next() {
+			var (
+				id     uuid.UUID
+				stale  bool
+				cached int
+				actual int
+			)
+			if err := rows.Scan(&id, &stale, &cached, &actual); err != nil {
+				t.Fatal(err)
+			}
+			if !stale && cached != actual {
+				t.Errorf("after %s: cluster %s caches %d faces but holds %d",
+					after, id, cached, actual)
+			}
+		}
+		if err := rows.Err(); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	a := f.upload(f.root, "coh-a.jpg", "a")
+	b := f.upload(f.root, "coh-b.jpg", "b")
+	c := f.upload(f.root, "coh-c.jpg", "c")
+	storeFaces(t, f, a.ID, faceVec(4, 0.01), faceVec(4, 0.02))
+	storeFaces(t, f, b.ID, faceVec(4, 0.03))
+	storeFaces(t, f, c.ID, faceVec(12, 0.01))
+	checkCoherent("clustering")
+
+	people, err := f.store.ListPeople(ctx, f.user)
+	if err != nil || len(people) != 2 {
+		t.Fatalf("setup: %d cluster(s), err=%v", len(people), err)
+	}
+
+	if err := f.store.MergePeople(ctx, f.user, people[1].ID, people[0].ID); err != nil {
+		t.Fatalf("MergePeople: %v", err)
+	}
+	checkCoherent("a merge")
+
+	faces, err := f.store.FacesInNode(ctx, f.user, a.ID)
+	if err != nil || len(faces) == 0 {
+		t.Fatalf("FacesInNode: %d, err=%v", len(faces), err)
+	}
+	if err := f.store.ReassignFace(ctx, f.user, faces[0].ID, nil); err != nil {
+		t.Fatalf("ReassignFace: %v", err)
+	}
+	checkCoherent("a dismissal")
+
+	// Re-detection over a photo replaces its faces wholesale, so every cluster
+	// that photo contributed to loses members.
+	storeFaces(t, f, b.ID, faceVec(4, 0.04))
+	checkCoherent("re-detection")
+
+	// And a cluster rebuilt from stale still attracts the person it describes,
+	// rather than having quietly become a different shape.
+	d := f.upload(f.root, "coh-d.jpg", "d")
+	storeFaces(t, f, d.ID, faceVec(4, 0.05))
+	checkCoherent("clustering after invalidation")
+
+	people, err = f.store.ListPeople(ctx, f.user)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, p := range people {
+		if p.FaceCount == 1 && len(people) > 2 {
+			t.Errorf("a rebuilt centroid stopped matching its own person: %d clusters", len(people))
+			break
+		}
+	}
+}
+
 // The same person in two photos lands in one cluster; a different person starts
 // their own.
 func TestFacesClusterByPerson(t *testing.T) {

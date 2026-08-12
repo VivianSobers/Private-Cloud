@@ -7,6 +7,7 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 
 	"github.com/guru-bharadwaj20/private-cloud/server/internal/embed"
 )
@@ -87,22 +88,39 @@ func (s *Store) ReplaceFaces(ctx context.Context, ownerID, nodeID uuid.UUID, mod
 	// an operator ran a reindex. Read before the delete, which is what would
 	// otherwise lose them.
 	dismissed := map[int]bool{}
+	var affected []uuid.UUID
 	rows, err := tx.Query(ctx,
-		`SELECT seq FROM faces WHERE node_id = $1 AND model = $2 AND dismissed_at IS NOT NULL`,
+		`SELECT seq, dismissed_at IS NOT NULL, person_id
+		 FROM faces WHERE node_id = $1 AND model = $2`,
 		nodeID, model)
 	if err != nil {
 		return err
 	}
 	for rows.Next() {
-		var seq int
-		if err := rows.Scan(&seq); err != nil {
+		var (
+			seq       int
+			isDropped bool
+			personID  *uuid.UUID
+		)
+		if err := rows.Scan(&seq, &isDropped, &personID); err != nil {
 			rows.Close()
 			return err
 		}
-		dismissed[seq] = true
+		if isDropped {
+			dismissed[seq] = true
+		}
+		if personID != nil {
+			affected = append(affected, *personID)
+		}
 	}
 	rows.Close()
 	if err := rows.Err(); err != nil {
+		return err
+	}
+
+	// Every cluster this photo contributed to loses those faces, so every one of
+	// their centroids is stale. Inside the transaction with the delete.
+	if err := s.invalidateCentroids(ctx, tx, affected...); err != nil {
 		return err
 	}
 
@@ -186,6 +204,7 @@ func (s *Store) ClusterUnassignedFaces(ctx context.Context, ownerID uuid.UUID, m
 		return err
 	}
 
+	touched := map[uuid.UUID]bool{}
 	for _, p := range todo {
 		bestID, bestScore := uuid.Nil, FaceMatchThreshold
 		for personID, c := range clusters {
@@ -207,6 +226,7 @@ func (s *Store) ClusterUnassignedFaces(ctx context.Context, ownerID uuid.UUID, m
 				return err
 			}
 			clusters[bestID] = &cluster{centroid: p.vec, count: 1}
+			touched[bestID] = true
 			continue
 		}
 
@@ -228,43 +248,107 @@ func (s *Store) ClusterUnassignedFaces(ctx context.Context, ownerID uuid.UUID, m
 		c := clusters[bestID]
 		c.centroid = weightedMean(c.centroid, c.count, p.vec)
 		c.count++
+		touched[bestID] = true
+	}
+
+	// Persist what moved, once per cluster rather than once per face: a photo
+	// with six faces of the same person is one write, not six.
+	for id := range touched {
+		if err := s.saveCentroid(ctx, id, model, clusters[id]); err != nil {
+			return err
+		}
 	}
 	return nil
 }
 
-// personCentroids computes each cluster's mean vector and its size.
+// personCentroids loads each cluster's mean vector and its size.
 //
-// The size is returned, not discarded: it is what lets the assignment loop move
-// a centroid by 1/(n+1) rather than halfway. An ORDER BY on the scan so that a
-// library past MaxFaceScan truncates deterministically — an arbitrary subset
-// would make clustering depend on Postgres's row order, which is to say on
-// nothing.
+// Read from `people`, not recomputed. This runs once per analysed photo, and
+// averaging every clustered face the owner has — up to MaxFaceScan of them — to
+// answer a question whose answer changes by one face was O(N) per photo and
+// O(N^2) to import a library. The centroid is folded forward instead, and only a
+// cluster marked stale is rebuilt, from its own faces alone.
+//
+// A NULL centroid means stale, not empty. Anything that changes membership in a
+// way that cannot be folded forward — a merge, a reassignment, a dismissal,
+// re-detection over a photo — sets it back to NULL, and this is where the debt
+// is paid, for that one cluster.
 func (s *Store) personCentroids(ctx context.Context, ownerID uuid.UUID, model string) (map[uuid.UUID]*cluster, error) {
 	rows, err := s.pool.Query(ctx, `
-		SELECT person_id, vector FROM faces
-		WHERE owner_id = $1 AND model = $2 AND person_id IS NOT NULL
-		ORDER BY person_id, detected_at, seq
-		LIMIT $3`, ownerID, model, MaxFaceScan)
+		SELECT id, centroid, face_count, centroid_model
+		FROM people WHERE owner_id = $1`, ownerID)
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
 
 	out := map[uuid.UUID]*cluster{}
+	var stale []uuid.UUID
 	for rows.Next() {
 		var (
-			id  uuid.UUID
-			raw []byte
+			id            uuid.UUID
+			raw           []byte
+			count         int
+			centroidModel *string
 		)
-		if err := rows.Scan(&id, &raw); err != nil {
+		if err := rows.Scan(&id, &raw, &count, &centroidModel); err != nil {
+			rows.Close()
+			return nil, err
+		}
+		// A centroid computed in another model's space is not comparable with
+		// vectors from this one, so it is as good as absent.
+		if len(raw) == 0 || count == 0 || centroidModel == nil || *centroidModel != model {
+			stale = append(stale, id)
+			continue
+		}
+		out[id] = &cluster{centroid: embed.Unpack(raw), count: count}
+	}
+	rows.Close()
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+
+	for _, id := range stale {
+		c, err := s.recomputeCentroid(ctx, id, model)
+		if err != nil {
+			return nil, err
+		}
+		if c != nil {
+			out[id] = c
+		}
+	}
+	return out, nil
+}
+
+// recomputeCentroid rebuilds one cluster's mean from its faces and stores it.
+//
+// Returns nil for a cluster with no faces in this model's space — there is
+// nothing to compare against, and an empty cluster must not attract a face.
+//
+// An ORDER BY on the scan so a cluster past MaxFaceScan truncates
+// deterministically; an arbitrary subset would make clustering depend on
+// Postgres's row order, which is to say on nothing.
+func (s *Store) recomputeCentroid(ctx context.Context, personID uuid.UUID, model string) (*cluster, error) {
+	rows, err := s.pool.Query(ctx, `
+		SELECT vector FROM faces
+		WHERE person_id = $1 AND model = $2
+		ORDER BY detected_at, seq
+		LIMIT $3`, personID, model, MaxFaceScan)
+	if err != nil {
+		return nil, err
+	}
+
+	var c *cluster
+	for rows.Next() {
+		var raw []byte
+		if err := rows.Scan(&raw); err != nil {
+			rows.Close()
 			return nil, err
 		}
 		v := embed.Unpack(raw)
-		c, ok := out[id]
-		if !ok {
+		if c == nil {
 			cp := make([]float32, len(v))
 			copy(cp, v)
-			out[id] = &cluster{centroid: cp, count: 1}
+			c = &cluster{centroid: cp, count: 1}
 			continue
 		}
 		// A running mean rather than sum-then-divide: the vectors are float32 and
@@ -273,7 +357,53 @@ func (s *Store) personCentroids(ctx context.Context, ownerID uuid.UUID, model st
 		c.centroid = weightedMean(c.centroid, c.count, v)
 		c.count++
 	}
-	return out, rows.Err()
+	rows.Close()
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	if c == nil {
+		return nil, nil
+	}
+
+	if err := s.saveCentroid(ctx, personID, model, c); err != nil {
+		return nil, err
+	}
+	return c, nil
+}
+
+func (s *Store) saveCentroid(ctx context.Context, personID uuid.UUID, model string, c *cluster) error {
+	_, err := s.pool.Exec(ctx, `
+		UPDATE people SET centroid = $2, centroid_model = $3, face_count = $4
+		WHERE id = $1`, personID, embed.Pack(c.centroid), model, c.count)
+	return err
+}
+
+// invalidateCentroids marks clusters stale.
+//
+// Called wherever membership changes in a way the incremental fold cannot
+// express. Removing a face from a mean is not the inverse of adding one — the
+// mean does not record what it absorbed — so the honest move is to admit the
+// cached value is gone and rebuild that cluster on next use.
+func (s *Store) invalidateCentroids(ctx context.Context, q pgxQuerier, personIDs ...uuid.UUID) error {
+	ids := make([]uuid.UUID, 0, len(personIDs))
+	for _, id := range personIDs {
+		if id != uuid.Nil {
+			ids = append(ids, id)
+		}
+	}
+	if len(ids) == 0 {
+		return nil
+	}
+	_, err := q.Exec(ctx,
+		`UPDATE people SET centroid = NULL, centroid_model = NULL, face_count = 0
+		 WHERE id = ANY($1)`, ids)
+	return err
+}
+
+// pgxQuerier is the part of a pool or a transaction the invalidation needs, so
+// it can run inside a caller's transaction where one exists.
+type pgxQuerier interface {
+	Exec(ctx context.Context, sql string, args ...any) (pgconn.CommandTag, error)
 }
 
 // weightedMean folds one more vector into a mean of n, moving it by 1/(n+1).
@@ -447,6 +577,11 @@ func (s *Store) MergePeople(ctx context.Context, ownerID, from, into uuid.UUID) 
 		`UPDATE people SET updated_at = now() WHERE id = $1`, into); err != nil {
 		return err
 	}
+	// The target absorbed an arbitrary number of faces at once, which the
+	// incremental fold cannot express; it is rebuilt on next use.
+	if err := s.invalidateCentroids(ctx, tx, into); err != nil {
+		return err
+	}
 	return tx.Commit(ctx)
 }
 
@@ -507,6 +642,17 @@ func (s *Store) ReassignFace(ctx context.Context, ownerID, faceID uuid.UUID, per
 			return err
 		}
 	}
+	// The cluster it is leaving, read before the move.
+	var previous *uuid.UUID
+	if err := s.pool.QueryRow(ctx,
+		`SELECT person_id FROM faces WHERE id = $1 AND owner_id = $2`,
+		faceID, ownerID).Scan(&previous); err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return ErrFaceNotFound
+		}
+		return err
+	}
+
 	tag, err := s.pool.Exec(ctx, `
 		UPDATE faces
 		SET person_id = $3,
@@ -519,7 +665,18 @@ func (s *Store) ReassignFace(ctx context.Context, ownerID, faceID uuid.UUID, per
 	if tag.RowsAffected() == 0 {
 		return ErrFaceNotFound
 	}
-	return nil
+
+	// Both ends are stale. Removing a face from a mean is not the inverse of
+	// adding one, so neither centroid can be folded — they are rebuilt on next
+	// use, and only these two.
+	stale := []uuid.UUID{}
+	if previous != nil {
+		stale = append(stale, *previous)
+	}
+	if personID != nil {
+		stale = append(stale, *personID)
+	}
+	return s.invalidateCentroids(ctx, s.pool, stale...)
 }
 
 // FacesInNode lists the faces detected in one photo, for a "who is in this
