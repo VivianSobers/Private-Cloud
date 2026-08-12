@@ -634,6 +634,56 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/Error"
+  "/api/v1/grants":
+    get:
+      operationId: getApiV1Grants
+      security:
+        - sessionCookie: []
+        - bearerToken: []
+      responses:
+        "default":
+          description: |
+            See docs/api-contract.md for this endpoint's request and response
+            bodies. Every failure uses the Error schema below.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+  "/api/v1/grants/{id}":
+    parameters:
+      - name: id
+        in: path
+        required: true
+        schema:
+          type: string
+    patch:
+      operationId: patchApiV1GrantsId
+      security:
+        - sessionCookie: []
+        - bearerToken: []
+      responses:
+        "default":
+          description: |
+            See docs/api-contract.md for this endpoint's request and response
+            bodies. Every failure uses the Error schema below.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+    delete:
+      operationId: deleteApiV1GrantsId
+      security:
+        - sessionCookie: []
+        - bearerToken: []
+      responses:
+        "default":
+          description: |
+            See docs/api-contract.md for this endpoint's request and response
+            bodies. Every failure uses the Error schema below.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
   "/api/v1/manifests":
     post:
       operationId: postApiV1Manifests
@@ -787,6 +837,41 @@ paths:
                 $ref: "#/components/schemas/Error"
     head:
       operationId: headApiV1NodesIdContent
+      security:
+        - sessionCookie: []
+        - bearerToken: []
+      responses:
+        "default":
+          description: |
+            See docs/api-contract.md for this endpoint's request and response
+            bodies. Every failure uses the Error schema below.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+  "/api/v1/nodes/{id}/grants":
+    parameters:
+      - name: id
+        in: path
+        required: true
+        schema:
+          type: string
+    get:
+      operationId: getApiV1NodesIdGrants
+      security:
+        - sessionCookie: []
+        - bearerToken: []
+      responses:
+        "default":
+          description: |
+            See docs/api-contract.md for this endpoint's request and response
+            bodies. Every failure uses the Error schema below.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+    post:
+      operationId: postApiV1NodesIdGrants
       security:
         - sessionCookie: []
         - bearerToken: []
@@ -1061,6 +1146,21 @@ paths:
   "/api/v1/search":
     get:
       operationId: getApiV1Search
+      security:
+        - sessionCookie: []
+        - bearerToken: []
+      responses:
+        "default":
+          description: |
+            See docs/api-contract.md for this endpoint's request and response
+            bodies. Every failure uses the Error schema below.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+  "/api/v1/shared":
+    get:
+      operationId: getApiV1Shared
       security:
         - sessionCookie: []
         - bearerToken: []

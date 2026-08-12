@@ -85,10 +85,17 @@ func (s *Store) PutEmbeddings(ctx context.Context, contentHash []byte, model str
 	return tx.Commit(ctx)
 }
 
-// SemanticSearch ranks the owner's live files by cosine similarity of their
+// SemanticSearch ranks the caller's live files by cosine similarity of their
 // embeddings to a query vector, best chunk per file. It is the brute-force path:
-// scan this model's vectors joined to live owned files, score in Go, sort.
-func (s *Store) SemanticSearch(ctx context.Context, ownerID uuid.UUID, query []float32, model string, limit int) ([]*SearchResult, error) {
+// scan this model's vectors joined to live visible files, score in Go, sort.
+//
+// The ACL filter is applied to the NODE rows, never to the vectors, and that is
+// not an implementation detail. Embeddings are content-addressed, so two users
+// owning the same document share one vector row by construction; filtering the
+// vectors would either hide a document from someone entitled to it or — far
+// worse — let one user's query surface the existence of another's document
+// through a similarity score.
+func (s *Store) SemanticSearch(ctx context.Context, ownerID uuid.UUID, query []float32, model string, limit int, includeShared bool) ([]*SearchResult, error) {
 	limit = ClampSearchLimit(limit)
 
 	// Filter by dimension as well as model. Model identity should already pin the
@@ -101,7 +108,7 @@ func (s *Store) SemanticSearch(ctx context.Context, ownerID uuid.UUID, query []f
 		`+nodeFrom+`
 		JOIN doc_embedding de ON de.content_hash = coalesce(b.sha256, m.content_hash)
 			AND de.model = $2 AND de.dim = $3
-		WHERE n.owner_id = $1 AND n.parent_id IS NOT NULL AND n.trashed_at IS NULL
+		WHERE `+Visibility(includeShared)+` AND n.parent_id IS NOT NULL AND n.trashed_at IS NULL
 		-- Ordered so the bound below truncates deterministically. Without it the
 		-- planner decides which vectors get scored once a corpus exceeds the cap,
 		-- and the same query returns different top results run to run. Newest

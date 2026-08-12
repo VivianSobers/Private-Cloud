@@ -273,6 +273,17 @@ func (s *Server) registerRoutes(mux router) {
 	mux.HandleFunc("GET /api/v1/tags", s.requireAuth(s.handleListTags))
 	mux.HandleFunc("GET /api/v1/tags/{tag}", s.requireAuth(s.handleTagNodes))
 
+	// --- sharing and collaboration (Phase 7) ---------------------------------
+	// Shared content stays OUT of the existing endpoints unless a client opts in
+	// with ?include_shared=true. Widening the default would silently change what
+	// GET /nodes/{id}/children and /search mean for every already-shipped client.
+	mux.HandleFunc("GET /api/v1/grants", s.requireAuth(s.handleListGrants))
+	mux.HandleFunc("GET /api/v1/nodes/{id}/grants", s.requireAuth(s.handleListNodeGrants))
+	mux.HandleFunc("POST /api/v1/nodes/{id}/grants", s.requireAuth(s.handleCreateGrant))
+	mux.HandleFunc("PATCH /api/v1/grants/{id}", s.requireAuth(s.handleUpdateGrant))
+	mux.HandleFunc("DELETE /api/v1/grants/{id}", s.requireAuth(s.handleDeleteGrant))
+	mux.HandleFunc("GET /api/v1/shared", s.requireAuth(s.handleShared))
+
 	// --- devices (Phase 6) ---------------------------------------------------
 	// A device is a session of kind 'device'; these routes exist alongside
 	// /auth/sessions because a device list wants the CLIENT's identity rather

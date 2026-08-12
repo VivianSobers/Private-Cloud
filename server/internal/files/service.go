@@ -258,6 +258,36 @@ func (s *Service) Open(ctx context.Context, ownerID, id uuid.UUID) (*Node, io.Re
 	if err != nil {
 		return nil, nil, err
 	}
+	return s.openNode(ctx, node)
+}
+
+// OpenVisible opens a file the caller may read, whether they own it or it was
+// granted to them.
+//
+// Deliberately NOT gated on ?include_shared=true, unlike the listings.
+//
+// That flag exists to stop a listing silently meaning something new to a client
+// written before Phase 7 — it protects a client from being handed rows it did
+// not ask for. A download names one node explicitly: the client either asked for
+// that id or it did not, so there is nothing to be surprised by. Requiring the
+// flag here would also make /shared incoherent, handing a client an id it is
+// then refused permission to fetch.
+func (s *Service) OpenVisible(ctx context.Context, userID, id uuid.UUID) (*Node, Access, io.ReadSeekCloser, error) {
+	node, access, err := s.store.GetVisible(ctx, userID, id)
+	if err != nil {
+		return nil, Access{}, nil, err
+	}
+	n, rc, err := s.openNode(ctx, node)
+	if err != nil {
+		return nil, Access{}, nil, err
+	}
+	return n, access, rc, nil
+}
+
+// openNode streams a node whose access has already been decided. Splitting this
+// out is what keeps exactly one copy of the whole-blob-versus-manifest logic:
+// two copies would eventually disagree about which storage format a file uses.
+func (s *Service) openNode(ctx context.Context, node *Node) (*Node, io.ReadSeekCloser, error) {
 	if !node.IsFile() {
 		return nil, nil, ErrNotAFile
 	}

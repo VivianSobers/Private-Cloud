@@ -142,13 +142,27 @@ func (s *Server) handleGetNode(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	user := CurrentUser(r.Context())
+
+	// Owner first, so the common case keeps its exact previous behaviour —
+	// including for trashed nodes, which GetVisible deliberately does not return.
+	// Only when the caller does not own it do we ask whether it was granted; a
+	// details view of a shared file is the whole point of /shared handing out
+	// ids. Like the download path, this is not gated on the opt-in: the caller
+	// named one node, so nothing can surprise them.
 	node, err := s.files.Store().Get(r.Context(), user.ID, id)
+	var access files.Access
+	if errors.Is(err, files.ErrNotFound) {
+		node, access, err = s.files.Store().GetVisible(r.Context(), user.ID, id)
+	}
 	if err != nil {
 		s.writeFilesError(w, r, "get node", err)
 		return
 	}
 
 	nodeBody := nodeJSON(node)
+	if access.Shared {
+		nodeBody["access"] = accessJSON(access)
+	}
 	// A photo's media metadata rides along for the same reason its tags do: a
 	// details view, a lightbox and a map pin all need it, and none of them should
 	// need a second round trip. Absent until the media job has run, which is what
@@ -176,8 +190,21 @@ func (s *Server) handleListChildren(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	user := CurrentUser(r.Context())
+	shared := includeShared(r)
 
-	parent, err := s.files.Store().GetLive(r.Context(), user.ID, id)
+	// GetVisible resolves the caller's access; GetLive would refuse a folder
+	// somebody shared with them. Without the opt-in the two are identical, since
+	// the listing below is then owner-filtered anyway.
+	var (
+		parent *files.Node
+		access files.Access
+		err    error
+	)
+	if shared {
+		parent, access, err = s.files.Store().GetVisible(r.Context(), user.ID, id)
+	} else {
+		parent, err = s.files.Store().GetLive(r.Context(), user.ID, id)
+	}
 	if err != nil {
 		s.writeFilesError(w, r, "get folder", err)
 		return
@@ -186,15 +213,26 @@ func (s *Server) handleListChildren(w http.ResponseWriter, r *http.Request) {
 		writeError(w, r, http.StatusBadRequest, "not_a_folder", "that is not a folder")
 		return
 	}
-
-	children, err := s.files.Store().ListChildren(r.Context(), user.ID, id)
+	children, err := s.files.Store().ListChildrenVisible(r.Context(), user.ID, id, shared)
 	if err != nil {
 		s.serverError(w, r, "list children", err)
 		return
 	}
+
+	parentBody := nodeJSON(parent)
+	childBody := nodesJSON(children)
+	if shared {
+		// `access` only ever appears when the client asked to see shared content,
+		// so a pre-Phase-7 client's response is unchanged in both size and shape.
+		if access.Shared {
+			parentBody["access"] = accessJSON(access)
+		}
+		childBody = s.attachAccess(r, user.ID, children, childBody)
+	}
+
 	writeJSON(w, r, http.StatusOK, map[string]any{
-		"parent":   nodeJSON(parent),
-		"children": nodesJSON(children),
+		"parent":   parentBody,
+		"children": childBody,
 	})
 }
 
@@ -510,7 +548,10 @@ func (s *Server) handleDownload(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	node, content, err := s.files.Open(r.Context(), CurrentUser(r.Context()).ID, id)
+	// OpenVisible, not Open: a viewer grant that cannot read the bytes is not a
+	// share. See the note on OpenVisible for why this one is not gated on
+	// ?include_shared=true the way the listings are.
+	node, _, content, err := s.files.OpenVisible(r.Context(), CurrentUser(r.Context()).ID, id)
 	if err != nil {
 		s.writeFilesError(w, r, "open file", err)
 		return
@@ -669,6 +710,7 @@ func (s *Server) handleSearch(w http.ResponseWriter, r *http.Request) {
 		Kind:           q.Get("kind"),
 		Under:          q.Get("under"),
 		IncludeTrashed: q.Get("include_trashed") == "true",
+		IncludeShared:  includeShared(r),
 		// Clamped here, not just in the store, because has_more below is
 		// "the page came back full" — comparing against a limit the store
 		// silently capped would report false while results remain.
@@ -676,7 +718,8 @@ func (s *Server) handleSearch(w http.ResponseWriter, r *http.Request) {
 		Offset: atoiDefault(q.Get("offset"), 0),
 	}
 
-	results, err := s.files.Store().Search(r.Context(), CurrentUser(r.Context()).ID, query)
+	user := CurrentUser(r.Context())
+	results, err := s.files.Store().Search(r.Context(), user.ID, query)
 	if err != nil {
 		if errors.Is(err, files.ErrInvalidName) {
 			writeError(w, r, http.StatusBadRequest, "query_too_short", err.Error())
@@ -687,6 +730,7 @@ func (s *Server) handleSearch(w http.ResponseWriter, r *http.Request) {
 	}
 
 	out := make([]map[string]any, 0, len(results))
+	nodes := make([]*files.Node, 0, len(results))
 	for _, res := range results {
 		item := nodeJSON(res.Node)
 		// Why a result matched, so "the query is not in this filename" has a
@@ -695,6 +739,10 @@ func (s *Server) handleSearch(w http.ResponseWriter, r *http.Request) {
 		item["matched_path"] = res.MatchedPath
 		item["matched_content"] = res.MatchedContent
 		out = append(out, item)
+		nodes = append(nodes, res.Node)
+	}
+	if query.IncludeShared {
+		out = s.attachAccess(r, user.ID, nodes, out)
 	}
 
 	writeJSON(w, r, http.StatusOK, map[string]any{
@@ -735,19 +783,26 @@ func (s *Server) handleSemanticSearch(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	results, err := s.files.Store().SemanticSearch(r.Context(), CurrentUser(r.Context()).ID,
-		vecs[0], s.embedder.Model(), limit)
+	user := CurrentUser(r.Context())
+	shared := includeShared(r)
+	results, err := s.files.Store().SemanticSearch(r.Context(), user.ID,
+		vecs[0], s.embedder.Model(), limit, shared)
 	if err != nil {
 		s.serverError(w, r, "semantic search", err)
 		return
 	}
 
 	out := make([]map[string]any, 0, len(results))
+	nodes := make([]*files.Node, 0, len(results))
 	for _, res := range results {
 		item := nodeJSON(res.Node)
 		item["semantic"] = true
 		item["score"] = res.Score
 		out = append(out, item)
+		nodes = append(nodes, res.Node)
+	}
+	if shared {
+		out = s.attachAccess(r, user.ID, nodes, out)
 	}
 	writeJSON(w, r, http.StatusOK, map[string]any{
 		"query":    text,

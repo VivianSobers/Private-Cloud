@@ -80,7 +80,7 @@ func TestSemanticSearchRanksByMeaning(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	results, err := f.store.SemanticSearch(ctx, f.user, query[0], bow.Model(), 10)
+	results, err := f.store.SemanticSearch(ctx, f.user, query[0], bow.Model(), 10, false)
 	if err != nil {
 		t.Fatalf("semantic search: %v", err)
 	}
@@ -118,11 +118,11 @@ func TestSemanticSearchScopedToModel(t *testing.T) {
 
 	query, _ := bow.Embed(ctx, []string{"hello world"})
 	// Correct model finds it.
-	if res, err := f.store.SemanticSearch(ctx, f.user, query[0], bow.Model(), 10); err != nil || len(res) == 0 {
+	if res, err := f.store.SemanticSearch(ctx, f.user, query[0], bow.Model(), 10, false); err != nil || len(res) == 0 {
 		t.Fatalf("same-model search found nothing: %d err=%v", len(res), err)
 	}
 	// A different model's space has no vectors here.
-	if res, err := f.store.SemanticSearch(ctx, f.user, query[0], "other-model", 10); err != nil || len(res) != 0 {
+	if res, err := f.store.SemanticSearch(ctx, f.user, query[0], "other-model", 10, false); err != nil || len(res) != 0 {
 		t.Errorf("cross-model search returned %d results, want 0 (err=%v)", len(res), err)
 	}
 }

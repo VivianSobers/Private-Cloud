@@ -46,6 +46,25 @@ type apiFixture struct {
 	admin    *http.Cookie
 	userID   uuid.UUID
 	username string
+	// adminUsername names the second account. Sharing tests need a real username
+	// to grant TO, not just a cookie to read back with.
+	adminUsername string
+}
+
+// root returns the caller's root folder id.
+func (f *apiFixture) root() string {
+	f.t.Helper()
+	return nodeID(f.t, f.do(http.MethodGet, "/api/v1/nodes/root", nil, f.cookie))
+}
+
+// jsonBody marshals a body for the request helpers that take an io.Reader.
+func jsonBody(t *testing.T, v any) io.Reader {
+	t.Helper()
+	buf, err := json.Marshal(v)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return bytes.NewReader(buf)
 }
 
 func newAPIFixture(t *testing.T) *apiFixture {
@@ -98,7 +117,7 @@ func newAPIFixture(t *testing.T) *apiFixture {
 
 	f := &apiFixture{t: t, ctx: ctx, handler: srv.Handler(), pool: database.Pool}
 	f.userID, f.username, f.cookie = newSession(t, ctx, authStore, authSvc, false)
-	_, _, f.admin = newSession(t, ctx, authStore, authSvc, true)
+	_, f.adminUsername, f.admin = newSession(t, ctx, authStore, authSvc, true)
 	return f
 }
 

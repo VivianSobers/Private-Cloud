@@ -81,7 +81,11 @@ func (s *Server) handleRemoveNodeTag(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleListTags(w http.ResponseWriter, r *http.Request) {
-	counts, err := s.files.Store().ListTags(r.Context(), CurrentUser(r.Context()).ID)
+	// Counts are per caller, never per tag globally. Two people can both have a
+	// "receipts" tag, and a shared count would tell each of them how many files
+	// the other has tagged — an existence leak through a number.
+	counts, err := s.files.Store().ListTagsVisible(r.Context(),
+		CurrentUser(r.Context()).ID, includeShared(r))
 	if err != nil {
 		s.serverError(w, r, "list tags", err)
 		return

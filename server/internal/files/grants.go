@@ -381,6 +381,111 @@ func (s *Store) DeleteGrant(ctx context.Context, userID, grantID uuid.UUID) erro
 	return nil
 }
 
+// --- widening the existing reads --------------------------------------------
+//
+// The compatibility hazard this phase carries, from the API contract: every
+// query in the system filters owner_id = $me, and "files I can see but do not
+// own" widens what those endpoints MEAN. That is additive in shape but a
+// semantic change, and it is the one place this phase could break a client that
+// assumed everything it saw was its own.
+//
+// So the widening is opt-in per request. Callers that do not pass
+// include_shared get exactly what they got before, byte for byte.
+
+// VisibleNodes is the SQL predicate for "this caller may see node n".
+//
+// $1 must be the caller's user id in whatever query it is spliced into. It is a
+// string constant rather than a built expression because the ONE thing that must
+// never vary between the endpoints is what "visible" means: search, children and
+// tags all widening slightly differently is how a file becomes readable through
+// one endpoint and not another.
+const VisibleNodes = `(
+	n.owner_id = $1 OR EXISTS (
+		SELECT 1 FROM grants g
+		JOIN nodes gn ON gn.id = g.node_id
+		WHERE g.grantee_id = $1
+		  AND gn.owner_id = n.owner_id
+		  AND gn.trashed_at IS NULL
+		  AND (n.path = gn.path OR starts_with(n.path, gn.path || '/'))
+	)
+)`
+
+// OwnedNodes is the unwidened predicate — the pre-Phase-7 behaviour, kept as a
+// named constant so a query reads the same whichever it uses.
+const OwnedNodes = `(n.owner_id = $1)`
+
+// Visibility picks the predicate for a request.
+func Visibility(includeShared bool) string {
+	if includeShared {
+		return VisibleNodes
+	}
+	return OwnedNodes
+}
+
+// GetVisible returns a node the caller may see, with what they may do to it.
+//
+// Replaces GetLive on any path that has to work for shared content. The access
+// check and the fetch are separate queries deliberately: AccessFor is the single
+// authorisation question, and duplicating its logic into a join here is how the
+// two would eventually disagree.
+func (s *Store) GetVisible(ctx context.Context, userID, nodeID uuid.UUID) (*Node, Access, error) {
+	acc, err := s.AccessFor(ctx, userID, nodeID)
+	if err != nil {
+		return nil, Access{}, err
+	}
+	node, err := scanNode(s.pool.QueryRow(ctx, `SELECT `+nodeCols+nodeFrom+`
+		WHERE n.id = $1 AND n.trashed_at IS NULL`, nodeID))
+	if err != nil {
+		return nil, Access{}, err
+	}
+	return node, acc, nil
+}
+
+// ListChildrenVisible lists a folder's contents for a caller who may not own it.
+//
+// With includeShared false this is exactly ListChildren — same predicate, same
+// order — so the default path is unchanged.
+func (s *Store) ListChildrenVisible(ctx context.Context, userID, parentID uuid.UUID, includeShared bool) ([]*Node, error) {
+	rows, err := s.pool.Query(ctx, `SELECT `+nodeCols+nodeFrom+`
+		WHERE `+Visibility(includeShared)+`
+		  AND n.parent_id = $2
+		  AND n.trashed_at IS NULL
+		ORDER BY (n.kind = 'file'), n.name_fold`, userID, parentID)
+	if err != nil {
+		return nil, err
+	}
+	return scanNodes(rows)
+}
+
+// ListTagsVisible counts tags per caller rather than per tag globally.
+//
+// Two people can both have a "receipts" tag; a shared count would tell each of
+// them how many files the other has tagged, which is an existence leak through
+// a number.
+func (s *Store) ListTagsVisible(ctx context.Context, userID uuid.UUID, includeShared bool) ([]TagCount, error) {
+	rows, err := s.pool.Query(ctx, `
+		SELECT nt.tag, count(*)
+		FROM node_tags nt
+		JOIN nodes n ON n.id = nt.node_id
+		WHERE `+Visibility(includeShared)+` AND n.trashed_at IS NULL
+		GROUP BY nt.tag
+		ORDER BY count(*) DESC, nt.tag`, userID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var out []TagCount
+	for rows.Next() {
+		var tc TagCount
+		if err := rows.Scan(&tc.Tag, &tc.Count); err != nil {
+			return nil, err
+		}
+		out = append(out, tc)
+	}
+	return out, rows.Err()
+}
+
 // UserIDByUsername resolves a username for granting. Case-folded, matching how
 // uniqueness is enforced.
 func (s *Store) UserIDByUsername(ctx context.Context, username string) (uuid.UUID, error) {

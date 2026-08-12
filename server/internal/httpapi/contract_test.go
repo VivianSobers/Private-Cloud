@@ -98,8 +98,6 @@ func TestProposedSurfaceIsNotServedYet(t *testing.T) {
 		method string
 		path   string
 	}{
-		{"7 — multi-user", "GET", "/api/v1/grants"},
-		{"7 — multi-user", "GET", "/api/v1/shared"},
 		{"7 — multi-user", "GET", "/api/v1/admin/users"},
 		{"7 — multi-user", "GET", "/api/v1/admin/audit"},
 		{"8 — intelligence", "GET", "/api/v1/people"},

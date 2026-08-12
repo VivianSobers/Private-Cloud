@@ -23,6 +23,12 @@ type SearchQuery struct {
 	// and being unable to tell it is deleted is worse than not finding it.
 	IncludeTrashed bool
 
+	// IncludeShared widens the search to content other people granted to the
+	// caller. Off by default, and that default is a compatibility guarantee: a
+	// client written before Phase 7 assumed every result was its own, and turning
+	// this on by default would silently change what its result list means.
+	IncludeShared bool
+
 	Limit  int
 	Offset int
 }
@@ -130,7 +136,7 @@ func (s *Store) Search(ctx context.Context, ownerID uuid.UUID, q SearchQuery) ([
 		       (dt.text IS NOT NULL AND dt.text ILIKE $3) AS matched_content
 		` + nodeFrom + `
 		LEFT JOIN doc_text dt ON dt.content_hash = coalesce(b.sha256, m.content_hash)
-		WHERE n.owner_id = $1
+		WHERE ` + Visibility(q.IncludeShared) + `
 		  AND n.parent_id IS NOT NULL
 		  AND (n.name_fold LIKE $3 OR lower(n.path) LIKE $3 OR dt.text ILIKE $3)`
 
