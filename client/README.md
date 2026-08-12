@@ -91,6 +91,32 @@ contact; the password itself never touches the file endpoints. A device token
 can read and write your files but cannot manage account credentials — it cannot
 mint another app password, the same limit the app password itself has.
 
+## Building for other machines
+
+The client is **pure Go — no CGO** — so it cross-compiles to every desktop from
+one machine with no per-OS toolchain. That is the whole reason shipping a desktop
+client is tractable here:
+
+```bash
+./build-release.sh            # linux, macOS and Windows binaries into dist/
+VERSION=1.2.0 ./build-release.sh
+```
+
+Each build is static and stamped with its version; `dist/SHA256SUMS` lets a
+download be verified — the client that checks every synced chunk should not ask
+you to trust an unverified copy of itself. Check which version you're running,
+and whether it matches the server:
+
+```bash
+pcsync version                        # the client build
+pcsync version -config ./config.json  # ...and the server's, flagging a mismatch
+```
+
+> Platform-native **installers** (a `.msi`, a `.pkg`, a Homebrew/Scoop manifest)
+> and an in-place **auto-updater** build on top of these binaries and are the
+> remaining native-client work — they need signing keys and per-OS packaging
+> that live outside this repo.
+
 ## Run as a service (systemd)
 
 To keep syncing in the background across logins, install the provided **user**
