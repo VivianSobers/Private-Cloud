@@ -1,24 +1,25 @@
 # Phase 5 — Photos & Media Design
 
-**Status: partial, and unevenly so.** The front-of-API half is finished; the
-behind-the-API half is built up to the point where it would become reachable and
-stops there. Written after the fact rather than before it — which is itself the
-finding: every other phase in this project got a design document first, this one
-did not, and it is the phase whose two halves drifted apart.
+**Status: complete.** Written after the code rather than before it — which is
+itself part of the record: every other phase in this project got a design
+document first, this one did not, and it is the phase whose two halves drifted
+furthest apart before they were joined.
 
 **Exit criterion:** a person opens Photos and sees their pictures as a
 date-ordered grid that loads in tiles rather than in originals, opens one to a
 full-screen preview, and groups a selection into an album that orders how they
-dragged it and moves nothing on disk.
+dragged it and moves nothing on disk. **Met.**
 
-**Where it actually stands:** the schema, the decoding/rendering package and the
-metadata store are built and tested. Nothing enqueues a media job, no worker
-registers the handler, and **no HTTP route serves any of it** — so the finished
-gallery in `web/` talks to endpoints that answer `404`. See §7.
+The first revision of this document recorded the phase as half-built: the schema,
+the decoding package and the store existed, nothing enqueued a media job, no
+worker registered the handler, and no route served any of it, so the finished
+gallery in `web/` talked to endpoints that answered `404`. Slices 5–8 closed
+that; the sections below describe the shipped design, and §7 records what each
+slice actually is.
 
 ---
 
-## 0. The split, and how it came apart
+## 0. The split, and how it came apart — and back together
 
 Per [roadmap-split.md](roadmap-split.md) this phase divides at the API seam:
 thumbnail/EXIF jobs, album endpoints and variant serving behind it; gallery,
@@ -155,30 +156,37 @@ formats in-process, so the bounds are explicit:
 | **2** | Album schema: `albums` + `album_items`, hand ordering, no-op re-add (`00020`) | ✅ |
 | **3** | The `media` package: EXIF reader, `Analyze`, thumbnail/preview renderer, bomb guards | ✅ pure of the database and the queue, tested on synthetic images |
 | **4** | The metadata + variant store (`files/media.go`): read/write meta, variants, `MediaVariantFor` | ✅ integration-tested |
-| **5** | **The job handler and its worker registration** | ⬜ **not landed.** Needs: a `media` job handler; the `files`↔`media` adapters (opener, blob writer, variant store); `runner.Register(media.Kind, …)` in `pcworker`; and an enqueue on upload beside the existing `extract` enqueue |
-| **6** | **`?variant=` on the content route** | ⬜ **not landed.** No route reads the parameter today |
-| **7** | **`GET /media/timeline`** | ⬜ **not landed** |
-| **8** | **`/albums` CRUD + items + reorder** | ⬜ **not landed.** The tables have no Go code touching them at all |
-| **9** | Gallery, timeline, lightbox, album views in `web/` | ✅ built against the contract; currently degrade to "not available on this server yet" |
-| 10 | Drag-reorder and "add to album" wiring | ⬜ blocked on slice 8 |
-| 11 | Map view from EXIF GPS | ⬜ blocked on slice 7 |
+| **5** | The job handler, its `files`↔`media` adapters, worker registration and the enqueue on upload | ✅ MIME-filtered at the enqueue; end-to-end tested from upload to rendered thumbnail |
+| **6** | `?variant=thumb\|preview` on the content route | ✅ `404 variant_unavailable` when not yet rendered; immutable caching |
+| **7** | `GET /media/timeline` | ✅ sorted by capture time, metadata batched per page |
+| **8** | `/albums` CRUD + items + reorder | ✅ ownership enforced on every node id the caller supplies |
+| **9** | Gallery, timeline, lightbox, album views in `web/` | ✅ built against the contract; they light up unchanged now the endpoints answer |
+| 10 | Drag-reorder and "add to album" wiring in `web/` | ⬜ front-of-API work; the endpoints it needs exist |
+| 11 | Map view from EXIF GPS | ⬜ front-of-API work; `gps` is served on the node |
 
-**Slices 5–8 are the whole remaining gap, and they are what make everything
-already built reachable.** Nothing in 1–4 is observable from outside the process
-until 5 runs and 6–8 serve it.
+## 8. What the risks turned into
 
-## 8. Risks
+The first revision of this document listed three risks. Two are closed and the
+third stands.
 
-- **A backfill is required, not optional.** Every file uploaded before slice 5
-  lands has no media row, and the timeline is empty for exactly the library that
-  motivated the feature. `cloudctl jobs reindex` already exists for the
-  extraction/embedding case and is the right lever; it needs the `media` kind
-  added rather than a new mechanism.
-- **Variant bytes are not yet visible to `fsck` or GC.** `media_variant` has the
-  `storage_key` index that makes the reference check cheap, but the walker has to
-  learn to consult it. Until it does, a variant looks like an orphan blob to a
-  repair pass — the one direction that can delete live data.
-- **Video is honest about being unfinished.** `analyzeVideo` records that a file
+- **The backfill was required, not optional — and is now available.** Every file
+  uploaded before the media kind existed has no metadata row, and the timeline
+  selects on that row, so without a backfill the gallery is empty for exactly the
+  library that motivated the feature. `cloudctl jobs reindex --kind=media`
+  enqueues it, filtered to image and video MIME types so the pass is proportional
+  to the number of photos rather than to the size of the tree.
+- **Variant bytes are now visible to `fsck` and GC.** They were not, and that was
+  the dangerous one: variant bytes go through the ordinary blob `Put`, so they
+  share a root and a layout with blobs and chunks but are referenced from
+  `media_variant` instead of `blobs`. `fsck` classified every thumbnail as an
+  orphan, and `--repair` would have deleted the entire rendered set — the same
+  failure the function's own doc comment records for chunks, one storage format
+  later. `Fsck` now loads `MediaVariantKeys` and accounts for them, reporting a
+  variant whose bytes are gone under `MissingVariants` rather than `Missing`,
+  because a variant is derived and a reindex rebuilds it: that report must not
+  send an operator to a backup. GC reclaims unreferenced variants row-first, then
+  bytes, the same ordering blob and manifest collection use.
+- **Video is still honest about being unfinished.** `analyzeVideo` records that a file
   *is* video and nothing else. Duration, dimensions and rotation live in MP4/MKV
   boxes that need a real demuxer, and both honest options — a cgo dependency on
   ffmpeg, or shelling out to it — belong behind the same "is this deployment set

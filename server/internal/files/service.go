@@ -16,6 +16,7 @@ import (
 
 	"github.com/guru-bharadwaj20/private-cloud/server/internal/blob"
 	"github.com/guru-bharadwaj20/private-cloud/server/internal/cas"
+	"github.com/guru-bharadwaj20/private-cloud/server/internal/media"
 )
 
 // Service joins the node store to the blob store.
@@ -73,6 +74,11 @@ type Service struct {
 // upload, so it takes no error return and logs its own problems.
 type Enqueuer interface {
 	EnqueueExtract(ctx context.Context, nodeID, ownerID uuid.UUID)
+	// EnqueueMedia schedules media analysis — dimensions, EXIF, thumbnails.
+	// Separate from extraction rather than chained off it because the two answer
+	// different questions about different files: a photo with no text still needs
+	// a thumbnail, and a PDF with plenty of text never will.
+	EnqueueMedia(ctx context.Context, nodeID, ownerID uuid.UUID)
 }
 
 // SetEnqueuer wires background extraction. Called at startup when a worker is
@@ -89,6 +95,14 @@ func (s *Service) scheduleExtract(ctx context.Context, node *Node) {
 	// Detached from the request's cancellation: a client disconnecting the instant
 	// after its upload succeeds must not drop the extraction that upload earned.
 	s.enqueue.EnqueueExtract(context.WithoutCancel(ctx), node.ID, node.OwnerID)
+
+	// Media analysis is filtered by MIME at the ENQUEUE, not left to the handler
+	// to skip. The handler would have to open the file to discover it is a
+	// spreadsheet, and a library is mostly not photos — so filtering here keeps
+	// the queue proportional to the number of images rather than to the tree.
+	if media.IsMedia(node.MIME) {
+		s.enqueue.EnqueueMedia(context.WithoutCancel(ctx), node.ID, node.OwnerID)
+	}
 }
 
 func NewService(store *Store, blobs blob.Store, log *slog.Logger) *Service {
@@ -409,6 +423,13 @@ type GCResult struct {
 	// last version is gone, so nothing but this sweep can ever reclaim them.
 	DocTextPruned    int64
 	EmbeddingsPruned int64
+
+	// Media metadata and rendered variants, same lifecycle as the two above. The
+	// variants also own bytes on disk, which is why they are counted separately
+	// from the rows.
+	MediaMetaPruned    int64
+	MediaVariantsFreed int
+	MediaVariantBytes  int64
 }
 
 // derivedPruneBatch bounds how much derived content one pass reclaims, for the
@@ -513,7 +534,63 @@ func (s *Service) CollectGarbage(ctx context.Context) (GCResult, error) {
 	}
 	res.EmbeddingsPruned = embeddings
 
+	// Variants BEFORE metadata: a variant row is reachable only through the
+	// content hash the metadata row also keys on, and sweeping the metadata first
+	// would leave the variants findable only by a full scan.
+	variants, variantBytes, err := s.collectMediaVariants(ctx)
+	if err != nil {
+		return res, err
+	}
+	res.MediaVariantsFreed, res.MediaVariantBytes = variants, variantBytes
+
+	mediaMeta, err := s.store.PruneMediaMeta(ctx, derivedPruneBatch)
+	if err != nil {
+		return res, fmt.Errorf("prune media metadata: %w", err)
+	}
+	res.MediaMetaPruned = mediaMeta
+
 	return res, nil
+}
+
+// collectMediaVariants reclaims thumbnails and previews whose original is gone.
+//
+// Row first, then bytes — the same ordering blob and manifest GC use, and for
+// the same reason. A row whose file is already deleted breaks a request that
+// would otherwise have worked; a file whose row is already deleted is an orphan
+// fsck can account for and sweep. Only one of those is visible to a user.
+func (s *Service) collectMediaVariants(ctx context.Context) (int, int64, error) {
+	candidates, hashes, err := s.store.UnreferencedMediaVariants(ctx, derivedPruneBatch)
+	if err != nil {
+		return 0, 0, fmt.Errorf("list unreferenced media variants: %w", err)
+	}
+
+	var (
+		freed int
+		bytes int64
+	)
+	for i, v := range candidates {
+		// Re-checked inside the delete: content addressing means a fresh upload
+		// of identical bytes between the list and now re-references this exact
+		// variant, and losing that race must be a no-op rather than stripping a
+		// live photo of its thumbnail.
+		deleted, err := s.store.DeleteMediaVariantRow(ctx, hashes[i], v.Variant)
+		if err != nil {
+			return freed, bytes, fmt.Errorf("delete media variant row: %w", err)
+		}
+		if !deleted {
+			continue
+		}
+		if err := s.blobs.Delete(ctx, v.StorageKey); err != nil {
+			// The row is gone and the bytes are not. That is the recoverable
+			// direction: fsck now sees an orphan and --repair reclaims it.
+			s.log.Warn("media variant row deleted but its bytes remain",
+				"key", v.StorageKey, "variant", v.Variant, "error", err)
+			continue
+		}
+		freed++
+		bytes += v.Size
+	}
+	return freed, bytes, nil
 }
 
 // collectManifests reaps manifests no file version references any more —
@@ -775,9 +852,17 @@ type FsckReport struct {
 	// never silently corrected.
 	RefcountDrift []string
 
+	// MissingVariants are rendered thumbnails and previews whose bytes are gone.
+	// Unlike Missing and MissingChunks this is NOT data loss: a variant is
+	// derived, and re-running the media job rebuilds it. Kept in its own field so
+	// the report does not send an operator to a backup for something a reindex
+	// fixes.
+	MissingVariants []string
+
 	TempFilesRemoved int
 	Checked          int
 	ChunksChecked    int
+	VariantsChecked  int
 }
 
 // Fsck compares the blob store against the database.
@@ -812,9 +897,21 @@ func (s *Service) Fsck(ctx context.Context, repair bool) (*FsckReport, error) {
 		}
 	}
 
+	// Media variants are the THIRD kind of thing in the blob store. Their bytes
+	// go through the ordinary blob Put and so share the same root and layout as
+	// blobs and chunks, but they are referenced from media_variant rather than
+	// from `blobs`. Without this map every thumbnail on disk is an orphan and
+	// --repair deletes the entire rendered set — the same failure this function's
+	// doc comment records for chunks, one storage format later.
+	variantKeys, err := s.store.MediaVariantKeys(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("load media variant keys: %w", err)
+	}
+
 	report := &FsckReport{}
 	seen := make(map[string]bool, len(known))
 	seenChunks := make(map[string]bool, len(chunks))
+	seenVariants := make(map[string]bool, len(variantKeys))
 
 	err = fs.Walk(func(key string, size int64) error {
 		report.Checked++
@@ -840,6 +937,12 @@ func (s *Service) Fsck(ctx context.Context, repair bool) (*FsckReport, error) {
 			return nil
 		}
 
+		if _, ok := variantKeys[key]; ok {
+			seenVariants[key] = true
+			report.VariantsChecked++
+			return nil
+		}
+
 		report.Orphans = append(report.Orphans, key)
 		report.OrphanBytes += size
 		return nil
@@ -858,6 +961,15 @@ func (s *Service) Fsck(ctx context.Context, repair bool) (*FsckReport, error) {
 			// A missing chunk is worse than a missing blob: it is shared, so it
 			// damages every file that references it, potentially across users.
 			report.MissingChunks = append(report.MissingChunks, key)
+		}
+	}
+	for key := range variantKeys {
+		if !seenVariants[key] {
+			// Not data loss: a variant is derived and can be re-rendered by
+			// re-running the media job. Reported separately from Missing so an
+			// operator reading the output is not told to reach for a backup when
+			// `cloudctl jobs reindex --kind=media` is the actual remedy.
+			report.MissingVariants = append(report.MissingVariants, key)
 		}
 	}
 

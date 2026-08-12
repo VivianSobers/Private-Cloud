@@ -148,7 +148,16 @@ func (s *Server) handleGetNode(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	body := map[string]any{"node": nodeJSON(node)}
+	nodeBody := nodeJSON(node)
+	// A photo's media metadata rides along for the same reason its tags do: a
+	// details view, a lightbox and a map pin all need it, and none of them should
+	// need a second round trip. Absent until the media job has run, which is what
+	// makes it optional in the contract rather than part of the node shape.
+	if m, ok, err := s.files.Store().MediaMetaForNode(r.Context(), user.ID, id); err == nil && ok {
+		nodeBody["media"] = mediaJSON(m)
+	}
+
+	body := map[string]any{"node": nodeBody}
 	// A node's tags ride along here so a details view needs one request, not two.
 	// Best effort: a tag-read failure must not fail the node fetch itself.
 	if tags, err := s.files.Store().TagsForNode(r.Context(), user.ID, id); err == nil {
@@ -490,6 +499,14 @@ func lastPathSegment(name string) string {
 func (s *Server) handleDownload(w http.ResponseWriter, r *http.Request) {
 	id, ok := s.nodeIDParam(w, r)
 	if !ok {
+		return
+	}
+
+	// A derived rendition is served from this same route rather than its own, so
+	// ranges, ETags, caching and the download disposition below all keep working
+	// for a thumbnail exactly as they do for an original.
+	if variant := r.URL.Query().Get("variant"); variant != "" && variant != "original" {
+		s.serveMediaVariant(w, r, id, variant)
 		return
 	}
 

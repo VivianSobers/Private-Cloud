@@ -34,6 +34,7 @@ import (
 	"github.com/guru-bharadwaj20/private-cloud/server/internal/extract"
 	"github.com/guru-bharadwaj20/private-cloud/server/internal/files"
 	"github.com/guru-bharadwaj20/private-cloud/server/internal/jobs"
+	"github.com/guru-bharadwaj20/private-cloud/server/internal/media"
 	"github.com/guru-bharadwaj20/private-cloud/server/internal/shares"
 )
 
@@ -61,7 +62,7 @@ func usage() {
   jobs stats                      show background job queue depth by state
   jobs failed [--limit=N]         list dead-lettered jobs and their errors
   jobs retry [--kind=KIND]        requeue dead-lettered jobs
-  jobs reindex                    enqueue extraction for every live file
+  jobs reindex [--kind=KIND]      re-enqueue derived work (extract, media, all)
 
 Requires PC_DATABASE_URL in the environment.
 fsck, gc and migrate-blobs also require PC_BLOB_PATH.
@@ -651,14 +652,49 @@ func jobsCommand(ctx context.Context, database *db.DB, args []string) error {
 		return nil
 
 	case "reindex":
-		// Enqueue extraction for every live file — rebuilds text (and, if the chain
-		// is on, embeddings) after an extractor or model change. Content-addressed
-		// and idempotent, so this is safe to run any time; the worker drains it.
-		n, err := store.EnqueueForAllFiles(ctx, extract.Kind)
-		if err != nil {
+		// Enqueue derived work for every live file — rebuilds text (and, if the
+		// chain is on, embeddings) after an extractor or model change, and media
+		// metadata and thumbnails after the media job first appears or improves.
+		// Content-addressed and idempotent, so this is safe to run any time; the
+		// worker drains it.
+		//
+		// The media backfill is not optional in practice: every file uploaded
+		// before the media kind existed has no metadata row, and the timeline
+		// selects on that row — so without a reindex the gallery is empty for
+		// exactly the library that motivated the feature.
+		if err := checkFlags(args[1:], "--kind="); err != nil {
 			return err
 		}
-		fmt.Printf("enqueued %d extraction job(s) for re-indexing\n", n)
+		kind := "all"
+		for _, a := range args[1:] {
+			if v, ok := strings.CutPrefix(a, "--kind="); ok {
+				kind = v
+			}
+		}
+
+		switch kind {
+		case "extract", "all":
+		case "media":
+		default:
+			return fmt.Errorf("unknown kind %q (want extract, media or all)", kind)
+		}
+
+		if kind == "extract" || kind == "all" {
+			n, err := store.EnqueueForAllFiles(ctx, extract.Kind)
+			if err != nil {
+				return err
+			}
+			fmt.Printf("enqueued %d extraction job(s) for re-indexing\n", n)
+		}
+		if kind == "media" || kind == "all" {
+			// Filtered to image and video MIME types rather than every file: the
+			// handler would skip a spreadsheet anyway, but only after opening it.
+			n, err := store.EnqueueForAllMediaFiles(ctx, media.Kind)
+			if err != nil {
+				return err
+			}
+			fmt.Printf("enqueued %d media job(s) for re-indexing\n", n)
+		}
 		return nil
 
 	default:

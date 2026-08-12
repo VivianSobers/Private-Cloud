@@ -248,6 +248,31 @@ func (s *Store) EnqueueForAllFiles(ctx context.Context, kind string) (int64, err
 	return tag.RowsAffected(), nil
 }
 
+// EnqueueForAllMediaFiles enqueues a job for every live file whose MIME type is
+// media, rather than for every file.
+//
+// The media handler skips a non-image cheaply, but "cheaply" still means opening
+// the file, and a library is mostly documents. Filtering here keeps the backfill
+// proportional to the number of photos instead of to the size of the tree. The
+// prefix test is deliberately looser than the media package's decoder allowlist:
+// this only decides what to look at, and the handler is the authority on what it
+// can actually read.
+func (s *Store) EnqueueForAllMediaFiles(ctx context.Context, kind string) (int64, error) {
+	tag, err := s.pool.Exec(ctx, `
+		INSERT INTO jobs (kind, node_id, owner_id)
+		SELECT $1, n.id, n.owner_id
+		FROM nodes n
+		JOIN file_versions v ON v.id = n.head_version_id
+		WHERE n.kind = 'file'
+		  AND n.trashed_at IS NULL
+		  AND (v.mime LIKE 'image/%' OR v.mime LIKE 'video/%')
+		ON CONFLICT (kind, node_id) WHERE state IN ('queued','running') DO NOTHING`, kind)
+	if err != nil {
+		return 0, err
+	}
+	return tag.RowsAffected(), nil
+}
+
 // ListFailed returns dead-lettered jobs, newest first — the operator's view of
 // what the JobsDeadLettering alert is warning about.
 func (s *Store) ListFailed(ctx context.Context, limit int) ([]Job, error) {

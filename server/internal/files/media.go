@@ -293,6 +293,91 @@ func (s *Store) MediaVariantKeys(ctx context.Context) (map[string]struct{}, erro
 	return out, rows.Err()
 }
 
+// TimelineNodes returns the owner's media, newest first by capture time.
+//
+// Kept separate from search because it sorts by when the shutter fired and pages
+// by date rather than by relevance. The JOIN against media_meta is what makes it
+// a *media* timeline: a file with no analysed metadata is not a photo as far as
+// this view is concerned, which is also why the backfill in `cloudctl jobs
+// reindex --kind=media` matters — without it a pre-existing library is invisible
+// here.
+//
+// The sort falls back to updated_at when taken_at is absent. The API response
+// still omits taken_at in that case, so the client can show "date unknown"
+// rather than presenting an import date as a capture date; the fallback exists
+// so those files land in a sensible place instead of clumping at one end.
+func (s *Store) TimelineNodes(ctx context.Context, ownerID uuid.UUID, from, to *time.Time, limit, offset int) ([]*Node, error) {
+	limit = ClampSearchLimit(limit)
+	rows, err := s.pool.Query(ctx, `
+		SELECT `+nodeCols+`
+		`+nodeFrom+`
+		JOIN media_meta mm ON mm.content_hash = coalesce(b.sha256, m.content_hash)
+		WHERE n.owner_id = $1
+		  AND n.trashed_at IS NULL
+		  AND ($2::timestamptz IS NULL OR coalesce(mm.taken_at, n.updated_at) >= $2)
+		  AND ($3::timestamptz IS NULL OR coalesce(mm.taken_at, n.updated_at) <= $3)
+		ORDER BY coalesce(mm.taken_at, n.updated_at) DESC, n.id DESC
+		LIMIT $4 OFFSET $5`,
+		ownerID, from, to, limit, clampOffset(offset))
+	if err != nil {
+		return nil, err
+	}
+	return scanNodes(rows)
+}
+
+// MediaMetaForNodes fetches metadata for many nodes at once.
+//
+// The timeline and an album page both render a grid of tiles, and every tile
+// needs to know which variants exist before it can decide whether to request a
+// thumbnail or fall back to the original. Asking per tile would be one query per
+// photo on the hot path of the gallery — the N+1 that makes a 200-tile grid feel
+// broken. Nodes with no analysed content are simply absent from the map.
+func (s *Store) MediaMetaForNodes(ctx context.Context, ownerID uuid.UUID, nodeIDs []uuid.UUID) (map[uuid.UUID]*MediaMeta, error) {
+	out := map[uuid.UUID]*MediaMeta{}
+	if len(nodeIDs) == 0 {
+		return out, nil
+	}
+	rows, err := s.pool.Query(ctx, `
+		SELECT n.id, mm.width, mm.height, mm.orientation, mm.taken_at, mm.camera,
+		       mm.gps_lat, mm.gps_lon, mm.duration_ms, mm.source,
+		       coalesce(array_agg(mv.variant ORDER BY mv.variant)
+		                FILTER (WHERE mv.variant IS NOT NULL), '{}')
+		FROM nodes n
+		LEFT JOIN file_versions v ON v.id = n.head_version_id
+		LEFT JOIN blobs b         ON b.id = v.blob_id
+		LEFT JOIN manifests man   ON man.id = v.manifest_id
+		JOIN media_meta mm        ON mm.content_hash = coalesce(b.sha256, man.content_hash)
+		LEFT JOIN media_variant mv ON mv.content_hash = mm.content_hash
+		WHERE n.id = ANY($1) AND n.owner_id = $2 AND n.trashed_at IS NULL
+		GROUP BY n.id, mm.content_hash`, nodeIDs, ownerID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	for rows.Next() {
+		var (
+			id            uuid.UUID
+			m             MediaMeta
+			width, height *int
+			variants      []string
+		)
+		if err := rows.Scan(&id, &width, &height, &m.Orientation, &m.TakenAt, &m.Camera,
+			&m.GPSLat, &m.GPSLon, &m.DurationMS, &m.Source, &variants); err != nil {
+			return nil, err
+		}
+		if width != nil {
+			m.Width = *width
+		}
+		if height != nil {
+			m.Height = *height
+		}
+		m.Variants = variants
+		out[id] = &m
+	}
+	return out, rows.Err()
+}
+
 func nullIfZero(n int) any {
 	if n == 0 {
 		return nil

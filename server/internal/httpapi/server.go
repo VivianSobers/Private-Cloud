@@ -273,6 +273,22 @@ func (s *Server) registerRoutes(mux router) {
 	mux.HandleFunc("GET /api/v1/tags", s.requireAuth(s.handleListTags))
 	mux.HandleFunc("GET /api/v1/tags/{tag}", s.requireAuth(s.handleTagNodes))
 
+	// --- media: timeline and albums (Phase 5) --------------------------------
+	// Derived renditions are NOT here: ?variant= is a parameter on the existing
+	// content route, so ranges, ETags and the share plane keep working for a
+	// thumbnail exactly as they do for an original.
+	mux.HandleFunc("GET /api/v1/media/timeline", s.requireAuth(s.handleTimeline))
+
+	mux.HandleFunc("GET /api/v1/albums", s.requireAuth(s.handleListAlbums))
+	mux.HandleFunc("POST /api/v1/albums", s.requireAuth(s.handleCreateAlbum))
+	mux.HandleFunc("GET /api/v1/albums/{id}", s.requireAuth(s.handleGetAlbum))
+	mux.HandleFunc("PATCH /api/v1/albums/{id}", s.requireAuth(s.handlePatchAlbum))
+	mux.HandleFunc("DELETE /api/v1/albums/{id}", s.requireAuth(s.handleDeleteAlbum))
+	mux.HandleFunc("POST /api/v1/albums/{id}/items", s.requireAuth(s.handleAddAlbumItems))
+	// The whole order in one call, so a drag-reorder cannot half-apply.
+	mux.HandleFunc("PATCH /api/v1/albums/{id}/items", s.requireAuth(s.handleReorderAlbum))
+	mux.HandleFunc("DELETE /api/v1/albums/{id}/items/{nodeId}", s.requireAuth(s.handleRemoveAlbumItem))
+
 	// --- sync: the change journal cursor -------------------------------------
 	mux.HandleFunc("GET /api/v1/changes", s.requireAuth(s.handleChanges))
 

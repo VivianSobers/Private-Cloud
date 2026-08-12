@@ -396,15 +396,15 @@ func (c *Config) Redacted() map[string]any {
 		// Phase 4 features, so the startup log shows whether they are on and what
 		// they are pointed at. The client secret is deliberately absent rather
 		// than masked: a value that never reaches the log cannot leak from it.
-		"semantic_enabled":      c.Embed.Enabled(),
-		"embed_url":             c.Embed.URL,
-		"embed_model":           c.Embed.Model,
-		"embed_dim":             c.Embed.Dim,
-		"oidc_enabled":          c.OIDC.Enabled(),
-		"oidc_issuer":           c.OIDC.Issuer,
-		"oidc_client_id":        c.OIDC.ClientID,
-		"oidc_redirect_url":     c.OIDC.RedirectURL,
-		"oidc_allowed_domains":  c.OIDC.AllowedDomains,
+		"semantic_enabled":     c.Embed.Enabled(),
+		"embed_url":            c.Embed.URL,
+		"embed_model":          c.Embed.Model,
+		"embed_dim":            c.Embed.Dim,
+		"oidc_enabled":         c.OIDC.Enabled(),
+		"oidc_issuer":          c.OIDC.Issuer,
+		"oidc_client_id":       c.OIDC.ClientID,
+		"oidc_redirect_url":    c.OIDC.RedirectURL,
+		"oidc_allowed_domains": c.OIDC.AllowedDomains,
 	}
 }
 

@@ -206,11 +206,17 @@ returned once, at creation, and never stored.
 Mounted at `/dav`, outside `/api` — a different protocol with a different auth
 scheme (Basic, using an app password).
 
-## Proposed surface (Phase 5+) — additive, land here first
+## Proposed surface (Phase 6+) — additive, land here first
 
 Each new phase from the split adds its endpoints below **before** implementation.
 
-### Phase 5 — Photos & media
+> **Phase 5 has shipped.** Everything in the "Photos & media" section below is
+> implemented and served; it stays here, rather than moving up to the shipped
+> list, because the shapes were specified here first and the descriptions are
+> still the reference for what the fields *mean*. Confirm any of it against
+> [`openapi.yaml`](openapi.yaml), which is generated from the routes.
+
+### Phase 5 — Photos & media ✅ shipped
 
 **Media metadata.** Extracted by a new `media` job kind, alongside the existing
 `extract`. Content-addressed like `doc_text`, so identical images are read once.

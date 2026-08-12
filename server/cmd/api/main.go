@@ -41,6 +41,7 @@ import (
 	"github.com/guru-bharadwaj20/private-cloud/server/internal/files"
 	"github.com/guru-bharadwaj20/private-cloud/server/internal/httpapi"
 	"github.com/guru-bharadwaj20/private-cloud/server/internal/jobs"
+	"github.com/guru-bharadwaj20/private-cloud/server/internal/media"
 	"github.com/guru-bharadwaj20/private-cloud/server/internal/metrics"
 	"github.com/guru-bharadwaj20/private-cloud/server/internal/shares"
 )
@@ -442,6 +443,15 @@ func (e extractEnqueuer) EnqueueExtract(ctx context.Context, nodeID, ownerID uui
 	if _, _, err := e.store.Enqueue(ctx, extract.Kind, &nodeID, ownerID,
 		jobs.EnqueueOptions{OwnerQueueCap: 50000}); err != nil {
 		e.log.Warn("enqueue extraction failed", "node", nodeID, "error", err)
+	}
+}
+
+// EnqueueMedia schedules thumbnailing and EXIF for an image or video. The file
+// service only calls this for media MIME types, so there is no filtering here.
+func (e extractEnqueuer) EnqueueMedia(ctx context.Context, nodeID, ownerID uuid.UUID) {
+	if _, _, err := e.store.Enqueue(ctx, media.Kind, &nodeID, ownerID,
+		jobs.EnqueueOptions{OwnerQueueCap: 50000}); err != nil {
+		e.log.Warn("enqueue media analysis failed", "node", nodeID, "error", err)
 	}
 }
 

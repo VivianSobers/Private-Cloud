@@ -90,14 +90,14 @@ func TestOpenAPISpecMatchesRegisteredRoutes(t *testing.T) {
 // to update the roadmap in README.md, rather than leaving three documents
 // disagreeing about whether the feature exists.
 func TestProposedSurfaceIsNotServedYet(t *testing.T) {
+	// Phase 5 is deliberately absent: its endpoints are implemented and now live
+	// in the generated spec instead. Removing them from this list was part of the
+	// commit that landed them, which is the workflow this test exists to force.
 	pending := []struct {
 		phase  string
 		method string
 		path   string
 	}{
-		{"5 — photos & media", "GET", "/api/v1/albums"},
-		{"5 — photos & media", "POST", "/api/v1/albums"},
-		{"5 — photos & media", "GET", "/api/v1/media/timeline"},
 		{"6 — native clients", "GET", "/api/v1/devices"},
 		{"7 — multi-user", "GET", "/api/v1/grants"},
 		{"7 — multi-user", "GET", "/api/v1/shared"},

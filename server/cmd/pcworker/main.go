@@ -43,6 +43,7 @@ import (
 	"github.com/guru-bharadwaj20/private-cloud/server/internal/extract"
 	"github.com/guru-bharadwaj20/private-cloud/server/internal/files"
 	"github.com/guru-bharadwaj20/private-cloud/server/internal/jobs"
+	"github.com/guru-bharadwaj20/private-cloud/server/internal/media"
 	"github.com/guru-bharadwaj20/private-cloud/server/internal/metrics"
 )
 
@@ -205,6 +206,23 @@ func registerHandlers(ctx context.Context, runner *jobs.Runner, store *jobs.Stor
 	runner.Register(extract.Kind, func(ctx context.Context, j jobs.Job) error {
 		return extractHandler.Handle(ctx, j.NodeID, j.OwnerID)
 	})
+
+	// Media: dimensions, EXIF and rendered thumbnails. Registered under the same
+	// condition as extraction — it needs file bytes — but as its own kind, so a
+	// second co-located worker could drain photos while the first is busy OCRing
+	// a stack of scans.
+	mediaHandler := media.NewHandler(
+		files.NewMediaOpener(filesSvc),
+		files.NewMediaStore(fileStore),
+		files.NewMediaBlobWriter(filesSvc),
+		log,
+	)
+	runner.Register(media.Kind, func(ctx context.Context, j jobs.Job) error {
+		return mediaHandler.Handle(ctx, j.NodeID, j.OwnerID)
+	})
+	log.Info("media handler registered",
+		"thumb_max_edge", media.ThumbMaxEdge, "preview_max_edge", media.PreviewMaxEdge)
+
 	return nil
 }
 

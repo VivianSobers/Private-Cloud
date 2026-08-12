@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/guru-bharadwaj20/private-cloud/server/internal/auth"
 	"github.com/guru-bharadwaj20/private-cloud/server/internal/blob"
@@ -59,6 +60,11 @@ type fixture struct {
 	svc   *files.Service
 	user  uuid.UUID
 	root  uuid.UUID
+
+	// pool and otherID support the cross-owner helpers below. otherID is created
+	// lazily, so the tests that never need a second user do not pay for one.
+	pool    *pgxpool.Pool
+	otherID uuid.UUID
 }
 
 func newFixture(t *testing.T) *fixture {
@@ -89,6 +95,7 @@ func newFixture(t *testing.T) *fixture {
 		t: t, ctx: ctx, store: store,
 		svc:  files.NewService(store, blobs, log),
 		user: user.ID, root: root.ID,
+		pool: database.Pool,
 	}
 }
 
@@ -106,6 +113,43 @@ func (f *fixture) upload(parent uuid.UUID, name, content string) *files.Node {
 	n, err := f.svc.Upload(f.ctx, f.user, parent, name, strings.NewReader(content), "")
 	if err != nil {
 		f.t.Fatalf("Upload(%q): %v", name, err)
+	}
+	return n
+}
+
+// other returns a second user's id, created once per fixture.
+//
+// Needed by anything asserting a cross-owner boundary — the fixture's own user
+// cannot demonstrate that a query is scoped, because every row it can reach is
+// already its own.
+func (f *fixture) other(t *testing.T) uuid.UUID {
+	t.Helper()
+	if f.otherID != uuid.Nil {
+		return f.otherID
+	}
+	username := "other-" + uuid.NewString()[:8]
+	u, err := auth.NewStore(f.pool).CreateUser(f.ctx, uuid.New(), username, username, false)
+	if err != nil {
+		t.Fatalf("create second user: %v", err)
+	}
+	if _, err := f.store.EnsureRoot(f.ctx, u.ID); err != nil {
+		t.Fatalf("ensure root for second user: %v", err)
+	}
+	f.otherID = u.ID
+	return u.ID
+}
+
+// uploadAsOther stores a file owned by the second user.
+func (f *fixture) uploadAsOther(t *testing.T, name string) *files.Node {
+	t.Helper()
+	owner := f.other(t)
+	root, err := f.store.EnsureRoot(f.ctx, owner)
+	if err != nil {
+		t.Fatalf("ensure root: %v", err)
+	}
+	n, err := f.svc.Upload(f.ctx, owner, root.ID, name, strings.NewReader("other"), "")
+	if err != nil {
+		t.Fatalf("upload as second user: %v", err)
 	}
 	return n
 }

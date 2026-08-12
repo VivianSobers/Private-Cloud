@@ -12,6 +12,7 @@ import (
 	"github.com/guru-bharadwaj20/private-cloud/server/internal/extract"
 	"github.com/guru-bharadwaj20/private-cloud/server/internal/files"
 	"github.com/guru-bharadwaj20/private-cloud/server/internal/jobs"
+	"github.com/guru-bharadwaj20/private-cloud/server/internal/media"
 )
 
 // Re-indexing enqueues an extract job for every live file, and is idempotent: a
@@ -63,6 +64,10 @@ type pipelineEnqueuer struct{ store *jobs.Store }
 
 func (e pipelineEnqueuer) EnqueueExtract(ctx context.Context, nodeID, ownerID uuid.UUID) {
 	_, _, _ = e.store.Enqueue(ctx, extract.Kind, &nodeID, ownerID, jobs.EnqueueOptions{})
+}
+
+func (e pipelineEnqueuer) EnqueueMedia(ctx context.Context, nodeID, ownerID uuid.UUID) {
+	_, _, _ = e.store.Enqueue(ctx, media.Kind, &nodeID, ownerID, jobs.EnqueueOptions{})
 }
 
 // The whole Phase 4 extraction pipeline, end to end: uploading a file enqueues a

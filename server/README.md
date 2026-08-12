@@ -13,11 +13,11 @@ delta protocol and lineage-based conflict resolution for the sync client
 semantic search, auto-tagging, plus OIDC single sign-on and a hardening pass
 (Phase 4).
 
-**Phase 5 (photos & media) is partially built and not yet reachable over HTTP.**
-The schema, the pure `media` package and the metadata/variant store exist and are
-tested; the job kind is not registered with the worker, nothing enqueues it, and
-no route serves variants, the timeline or albums. See
-[../docs/phase-5-design.md](../docs/phase-5-design.md) for what remains.
+**Phase 5 (photos & media) is complete.** A `media` job kind reads EXIF and
+renders thumbnails and previews into a content-addressed store; `?variant=` on
+the content route serves them; `/media/timeline` orders a gallery by capture
+time; and `/albums` provides hand-ordered collections that never move a file.
+See [../docs/phase-5-design.md](../docs/phase-5-design.md).
 
 The endpoint table below lists what this server actually serves today;
 [../docs/openapi.yaml](../docs/openapi.yaml) is the machine-readable form of the
@@ -112,6 +112,13 @@ between the network and the auth code in slice 2.
 | `GET /api/v1/s/{token}` | — | Public share view (separate Caddy plane) |
 | `POST /api/v1/s/{token}/unlock` | — | Password-protected share |
 | `GET\|HEAD /api/v1/s/{token}/content` | — | Public share download |
+| `GET /api/v1/nodes/{id}/content?variant=` | session | `thumb` ≈320px, `preview` ≈1600px, `original` (default) |
+| `GET /api/v1/media/timeline?from=&to=` | session | Photos and video, newest first by capture time |
+| `GET\|POST /api/v1/albums` | session | List / create albums |
+| `GET\|PATCH\|DELETE /api/v1/albums/{id}` | session | Read (with items), rename/recover, delete |
+| `POST /api/v1/albums/{id}/items` | session | Add nodes; re-adding is a no-op |
+| `PATCH /api/v1/albums/{id}/items` | session | Replace the whole order (drag-reorder) |
+| `DELETE /api/v1/albums/{id}/items/{nodeId}` | session | Remove from the album; the file stays |
 | `/dav/*` | **app password** | WebDAV — mount as a network drive |
 
 `{id}` accepts the literal `root`, so a client can start browsing without a
@@ -343,7 +350,7 @@ cloudctl recovery regenerate <name>
 cloudctl cleanup                         # expired sessions and ceremonies
 cloudctl fsck [--repair]                 # compare the blob store to the database
 cloudctl gc                              # purge expired trash, free unreferenced blobs
-cloudctl jobs reindex [--kind=]          # re-enqueue extraction/embedding over the tree
+cloudctl jobs reindex [--kind=]          # re-enqueue derived work: extract, media, or all
 ```
 
 `reset-auth` clears passkeys, revokes live sessions, and issues new recovery
