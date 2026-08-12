@@ -179,6 +179,32 @@ is already synced prunes it locally to reclaim the space; if that folder holds a
 local edit that hasn't been pushed yet, the files are left on disk untouched (they
 simply stop syncing) rather than risk losing the edit.
 
+## Ignoring local junk (.pcsyncignore)
+
+Selective sync declines whole *server* subtrees; a `.pcsyncignore` file in the
+sync root declines *local* paths by pattern, so build output, editor scratch
+files and OS metadata never sync in either direction. It is a pragmatic subset of
+`.gitignore`:
+
+```gitignore
+# never sync these
+*.tmp
+.DS_Store
+node_modules/      # trailing slash: a directory (and everything under it)
+/build             # leading slash: anchored to the sync root
+src/*.log          # a path glob, anchored to the root
+```
+
+- A pattern with no slash matches a file or folder of that name **at any depth**.
+- A trailing slash matches a directory only, and its whole subtree is skipped.
+- A pattern containing a slash is anchored to the root and matched against the
+  whole path. `*`, `?` and `[…]` are wildcards; `**` is not special.
+
+The file is re-read at the start of every reconcile, so edits take effect on the
+next pass. `pcsync status` shows how many rules are active. An ignored path is
+never uploaded, never downloaded, and — importantly — a path you ignore *after*
+it was already synced is left alone on the server, never trashed.
+
 ## Configuration
 
 | Key | Meaning | Default |
