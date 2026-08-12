@@ -280,6 +280,18 @@ type nodeEnvelope struct {
 
 // --- browse -----------------------------------------------------------------
 
+// Version reports the server's build version, for a client-vs-server check.
+func (c *Client) Version(ctx context.Context) (string, error) {
+	var out struct {
+		Version string `json:"version"`
+		Commit  string `json:"commit"`
+	}
+	if err := c.doJSON(ctx, http.MethodGet, "/api/v1/version", nil, &out); err != nil {
+		return "", err
+	}
+	return out.Version, nil
+}
+
 func (c *Client) GetRoot(ctx context.Context) (Node, error) {
 	var env nodeEnvelope
 	err := c.doJSON(ctx, http.MethodGet, "/api/v1/nodes/root", nil, &env)
