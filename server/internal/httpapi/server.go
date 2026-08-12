@@ -347,6 +347,18 @@ func (s *Server) registerRoutes(mux router) {
 	// fsck walks the entire blob store and can delete orphans; admin only.
 	mux.HandleFunc("POST /api/v1/admin/fsck", s.requireAdmin(s.handleFsck))
 
+	// --- admin console (Phase 7) ---------------------------------------------
+	// Every route is admin-only server-side. The client gates its nav on
+	// is_admin as a convenience; this is the boundary.
+	mux.HandleFunc("GET /api/v1/admin/users", s.requireAdmin(s.handleAdminListUsers))
+	mux.HandleFunc("POST /api/v1/admin/users", s.requireAdmin(s.handleAdminCreateUser))
+	mux.HandleFunc("PATCH /api/v1/admin/users/{id}", s.requireAdmin(s.handleAdminPatchUser))
+	// Disables and revokes; never deletes content. See the handler.
+	mux.HandleFunc("DELETE /api/v1/admin/users/{id}", s.requireAdmin(s.handleAdminDeleteUser))
+	mux.HandleFunc("GET /api/v1/admin/users/{id}/sessions", s.requireAdmin(s.handleAdminUserSessions))
+	mux.HandleFunc("DELETE /api/v1/admin/users/{id}/sessions/{sid}", s.requireAdmin(s.handleAdminRevokeUserSession))
+	mux.HandleFunc("GET /api/v1/admin/audit", s.requireAdmin(s.handleAdminAudit))
+
 	// --- WebDAV --------------------------------------------------------------
 	// Mounted outside /api because it is a different protocol with a different
 	// auth scheme. Registered as a prefix rather than with method patterns:

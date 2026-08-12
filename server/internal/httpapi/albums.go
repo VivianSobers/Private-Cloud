@@ -3,6 +3,7 @@ package httpapi
 import (
 	"encoding/json"
 	"errors"
+	"io"
 	"net/http"
 
 	"github.com/google/uuid"
@@ -276,6 +277,31 @@ func (s *Server) albumNodeIDs(w http.ResponseWriter, r *http.Request) ([]uuid.UU
 // The body is already size-capped by withBodyLimit.
 func decodeJSON(w http.ResponseWriter, r *http.Request, dst any) bool {
 	if err := json.NewDecoder(r.Body).Decode(dst); err != nil {
+		writeError(w, r, http.StatusBadRequest, "invalid_request", "could not parse the request body")
+		return false
+	}
+	return true
+}
+
+// decodeJSONInto decodes a body twice: once into a typed struct, and once into a
+// map so the caller can tell "field absent" from "field present and null".
+//
+// Unmarshalling into a *T cannot express that difference — both leave the
+// pointer nil — and for a nullable column like quota_bytes the two are opposite
+// instructions: leave it alone, versus clear it. Reading the raw map is the
+// cheapest way to recover the distinction without a custom UnmarshalJSON on
+// every such field.
+func decodeJSONInto(w http.ResponseWriter, r *http.Request, dst any, raw *map[string]any) bool {
+	body, err := io.ReadAll(r.Body)
+	if err != nil {
+		writeError(w, r, http.StatusBadRequest, "invalid_request", "could not read the request body")
+		return false
+	}
+	if err := json.Unmarshal(body, dst); err != nil {
+		writeError(w, r, http.StatusBadRequest, "invalid_request", "could not parse the request body")
+		return false
+	}
+	if err := json.Unmarshal(body, raw); err != nil {
 		writeError(w, r, http.StatusBadRequest, "invalid_request", "could not parse the request body")
 		return false
 	}
