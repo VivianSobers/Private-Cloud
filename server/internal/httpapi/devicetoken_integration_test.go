@@ -78,6 +78,65 @@ func TestDeviceTokenExchange(t *testing.T) {
 	}
 }
 
+// adminDeviceToken mints an app password on the ADMIN account and exchanges it,
+// which is the credential the confinement below has to hold against. The
+// ordinary deviceToken helper uses the fixture's non-admin user, so it cannot
+// tell an authorisation failure apart from a confinement one.
+func (f *apiFixture) adminDeviceToken() string {
+	f.t.Helper()
+
+	rec := f.do(http.MethodPost, "/api/v1/auth/app-passwords",
+		jsonBody(f.t, map[string]any{"name": "admin-laptop"}), f.admin)
+	if rec.Code != http.StatusCreated {
+		f.t.Fatalf("create admin app password = %d: %s", rec.Code, rec.Body)
+	}
+	appPassword := decode(f.t, rec)["password"].(string)
+
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/auth/token", nil)
+	req.Header.Set("Authorization", basicAuth(f.adminUsername, appPassword))
+	rec = httptest.NewRecorder()
+	f.handler.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		f.t.Fatalf("admin token exchange = %d: %s", rec.Code, rec.Body)
+	}
+	return decode(f.t, rec)["token"].(string)
+}
+
+// TestDeviceSessionCannotAdminister is the admin-plane half of the confinement.
+//
+// requireAdmin asks whether the USER is an admin and says nothing about how they
+// authenticated, so before this the answer for an app password was "yes" —
+// and that credential lives in plaintext in a config file on every synced
+// laptop. The cookie session is checked alongside each case so a failure here
+// reads as confinement rather than as the fixture's admin not being one.
+func TestDeviceSessionCannotAdminister(t *testing.T) {
+	f := newAPIFixture(t)
+	token := f.adminDeviceToken()
+
+	// It still reaches everything a sync client needs.
+	if rec := f.bearer(http.MethodGet, "/api/v1/nodes/root", token); rec.Code != http.StatusOK {
+		t.Fatalf("admin device token on /nodes/root = %d, want 200", rec.Code)
+	}
+
+	for _, tc := range []struct{ method, path string }{
+		{http.MethodGet, "/api/v1/admin/users"},
+		{http.MethodPost, "/api/v1/admin/users"},
+		{http.MethodGet, "/api/v1/admin/audit"},
+		{http.MethodGet, "/api/v1/admin/storage"},
+		{http.MethodPost, "/api/v1/admin/fsck"},
+	} {
+		if rec := f.bearer(tc.method, tc.path, token); rec.Code != http.StatusForbidden {
+			t.Errorf("device token on %s %s = %d, want 403", tc.method, tc.path, rec.Code)
+		}
+		// The same route over the admin's COOKIE session is reachable, which is
+		// what proves the 403 above is about the credential and not the account.
+		if rec := f.do(tc.method, tc.path, http.NoBody, f.admin); rec.Code == http.StatusForbidden {
+			t.Errorf("admin cookie session on %s %s = 403; the fixture admin is not an admin",
+				tc.method, tc.path)
+		}
+	}
+}
+
 func TestDeviceTokenRejectsWrongPassword(t *testing.T) {
 	f := newAPIFixture(t)
 

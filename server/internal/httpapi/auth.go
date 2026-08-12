@@ -107,27 +107,42 @@ func isRecoveryAllowedPath(path string) bool {
 	return false
 }
 
-// isDeviceAllowedPath gates a device (sync) session. Everything outside
-// /api/v1/auth/ — the file tree, the change journal, the delta protocol — is
-// allowed; within auth, only identifying itself and signing out. Anything that
-// creates, lists or revokes credentials is refused, which is what keeps a device
-// token from doing what its originating app password cannot.
-// isDeviceAllowedPath reports whether a device session may reach a path.
+// isDeviceAllowedPath reports whether a device (sync) session may reach a path.
 //
-// The rule is "credential management is off limits", and the device plane added
-// in Phase 6 is credential management even though it does not live under
-// /auth/: DELETE /devices/{id} revokes a token, and PATCH renames one. Letting a
-// device session reach it would mean a single leaked app password could revoke
-// every other device on the account — the exact privilege escalation the /auth/
-// confinement exists to prevent, one path prefix to the side.
+// The rule is that a device token may do what a sync client needs — the file
+// tree, the change journal, the delta protocol — and nothing that hands out or
+// takes away authority. It is minted from an app password, which deliberately
+// cannot mint another credential, so the exchange must not become the privilege
+// escalation the app password was denied.
 //
-// Push subscriptions live under /devices for the same reason: a device able to
-// register an endpoint against a SIBLING device's id would redirect that
-// device's notifications. The PWA that actually wants push holds a cookie
-// session, not a device token, so nothing legitimate is lost by confining this.
+// Three denied prefixes, each learned the same way — by noticing that authority
+// does not only live under /auth/:
+//
+//   - /api/v1/auth/ except me and logout: the original rule. Passkeys,
+//     sessions, recovery codes and app passwords all live here.
+//   - /api/v1/devices: credential management wearing a different path. DELETE
+//     revokes a token and PATCH renames one, so one leaked app password could
+//     revoke every OTHER device on the account. Push subscriptions sit under the
+//     same prefix because a device that could register an endpoint against a
+//     sibling's id would redirect that device's notifications; the PWA that
+//     actually wants push holds a cookie session, so nothing legitimate is lost.
+//   - /api/v1/admin: the same mistake one layer up, and the worst of the three.
+//     requireAdmin gates on the USER being an admin and says nothing about how
+//     they authenticated, so an admin's app password reached POST /admin/users
+//     (create another admin), DELETE /admin/users/{id}, GET /admin/audit and
+//     POST /admin/fsck?repair=true. That credential sits in plaintext in a
+//     config file on every synced laptop — see client/config.example.json — so
+//     it is exactly the credential most likely to be copied off a machine, and
+//     it was the one with the fewest limits on it.
+//
+// An admin who genuinely wants to administer signs in. Confining the token costs
+// nothing a sync client does: cloudctl talks to the database directly, and no
+// client in this repository calls an admin route with a bearer token.
 func isDeviceAllowedPath(path string) bool {
-	if strings.HasPrefix(path, "/api/v1/devices") {
-		return false
+	for _, denied := range deviceDeniedPrefixes {
+		if strings.HasPrefix(path, denied) {
+			return false
+		}
 	}
 	if !strings.HasPrefix(path, "/api/v1/auth/") {
 		return true
@@ -137,6 +152,14 @@ func isDeviceAllowedPath(path string) bool {
 		return true
 	}
 	return false
+}
+
+// deviceDeniedPrefixes are the planes a device session may never reach at all.
+// A list rather than a chain of ifs so adding one is a single line, and so the
+// test can assert against the same source the check reads.
+var deviceDeniedPrefixes = []string{
+	"/api/v1/devices",
+	"/api/v1/admin",
 }
 
 func (s *Server) requireAdmin(next http.HandlerFunc) http.HandlerFunc {
