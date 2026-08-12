@@ -40,8 +40,11 @@ import (
 type apiFixture struct {
 	t        *testing.T
 	ctx      context.Context
+	srv      *httpapi.Server
 	handler  http.Handler
 	pool     *pgxpool.Pool
+	filesSvc *files.Service
+	store    *files.Store
 	cookie   *http.Cookie
 	admin    *http.Cookie
 	userID   uuid.UUID
@@ -115,7 +118,12 @@ func newAPIFixture(t *testing.T) *apiFixture {
 		Version: "test", Commit: "test", CookieName: "pc_session",
 	})
 
-	f := &apiFixture{t: t, ctx: ctx, handler: srv.Handler(), pool: database.Pool}
+	// The Server is kept alongside its handler because the AI features are wired
+	// by setters AFTER construction. Handlers are methods on *Server and read
+	// those fields per request, so a test may enable them on an already-built
+	// handler — which is also how the real binary does it once a sidecar verifies.
+	f := &apiFixture{t: t, ctx: ctx, srv: srv, handler: srv.Handler(),
+		pool: database.Pool, filesSvc: filesSvc, store: files.NewStore(database.Pool)}
 	f.userID, f.username, f.cookie = newSession(t, ctx, authStore, authSvc, false)
 	_, f.adminUsername, f.admin = newSession(t, ctx, authStore, authSvc, true)
 	return f

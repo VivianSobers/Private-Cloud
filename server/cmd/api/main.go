@@ -225,6 +225,17 @@ func run() error {
 			apiServer.SetEmbedder(client)
 			log.Info("semantic search enabled",
 				"sidecar", cfg.Embed.URL, "model", cfg.Embed.Model, "dim", cfg.Embed.Dim)
+
+			// Written answers, when a generation sidecar is configured too. Gated
+			// on the embedder having verified, because an answer with nothing
+			// retrieved to ground it is the failure this design refuses to ship —
+			// config validation already rejects a generator without an embedder,
+			// and this covers the case where the embedder failed verification.
+			if cfg.Embed.GenerationEnabled() {
+				apiServer.SetGenerator(embed.NewGenClient(cfg.Embed.GenerateURL, cfg.Embed.GenerateModel))
+				log.Info("generated answers enabled",
+					"sidecar", cfg.Embed.GenerateURL, "model", cfg.Embed.GenerateModel)
+			}
 		}
 	}
 

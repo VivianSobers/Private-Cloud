@@ -124,7 +124,23 @@ type EmbedConfig struct {
 	// has no sidecar of its own — the always-on box feeding a separate GPU worker.
 	// Meaningless to the API, which never enqueues.
 	EnableSemantic bool
+
+	// GenerateURL points at the generation sidecar that composes written answers
+	// for POST /chat. Separate from URL because the two are different services
+	// with very different resource profiles — an embedder is a single forward
+	// pass and can share a modest box, a generator holds a much larger model —
+	// and a deployment may reasonably run one and not the other.
+	//
+	// Empty leaves /chat in retrieval-only mode: it still returns the passages,
+	// which is the trustworthy half of RAG and useful on its own.
+	GenerateURL string
+	// GenerateModel is advisory, reported alongside an answer so a reader knows
+	// what produced it. The sidecar is the authority on what it actually loaded.
+	GenerateModel string
 }
+
+// GenerationEnabled reports whether written answers are configured.
+func (e EmbedConfig) GenerationEnabled() bool { return e.GenerateURL != "" }
 
 // Enabled reports whether a sidecar is configured here.
 func (e EmbedConfig) Enabled() bool { return e.URL != "" }
@@ -151,6 +167,8 @@ func LoadEmbed() (EmbedConfig, error) {
 		Model:          env("PC_EMBED_MODEL", "bge-small-en-v1.5"),
 		Dim:            envInt("PC_EMBED_DIM", 384),
 		EnableSemantic: envBool("PC_ENABLE_SEMANTIC", false),
+		GenerateURL:    env("PC_GENERATE_URL", ""),
+		GenerateModel:  env("PC_GENERATE_MODEL", ""),
 	}
 	if err := e.validate(); err != nil {
 		return EmbedConfig{}, err
@@ -159,6 +177,24 @@ func LoadEmbed() (EmbedConfig, error) {
 }
 
 func (e EmbedConfig) validate() error {
+	// Checked before the embedder gate: a generator configured without an
+	// embedder can never retrieve anything to ground an answer in, and would
+	// answer every question from nothing at all — the one failure mode this
+	// design refuses to ship.
+	if e.GenerationEnabled() {
+		if !strings.HasPrefix(e.GenerateURL, "http://") && !strings.HasPrefix(e.GenerateURL, "https://") {
+			return fmt.Errorf("PC_GENERATE_URL must be an http:// or https:// address (got %q)", e.GenerateURL)
+		}
+		if strings.HasSuffix(e.GenerateURL, "/") {
+			return fmt.Errorf("PC_GENERATE_URL must not end in a slash (got %q)", e.GenerateURL)
+		}
+		if !e.Enabled() {
+			return fmt.Errorf("PC_GENERATE_URL is set but PC_EMBED_URL is not: " +
+				"answers are grounded in retrieved documents, and without embeddings " +
+				"there is nothing to retrieve")
+		}
+	}
+
 	if !e.Enabled() {
 		return nil
 	}

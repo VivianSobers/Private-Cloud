@@ -43,6 +43,12 @@ type Server struct {
 	// resident model in this process.
 	embedder embed.Embedder
 
+	// generator is set when a generation sidecar is configured; nil otherwise, in
+	// which case /chat still answers with retrieved passages and no written
+	// answer. Retrieval is the trustworthy half of RAG and useful on its own, so
+	// the absence of an optional generator must not take away a working feature.
+	generator embed.Generator
+
 	// oidc is set when a single sign-on provider is configured; nil otherwise, in
 	// which case the OIDC endpoints report the feature disabled and the passkey
 	// paths are entirely unaffected.
@@ -70,6 +76,10 @@ type Server struct {
 // SetEmbedder enables semantic search by wiring the query embedder. Left unset
 // when no inference sidecar is configured.
 func (s *Server) SetEmbedder(e embed.Embedder) { s.embedder = e }
+
+// SetGenerator enables written answers on /chat. Left unset when no generation
+// sidecar is configured, in which case the endpoint returns retrieval only.
+func (s *Server) SetGenerator(g embed.Generator) { s.generator = g }
 
 type Options struct {
 	Version      string
@@ -277,6 +287,11 @@ func (s *Server) registerRoutes(mux router) {
 	// Similarity rides the embedding space Phase 4 already built, so it needs no
 	// new job kind and degrades exactly as /search?semantic=true does.
 	mux.HandleFunc("GET /api/v1/nodes/{id}/similar", s.requireAuth(s.searchLimited(s.handleSimilar)))
+
+	// Chat is rate limited alongside search for the same reason and more so: it
+	// costs an embedding RPC AND a generation pass, the most expensive thing one
+	// authenticated user can ask this deployment to do.
+	mux.HandleFunc("POST /api/v1/chat", s.requireAuth(s.searchLimited(s.handleChat)))
 
 	// --- sharing and collaboration (Phase 7) ---------------------------------
 	// Shared content stays OUT of the existing endpoints unless a client opts in
