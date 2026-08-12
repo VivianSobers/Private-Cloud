@@ -1,7 +1,6 @@
 package httpapi
 
 import (
-	"encoding/json"
 	"flag"
 	"fmt"
 	"io"
@@ -77,56 +76,126 @@ func TestOpenAPISpecMatchesRegisteredRoutes(t *testing.T) {
 	}
 }
 
-// TestProposedSurfaceIsNotServedYet pins the gap between the two tracks.
+// TestWebClientCallsOnlyRoutesThatExist closes the loop the whole contract test
+// was written for.
 //
-// Every path below is specified in api-contract.md and called by code in web/,
-// and none of them is implemented. That is a legitimate state — the split exists
-// precisely so the front track can build ahead of the server — but it must be a
-// *visible* one, and it must degrade the way the clients assume: a parseable
-// JSON 404, never HTML, never a 500, never a hang.
+// The original failure was not that a spec drifted — it was that `web/` shipped
+// entire views calling Phase 5, 7 and 8 endpoints that had never been built, and
+// nothing in the repository disagreed. An earlier version of this test pinned
+// those endpoints as *expected to 404*, which was right while they were
+// unimplemented. They are all implemented now, so that list is empty and the
+// check has been turned around to assert the property that actually matters:
 //
-// When one of these lands, this test fails. That is the intent: implementing an
-// endpoint should force the same commit to move it into the generated spec and
-// to update the roadmap in README.md, rather than leaving three documents
-// disagreeing about whether the feature exists.
-func TestProposedSurfaceIsNotServedYet(t *testing.T) {
-	// Phase 5 is deliberately absent: its endpoints are implemented and now live
-	// in the generated spec instead. Removing them from this list was part of the
-	// commit that landed them, which is the workflow this test exists to force.
-	pending := []struct {
-		phase  string
-		method string
-		path   string
-	}{
-		{"9 — scale", "GET", "/api/v1/admin/storage"},
+//	every /api/v1 path the web client calls is a route this server serves.
+//
+// This fails the moment somebody adds a client call for an endpoint that does
+// not exist, which is the drift that took three phases to notice.
+func TestWebClientCallsOnlyRoutesThatExist(t *testing.T) {
+	source, err := os.ReadFile(filepath.FromSlash("../../../web/src/api.ts"))
+	if err != nil {
+		t.Skipf("web client not present: %v", err)
 	}
 
-	h := newContractServer(t).Handler()
-
-	for _, p := range pending {
-		t.Run(p.method+" "+p.path, func(t *testing.T) {
-			rec := httptest.NewRecorder()
-			h.ServeHTTP(rec, httptest.NewRequest(p.method, p.path, nil))
-
-			if rec.Code != http.StatusNotFound {
-				t.Fatalf("status = %d, want 404 — %s appears to be implemented now.\n"+
-					"Regenerate docs/openapi.yaml, drop this entry, and update the Phase %s "+
-					"row in README.md in the same commit.",
-					rec.Code, p.path, p.phase)
-			}
-
-			// The clients render "not available on this server yet" off this
-			// body. If it stopped being the standard envelope they would show a
-			// parse error instead of an explanation.
-			var body errorBody
-			if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
-				t.Fatalf("404 body is not the standard error envelope: %v", err)
-			}
-			if body.Error.Code != "not_found" {
-				t.Errorf("error code = %q, want not_found", body.Error.Code)
-			}
-		})
+	registered := map[string]bool{}
+	for _, pattern := range newContractServer(t).Routes() {
+		_, path, ok := strings.Cut(pattern, " ")
+		if !ok {
+			continue
+		}
+		registered[normalisePath(path)] = true
 	}
+
+	calls := webAPICalls(string(source))
+	// A floor, so a change to api.ts's style that stopped the extraction working
+	// fails loudly instead of silently checking nothing.
+	if len(calls) < 20 {
+		t.Fatalf("extracted only %d API calls from web/src/api.ts — the extraction "+
+			"has probably stopped matching the file's style, which would make this "+
+			"test pass while checking nothing", len(calls))
+	}
+
+	for _, call := range calls {
+		if !registered[normalisePath(call)] {
+			t.Errorf("web/src/api.ts calls %s, which this server does not serve.\n"+
+				"Either implement the route or remove the client call — a view built "+
+				"against an endpoint that does not exist is the exact drift this test "+
+				"exists to catch.", call)
+		}
+	}
+}
+
+// webAPICallRe matches the /api/v1 template literals in the client.
+var webAPICallRe = regexp.MustCompile("`(/api/v1[^`]*)")
+
+// webAPICalls extracts the distinct API paths the client calls.
+func webAPICalls(source string) []string {
+	seen := map[string]bool{}
+	var out []string
+	for _, m := range webAPICallRe.FindAllStringSubmatch(source, -1) {
+		path := strings.TrimRight(pathPart(m[1]), "/")
+		if path == "" || seen[path] {
+			continue
+		}
+		seen[path] = true
+		out = append(out, path)
+	}
+	sort.Strings(out)
+	return out
+}
+
+// pathPart trims a captured template literal down to its PATH.
+//
+// Two things have to be got right, and both were wrong in the first version of
+// this test — which is worth recording, because a contract test that reports
+// false positives gets muted and then protects nothing.
+//
+//  1. A '?' only starts a query string when it is OUTSIDE an interpolation. The
+//     client writes suffixes like `${q ? "?" + q : ""}`, where the '?' is a
+//     ternary inside ${...} and cutting there leaves a mangled path.
+//  2. A capture may END inside an interpolation, because a nested template
+//     literal closes the outer match early. That trailing partial `${…` is a
+//     query builder, not a path segment, so it is dropped.
+//
+// The rule that separates the two cases: an interpolation is a path PARAMETER
+// only when it is preceded by '/', i.e. it forms a whole segment
+// (`/nodes/${id}`). One appended to the end of a segment
+// (`/content${download ? "?download=1" : ""}`) is building a query suffix, and
+// everything from there on is not part of the path.
+func pathPart(s string) string {
+	depth := 0
+	lastOpen := -1
+	for i := 0; i < len(s); i++ {
+		switch {
+		case depth == 0 && s[i] == '$' && i+1 < len(s) && s[i+1] == '{':
+			if i == 0 || s[i-1] != '/' {
+				return s[:i]
+			}
+			depth++
+			lastOpen = i
+			i++
+		case depth > 0 && s[i] == '{':
+			depth++
+		case depth > 0 && s[i] == '}':
+			depth--
+		case depth == 0 && s[i] == '?':
+			// A real query string starts here.
+			return s[:i]
+		}
+	}
+	if depth > 0 && lastOpen >= 0 {
+		// The literal ended mid-interpolation: keep only the path before it.
+		return s[:lastOpen]
+	}
+	return s
+}
+
+// interpolationRe matches both the client's ${...} and the mux's {...}.
+var interpolationRe = regexp.MustCompile(`\$\{[^}]*\}|\{[^}]*\}`)
+
+// normalisePath reduces a path to its shape, so a client's `/nodes/${id}/tags`
+// and a route's `/nodes/{id}/tags` compare equal.
+func normalisePath(p string) string {
+	return interpolationRe.ReplaceAllString(strings.TrimRight(p, "/"), "*")
 }
 
 // TestDeclaredRouteFactsNameRealRoutes keeps the two hand-declared maps honest.
