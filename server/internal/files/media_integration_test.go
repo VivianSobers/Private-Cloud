@@ -56,8 +56,15 @@ func TestMediaMetaRoundTrip(t *testing.T) {
 	if err := f.store.PutMediaMeta(f.ctx, node.ContentHash, in); err != nil {
 		t.Fatalf("second PutMediaMeta: %v", err)
 	}
-	if has, err := f.store.HasMediaMeta(f.ctx, node.ContentHash); err != nil || !has {
-		t.Errorf("HasMediaMeta: %v %v", has, err)
+	hasMeta, w, h, variants, err := f.store.MediaState(f.ctx, node.ContentHash)
+	if err != nil || !hasMeta {
+		t.Errorf("MediaState: hasMeta=%v err=%v", hasMeta, err)
+	}
+	if w != 4032 || h != 3024 {
+		t.Errorf("MediaState dimensions = %dx%d, want 4032x3024", w, h)
+	}
+	if len(variants) != 0 {
+		t.Errorf("MediaState variants = %v, want none", variants)
 	}
 }
 
@@ -232,10 +239,10 @@ func TestMediaGCOnlyTakesUnreferencedContent(t *testing.T) {
 	if _, err := f.store.PruneMediaMeta(f.ctx, 100); err != nil {
 		t.Fatal(err)
 	}
-	if has, _ := f.store.HasMediaMeta(f.ctx, orphan); has {
+	if has, _, _, _, _ := f.store.MediaState(f.ctx, orphan); has {
 		t.Error("orphaned media_meta survived the prune")
 	}
-	if has, _ := f.store.HasMediaMeta(f.ctx, live.ContentHash); !has {
+	if has, _, _, _, _ := f.store.MediaState(f.ctx, live.ContentHash); !has {
 		t.Error("live media_meta was pruned")
 	}
 

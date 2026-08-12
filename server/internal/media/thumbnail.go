@@ -73,6 +73,36 @@ func VariantSpecs() []struct {
 	}
 }
 
+// ExpectedVariants names the renditions that SHOULD exist for content of these
+// dimensions — the same decision renderOne makes, taken from stored metadata
+// instead of from a decoded image.
+//
+// It exists so "have the variants been rendered?" is answerable without opening
+// the file. The naive test, "are there any variant rows", is wrong in a way that
+// matters: an image smaller than a thumbnail legitimately has none, because a
+// "smaller" copy of it would be the same pixels in a new file. Treating that as
+// unfinished would re-render every icon in the library on every pass, forever.
+//
+// Video returns nil: analyzeVideo records what a file is without a demuxer, and
+// there is no frame to render a tile from.
+func ExpectedVariants(contentType string, width, height int) []string {
+	if !isImage(contentType) || width <= 0 || height <= 0 {
+		return nil
+	}
+	longest := width
+	if height > longest {
+		longest = height
+	}
+
+	var out []string
+	for _, spec := range VariantSpecs() {
+		if longest > spec.MaxEdge {
+			out = append(out, spec.Name)
+		}
+	}
+	return out
+}
+
 // Render decodes an image once and produces the named variants from it.
 //
 // One decode for both sizes, deliberately: decoding is the expensive half, and

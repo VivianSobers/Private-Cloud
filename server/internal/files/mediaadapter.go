@@ -69,8 +69,8 @@ func NewMediaStore(s *Store) media.VariantStore { return mediaStore{s: s} }
 
 type mediaStore struct{ s *Store }
 
-func (m mediaStore) HasMediaMeta(ctx context.Context, contentHash []byte) (bool, error) {
-	return m.s.HasMediaMeta(ctx, contentHash)
+func (m mediaStore) State(ctx context.Context, contentHash []byte) (bool, int, int, []string, error) {
+	return m.s.MediaState(ctx, contentHash)
 }
 
 func (m mediaStore) PutMediaMeta(ctx context.Context, contentHash []byte, meta media.Meta) error {

@@ -150,6 +150,106 @@ func TestNonMediaUploadEnqueuesNoMediaJob(t *testing.T) {
 	}
 }
 
+// TestReRunRebuildsALostVariant is the repair path fsck sends operators to.
+//
+// FsckReport.MissingVariants tells an operator that missing thumbnails are not
+// data loss because "re-running the media job rebuilds it", and names
+// `cloudctl jobs reindex --kind=media` as the remedy. It was not a remedy: the
+// handler returned as soon as it found a metadata row, so the enqueued job did
+// precisely nothing and the thumbnail stayed missing for the life of the file.
+//
+// The state is easy to reach without any corruption. Variants are rendered after
+// the metadata row and are deliberately best effort, so a full disk, a killed
+// worker or one failed blob write leaves exactly this: analysed, not rendered.
+func TestReRunRebuildsALostVariant(t *testing.T) {
+	f := newFixture(t)
+	ctx := context.Background()
+	log := slog.New(slog.NewTextHandler(io.Discard, nil))
+
+	node, err := f.svc.Upload(ctx, f.user, f.root, "repairable.jpg",
+		bytes.NewReader(testJPEG(t, 2000, 1500)), "image/jpeg")
+	if err != nil {
+		t.Fatalf("upload: %v", err)
+	}
+
+	handler := media.NewHandler(
+		files.NewMediaOpener(f.svc),
+		files.NewMediaStore(f.store),
+		files.NewMediaBlobWriter(f.svc),
+		log,
+	)
+	if err := handler.Handle(ctx, &node.ID, f.user); err != nil {
+		t.Fatalf("first run: %v", err)
+	}
+
+	// Lose the thumbnail the way a failed render would have: the metadata row
+	// stays, the variant row does not.
+	if _, err := f.store.Pool().Exec(ctx,
+		`DELETE FROM media_variant WHERE content_hash = $1 AND variant = $2`,
+		node.ContentHash, media.VariantThumb); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := f.svc.OpenMediaVariant(ctx, f.user, node.ID, media.VariantThumb); err == nil {
+		t.Fatal("the thumbnail was not actually removed")
+	}
+
+	// Re-running the job is what a reindex does. It has to notice.
+	if err := handler.Handle(ctx, &node.ID, f.user); err != nil {
+		t.Fatalf("second run: %v", err)
+	}
+	if _, rc, err := f.svc.OpenMediaVariant(ctx, f.user, node.ID, media.VariantThumb); err != nil {
+		t.Errorf("re-running the media job did not rebuild the thumbnail: %v", err)
+	} else {
+		rc.Close()
+	}
+
+	// And the preview, which never went missing, was not re-encoded — Render is
+	// asked only for the names that are absent.
+	meta, ok, err := f.store.MediaMetaForNode(ctx, f.user, node.ID)
+	if err != nil || !ok {
+		t.Fatalf("media meta: ok=%v err=%v", ok, err)
+	}
+	if len(meta.Variants) != 2 {
+		t.Errorf("variants after repair = %v, want both", meta.Variants)
+	}
+}
+
+// TestSmallImageIsNotForeverUnfinished guards the other side of the same
+// decision. An image already smaller than a thumbnail correctly has no variants,
+// and a "missing variants" test that could not tell that apart from a failed
+// render would re-open and re-decode every icon in the library on every pass.
+func TestSmallImageIsNotForeverUnfinished(t *testing.T) {
+	f := newFixture(t)
+	ctx := context.Background()
+
+	node, err := f.svc.Upload(ctx, f.user, f.root, "icon.jpg",
+		bytes.NewReader(testJPEG(t, 64, 64)), "image/jpeg")
+	if err != nil {
+		t.Fatalf("upload: %v", err)
+	}
+
+	handler := media.NewHandler(
+		files.NewMediaOpener(f.svc),
+		files.NewMediaStore(f.store),
+		files.NewMediaBlobWriter(f.svc),
+		slog.New(slog.NewTextHandler(io.Discard, nil)),
+	)
+	if err := handler.Handle(ctx, &node.ID, f.user); err != nil {
+		t.Fatalf("first run: %v", err)
+	}
+
+	hasMeta, w, h, variants, err := f.store.MediaState(ctx, node.ContentHash)
+	if err != nil || !hasMeta {
+		t.Fatalf("MediaState: hasMeta=%v err=%v", hasMeta, err)
+	}
+	if len(variants) != 0 {
+		t.Errorf("a 64x64 image rendered variants: %v", variants)
+	}
+	if got := media.ExpectedVariants("image/jpeg", w, h); len(got) != 0 {
+		t.Errorf("ExpectedVariants(64x64) = %v, want none", got)
+	}
+}
+
 // A variant belongs to whoever owns the node, not to whoever knows the node id.
 // Content addressing means two accounts can share the underlying bytes, so the
 // node row is the only thing that makes a thumbnail one caller's to read.

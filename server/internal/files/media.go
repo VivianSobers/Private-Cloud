@@ -56,13 +56,38 @@ func (s *Store) PutMediaMeta(ctx context.Context, contentHash []byte, m MediaMet
 	return err
 }
 
-// HasMediaMeta reports whether this content has already been analysed, so the
-// worker can skip bytes it has seen before under a different filename.
-func (s *Store) HasMediaMeta(ctx context.Context, contentHash []byte) (bool, error) {
-	var exists bool
-	err := s.pool.QueryRow(ctx,
-		`SELECT EXISTS (SELECT 1 FROM media_meta WHERE content_hash = $1)`, contentHash).Scan(&exists)
-	return exists, err
+// MediaState reports what is already stored for one content hash: whether it has
+// been analysed, the dimensions that were found, and which variants exist.
+//
+// One query rather than the bare "has it been analysed" this replaced. That
+// question was not enough to decide whether there was work to do: variants are
+// rendered after the metadata row and are best effort, so a failed render leaves
+// metadata present and thumbnails absent, and answering only the first half made
+// that state permanent — every retry, and every `cloudctl jobs reindex
+// --kind=media`, stopped at the same early return.
+func (s *Store) MediaState(ctx context.Context, contentHash []byte) (hasMeta bool, width, height int, variants []string, err error) {
+	var w, h *int
+	err = s.pool.QueryRow(ctx, `
+		SELECT mm.width, mm.height,
+		       coalesce(array_agg(mv.variant ORDER BY mv.variant)
+		                FILTER (WHERE mv.variant IS NOT NULL), '{}')
+		FROM media_meta mm
+		LEFT JOIN media_variant mv ON mv.content_hash = mm.content_hash
+		WHERE mm.content_hash = $1
+		GROUP BY mm.content_hash`, contentHash).Scan(&w, &h, &variants)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return false, 0, 0, nil, nil
+	}
+	if err != nil {
+		return false, 0, 0, nil, err
+	}
+	if w != nil {
+		width = *w
+	}
+	if h != nil {
+		height = *h
+	}
+	return true, width, height, variants, nil
 }
 
 // MediaMetaFor returns one content hash's metadata, including which variants
