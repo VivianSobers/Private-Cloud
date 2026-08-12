@@ -101,7 +101,12 @@ export interface AdminUser {
   display_name: string;
   is_admin: boolean;
   disabled: boolean;
-  quota_bytes: number;
+  /** Absent means unlimited — the server omits the key entirely rather than
+   *  sending 0, because 0 would be a quota of zero bytes. Optional here for the
+   *  same reason: typing it as always-present made `quota_bytes / 1024**3`
+   *  render the string "NaN" in the admin console for every user without one,
+   *  and TypeScript could not see it because the type said the field was there. */
+  quota_bytes?: number;
   used_bytes?: number;
   created_at: string;
 }
@@ -524,7 +529,16 @@ export const api = {
 
   updateUser: (
     id: string,
-    patch: { display_name?: string; is_admin?: boolean; disabled?: boolean; quota_bytes?: number },
+    /** quota_bytes distinguishes three states, and all three are reachable:
+     *  absent leaves it alone, a number sets it, and an explicit null clears it
+     *  back to unlimited. The server reads the raw body to tell absent from
+     *  null, which `number | undefined` alone could not express. */
+    patch: {
+      display_name?: string;
+      is_admin?: boolean;
+      disabled?: boolean;
+      quota_bytes?: number | null;
+    },
   ) =>
     request<{ user: AdminUser }>(`/api/v1/admin/users/${id}`, {
       method: "PATCH",

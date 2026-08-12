@@ -115,8 +115,27 @@ function UserRow({
   user: AdminUser;
   onPatch: (u: AdminUser, p: Parameters<typeof api.updateUser>[1]) => void;
 }) {
-  const [quotaGiB, setQuotaGiB] = useState(String(Math.round(user.quota_bytes / 1024 ** 3)));
   const gib = 1024 ** 3;
+  // Empty, not "0", when there is no quota. A quota of zero bytes is a real and
+  // very different thing from no quota at all, and the box has to be able to say
+  // which one this account has.
+  const [quotaGiB, setQuotaGiB] = useState(
+    user.quota_bytes == null ? "" : String(Math.round(user.quota_bytes / gib)),
+  );
+
+  // An empty box clears the quota. The server distinguishes an absent field
+  // ("leave it alone") from an explicit null ("make it unlimited"), so this is
+  // the one control that can express the difference.
+  const save = () => {
+    const trimmed = quotaGiB.trim();
+    if (trimmed === "") {
+      onPatch(user, { quota_bytes: null });
+      return;
+    }
+    const gigs = Number(trimmed);
+    if (!Number.isFinite(gigs) || gigs < 0) return;
+    onPatch(user, { quota_bytes: Math.round(gigs * gib) });
+  };
   return (
     <tr className={user.disabled ? "row-disabled" : ""}>
       <td>
@@ -125,7 +144,11 @@ function UserRow({
       </td>
       <td className="small">
         {user.used_bytes != null ? formatBytes(user.used_bytes) : "—"}
-        {user.quota_bytes > 0 && <span className="muted"> / {formatBytes(user.quota_bytes)}</span>}
+        {user.quota_bytes != null ? (
+          <span className="muted"> / {formatBytes(user.quota_bytes)}</span>
+        ) : (
+          <span className="muted"> / unlimited</span>
+        )}
       </td>
       <td>
         <input
@@ -149,15 +172,13 @@ function UserRow({
             type="number"
             min="0"
             value={quotaGiB}
+            placeholder="none"
             onChange={(e) => setQuotaGiB(e.target.value)}
             style={{ width: "4.5rem" }}
             aria-label={`quota GiB for ${user.username}`}
           />
           GiB
-          <button
-            className="link"
-            onClick={() => onPatch(user, { quota_bytes: Math.max(0, Number(quotaGiB)) * gib })}
-          >
+          <button className="link" onClick={save}>
             Save
           </button>
         </span>
