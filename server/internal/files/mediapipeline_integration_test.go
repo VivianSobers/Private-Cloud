@@ -105,6 +105,13 @@ func TestMediaPipelineEndToEnd(t *testing.T) {
 	if err != nil || len(body) == 0 {
 		t.Fatalf("thumb bytes unreadable: %v (%d bytes)", err, len(body))
 	}
+	// The variant carries the ORIGINAL's content hash, which is what the download
+	// handler builds its ETag from. It used to build it from the storage key —
+	// a random blob address, and the exact detail nodeJSON withholds on the
+	// grounds that exposing it would freeze the on-disk layout.
+	if !bytes.Equal(v.ContentHash, node.ContentHash) {
+		t.Errorf("variant content hash = %x, want the original's %x", v.ContentHash, node.ContentHash)
+	}
 
 	// And it is in the timeline, which is the gallery's actual read.
 	items, err := f.store.TimelineNodes(ctx, f.user, nil, nil, 50, 0)

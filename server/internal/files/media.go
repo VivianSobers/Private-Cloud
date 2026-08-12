@@ -29,8 +29,13 @@ type MediaMeta struct {
 
 // MediaVariant locates one rendition's stored bytes.
 type MediaVariant struct {
-	Variant       string
-	StorageKey    string
+	Variant    string
+	StorageKey string
+	// ContentHash is the ORIGINAL's content hash, which is what this rendition is
+	// derived from and keyed by. It is the variant's stable public identity — the
+	// thing an ETag can be built from without naming where the bytes happen to
+	// live on disk.
+	ContentHash   []byte
 	MIME          string
 	Size          int64
 	Width, Height int
@@ -218,7 +223,7 @@ func (s *Store) MediaVariantFor(ctx context.Context, userID, nodeID uuid.UUID, v
 
 	var v MediaVariant
 	err := s.pool.QueryRow(ctx, `
-		SELECT mv.variant, mv.storage_key, mv.mime, mv.size, mv.width, mv.height
+		SELECT mv.variant, mv.storage_key, mv.content_hash, mv.mime, mv.size, mv.width, mv.height
 		FROM nodes n
 		JOIN file_versions fv ON fv.id = n.head_version_id
 		LEFT JOIN blobs b     ON b.id = fv.blob_id
@@ -226,7 +231,7 @@ func (s *Store) MediaVariantFor(ctx context.Context, userID, nodeID uuid.UUID, v
 		JOIN media_variant mv ON mv.content_hash = coalesce(b.sha256, m.content_hash)
 		WHERE n.id = $1 AND n.trashed_at IS NULL AND mv.variant = $2`,
 		nodeID, variant).
-		Scan(&v.Variant, &v.StorageKey, &v.MIME, &v.Size, &v.Width, &v.Height)
+		Scan(&v.Variant, &v.StorageKey, &v.ContentHash, &v.MIME, &v.Size, &v.Width, &v.Height)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, ErrNotFound
 	}
