@@ -422,6 +422,41 @@ func Visibility(includeShared bool) string {
 	return OwnedNodes
 }
 
+// WriteOwnerFor resolves who a write against this node is charged to.
+//
+// Returns the NODE'S OWNER, not the caller. That is the whole answer to "whose
+// quota does an editor spend": always the owner's, never the editor's.
+// Otherwise sharing a folder would let one user spend another's quota, or — just
+// as bad — a file would sit in the owner's tree while counting against someone
+// else's allowance, and neither of them could explain their usage number.
+//
+// It also keeps the tree coherent: a grant never moves or copies anything, so a
+// file an editor creates inside a shared folder belongs to the folder's owner,
+// exactly as if they had created it themselves.
+//
+// ErrNotFound when the caller may not write — including when they may only read,
+// which is deliberately indistinguishable from having no access at all.
+func (s *Store) WriteOwnerFor(ctx context.Context, userID, nodeID uuid.UUID) (uuid.UUID, error) {
+	acc, err := s.AccessFor(ctx, userID, nodeID)
+	if err != nil {
+		return uuid.Nil, err
+	}
+	if !acc.CanWrite() {
+		return uuid.Nil, ErrNotFound
+	}
+	if acc.Role == RoleOwner {
+		return userID, nil
+	}
+
+	var ownerID uuid.UUID
+	err = s.pool.QueryRow(ctx,
+		`SELECT owner_id FROM nodes WHERE id = $1 AND trashed_at IS NULL`, nodeID).Scan(&ownerID)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return uuid.Nil, ErrNotFound
+	}
+	return ownerID, err
+}
+
 // GetVisible returns a node the caller may see, with what they may do to it.
 //
 // Replaces GetLive on any path that has to work for shared content. The access

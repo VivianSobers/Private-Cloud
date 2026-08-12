@@ -23,6 +23,28 @@ func includeShared(r *http.Request) bool {
 	return r.URL.Query().Get("include_shared") == "true"
 }
 
+// writeOwner resolves whose tree and whose quota a write lands in.
+//
+// For the overwhelmingly common case — the caller's own folder — this is the
+// caller. For an editor writing into a folder somebody shared with them it is
+// the FOLDER'S OWNER, because a grant never moves or copies anything: a file
+// created inside a shared folder belongs to the folder's owner, exactly as if
+// they had created it themselves, and the bytes count against their quota.
+//
+// Charging the editor instead would either let one user spend another's quota,
+// or leave a file sitting in one tree while counting against a different
+// allowance — and then neither party could explain their own usage number.
+//
+// Reports its own error and returns false when the caller may not write there.
+func (s *Server) writeOwner(w http.ResponseWriter, r *http.Request, nodeID uuid.UUID) (uuid.UUID, bool) {
+	owner, err := s.files.Store().WriteOwnerFor(r.Context(), CurrentUser(r.Context()).ID, nodeID)
+	if err != nil {
+		s.writeFilesError(w, r, "resolve write access", err)
+		return uuid.Nil, false
+	}
+	return owner, true
+}
+
 // audit records an authorisation-relevant event.
 //
 // Deliberately swallows its own error. The audit write must never fail the

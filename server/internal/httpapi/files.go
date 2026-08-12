@@ -297,10 +297,20 @@ func (s *Server) handleCreateFolder(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	node, err := s.files.Store().CreateFolder(r.Context(), user.ID, parentID, req.Name)
+	// An editor may create inside a folder shared with them; the folder's owner
+	// owns what appears there. See writeOwner.
+	owner, ok := s.writeOwner(w, r, parentID)
+	if !ok {
+		return
+	}
+
+	node, err := s.files.Store().CreateFolder(r.Context(), owner, parentID, req.Name)
 	if err != nil {
 		s.writeFilesError(w, r, "create folder", err)
 		return
+	}
+	if owner != user.ID {
+		s.audit(r, "node.create", node.Path, map[string]any{"kind": "folder"})
 	}
 	writeJSON(w, r, http.StatusCreated, map[string]any{"node": nodeJSON(node)})
 }
@@ -361,10 +371,34 @@ func (s *Server) handlePatchNode(w http.ResponseWriter, r *http.Request) {
 		newName = *req.Name
 	}
 
-	node, err := s.files.Store().MoveOrRename(r.Context(), CurrentUser(r.Context()).ID, id, newParent, newName)
+	user := CurrentUser(r.Context())
+	owner, ok := s.writeOwner(w, r, id)
+	if !ok {
+		return
+	}
+	// A move must not carry a node out of the tree it belongs to. Both ends are
+	// resolved against the same owner, so an editor cannot relocate a shared file
+	// into their own tree — which would be a copy the owner never agreed to, and
+	// a silent transfer of the bytes onto their quota.
+	if req.ParentID != nil {
+		destOwner, ok := s.writeOwner(w, r, newParent)
+		if !ok {
+			return
+		}
+		if destOwner != owner {
+			writeError(w, r, http.StatusBadRequest, "invalid_move",
+				"a file cannot be moved between owners")
+			return
+		}
+	}
+
+	node, err := s.files.Store().MoveOrRename(r.Context(), owner, id, newParent, newName)
 	if err != nil {
 		s.writeFilesError(w, r, "move or rename", err)
 		return
+	}
+	if owner != user.ID {
+		s.audit(r, "node.modify", node.Path, nil)
 	}
 	writeJSON(w, r, http.StatusOK, map[string]any{"node": nodeJSON(node)})
 }
@@ -377,10 +411,23 @@ func (s *Server) handleTrashNode(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	n, err := s.files.Store().Trash(r.Context(), CurrentUser(r.Context()).ID, id)
+	user := CurrentUser(r.Context())
+	// An editor may delete inside a shared folder — that is what "reads and
+	// writes" means — but it goes to the OWNER's trash, so the owner can restore
+	// it. A soft delete an editor could make unrecoverable would be a much
+	// sharper edge than the role implies.
+	owner, ok := s.writeOwner(w, r, id)
+	if !ok {
+		return
+	}
+
+	n, err := s.files.Store().Trash(r.Context(), owner, id)
 	if err != nil {
 		s.writeFilesError(w, r, "trash node", err)
 		return
+	}
+	if owner != user.ID {
+		s.audit(r, "node.trash", id.String(), map[string]any{"nodes_affected": n})
 	}
 	writeJSON(w, r, http.StatusOK, map[string]any{"status": "trashed", "nodes_affected": n})
 }
@@ -485,7 +532,14 @@ func (s *Server) handleUpload(w http.ResponseWriter, r *http.Request) {
 		reader = r.Body
 	}
 
-	node, err := s.files.Upload(r.Context(), user.ID, parentID, name, reader, ctype)
+	// Resolved after the body has been framed but before a byte is stored, so an
+	// editor's upload lands in — and is charged to — the folder's owner.
+	owner, ok := s.writeOwner(w, r, parentID)
+	if !ok {
+		return
+	}
+
+	node, err := s.files.Upload(r.Context(), owner, parentID, name, reader, ctype)
 	if err != nil {
 		// MaxBytesReader surfaces as a generic error from deep inside the copy;
 		// translate it rather than reporting a 500 for a client-side mistake.
@@ -500,6 +554,11 @@ func (s *Server) handleUpload(w http.ResponseWriter, r *http.Request) {
 	}
 
 	s.metrics.UploadBytes.Add(float64(node.Size))
+	if owner != user.ID {
+		// Writing into somebody else's tree is authorisation-relevant; writing
+		// into your own is not, and logging every upload would drown the log.
+		s.audit(r, "node.create", node.Path, map[string]any{"kind": "file", "size": node.Size})
+	}
 	writeJSON(w, r, http.StatusCreated, map[string]any{"node": nodeJSON(node)})
 }
 
