@@ -125,9 +125,23 @@ func (s *Store) MediaMetaFor(ctx context.Context, contentHash []byte) (*MediaMet
 	return &m, true, nil
 }
 
-// MediaMetaForNode returns a node's media metadata, verifying ownership. Used by
-// the single-node GET so a details view needs one request.
-func (s *Store) MediaMetaForNode(ctx context.Context, ownerID, nodeID uuid.UUID) (*MediaMeta, bool, error) {
+// MediaMetaForNode returns a node's media metadata for a caller who may READ the
+// node — which since Phase 7 is not the same as owning it.
+//
+// Access goes through AccessFor, the single authorisation question, rather than
+// through an owner_id filter spliced into this query. The download path became
+// grant-aware and these did not, so a grantee could fetch a shared photo's full
+// bytes and was told the file had no media metadata at all — no dimensions for
+// the grid to lay out, no capture date, and no list of variants, which is what a
+// tile reads to decide whether a thumbnail exists.
+func (s *Store) MediaMetaForNode(ctx context.Context, userID, nodeID uuid.UUID) (*MediaMeta, bool, error) {
+	if _, err := s.AccessFor(ctx, userID, nodeID); err != nil {
+		if errors.Is(err, ErrNotFound) {
+			return nil, false, nil
+		}
+		return nil, false, err
+	}
+
 	var hash []byte
 	err := s.pool.QueryRow(ctx, `
 		SELECT coalesce(b.sha256, m.content_hash)
@@ -135,8 +149,7 @@ func (s *Store) MediaMetaForNode(ctx context.Context, ownerID, nodeID uuid.UUID)
 		JOIN file_versions v ON v.id = n.head_version_id
 		LEFT JOIN blobs b     ON b.id = v.blob_id
 		LEFT JOIN manifests m ON m.id = v.manifest_id
-		WHERE n.id = $1 AND n.owner_id = $2 AND n.trashed_at IS NULL`,
-		nodeID, ownerID).Scan(&hash)
+		WHERE n.id = $1 AND n.trashed_at IS NULL`, nodeID).Scan(&hash)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, false, nil
 	}
@@ -190,13 +203,19 @@ func (s *Store) PutMediaVariant(ctx context.Context, contentHash []byte, v Media
 	return replacedKey, nil
 }
 
-// MediaVariantFor locates a variant's bytes for one of the owner's live files.
+// MediaVariantFor locates a variant's bytes for a caller who may read the node.
 //
-// Ownership is checked in the same query as the lookup, not before it: a variant
-// is derived from content, and content is shared between users by dedup, so the
-// only thing that makes this file's thumbnail THIS caller's to read is the node
-// row joining them.
-func (s *Store) MediaVariantFor(ctx context.Context, ownerID, nodeID uuid.UUID, variant string) (*MediaVariant, error) {
+// A variant is derived from content, and content is shared between users by
+// dedup, so knowing a content hash grants nothing: the NODE row is the only
+// thing that makes a thumbnail this caller's to read. That check is AccessFor,
+// the same question the download path asks, rather than an owner_id filter — a
+// grantee who can download a shared photo in full but gets a 404 for its
+// thumbnail is not a share, it is a broken gallery quietly pulling originals.
+func (s *Store) MediaVariantFor(ctx context.Context, userID, nodeID uuid.UUID, variant string) (*MediaVariant, error) {
+	if _, err := s.AccessFor(ctx, userID, nodeID); err != nil {
+		return nil, err
+	}
+
 	var v MediaVariant
 	err := s.pool.QueryRow(ctx, `
 		SELECT mv.variant, mv.storage_key, mv.mime, mv.size, mv.width, mv.height
@@ -205,8 +224,8 @@ func (s *Store) MediaVariantFor(ctx context.Context, ownerID, nodeID uuid.UUID, 
 		LEFT JOIN blobs b     ON b.id = fv.blob_id
 		LEFT JOIN manifests m ON m.id = fv.manifest_id
 		JOIN media_variant mv ON mv.content_hash = coalesce(b.sha256, m.content_hash)
-		WHERE n.id = $1 AND n.owner_id = $2 AND n.trashed_at IS NULL AND mv.variant = $3`,
-		nodeID, ownerID, variant).
+		WHERE n.id = $1 AND n.trashed_at IS NULL AND mv.variant = $2`,
+		nodeID, variant).
 		Scan(&v.Variant, &v.StorageKey, &v.MIME, &v.Size, &v.Width, &v.Height)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, ErrNotFound
@@ -357,7 +376,12 @@ func (s *Store) TimelineNodes(ctx context.Context, ownerID uuid.UUID, from, to *
 // thumbnail or fall back to the original. Asking per tile would be one query per
 // photo on the hot path of the gallery — the N+1 that makes a 200-tile grid feel
 // broken. Nodes with no analysed content are simply absent from the map.
-func (s *Store) MediaMetaForNodes(ctx context.Context, ownerID uuid.UUID, nodeIDs []uuid.UUID) (map[uuid.UUID]*MediaMeta, error) {
+//
+// Filtered by VISIBILITY, not by ownership. This attaches metadata to nodes the
+// caller has already been handed, so it widens nothing — but scoping it to
+// owned nodes meant a shared album's tiles came back without dimensions or a
+// variant list, and every one of them fell back to fetching the original.
+func (s *Store) MediaMetaForNodes(ctx context.Context, userID uuid.UUID, nodeIDs []uuid.UUID) (map[uuid.UUID]*MediaMeta, error) {
 	out := map[uuid.UUID]*MediaMeta{}
 	if len(nodeIDs) == 0 {
 		return out, nil
@@ -373,8 +397,8 @@ func (s *Store) MediaMetaForNodes(ctx context.Context, ownerID uuid.UUID, nodeID
 		LEFT JOIN manifests man   ON man.id = v.manifest_id
 		JOIN media_meta mm        ON mm.content_hash = coalesce(b.sha256, man.content_hash)
 		LEFT JOIN media_variant mv ON mv.content_hash = mm.content_hash
-		WHERE n.id = ANY($1) AND n.owner_id = $2 AND n.trashed_at IS NULL
-		GROUP BY n.id, mm.content_hash`, nodeIDs, ownerID)
+		WHERE n.id = ANY($2) AND `+VisibleNodes+` AND n.trashed_at IS NULL
+		GROUP BY n.id, mm.content_hash`, userID, nodeIDs)
 	if err != nil {
 		return nil, err
 	}

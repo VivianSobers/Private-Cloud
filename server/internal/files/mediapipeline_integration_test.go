@@ -12,6 +12,8 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/google/uuid"
+
 	"github.com/guru-bharadwaj20/private-cloud/server/internal/files"
 	"github.com/guru-bharadwaj20/private-cloud/server/internal/jobs"
 	"github.com/guru-bharadwaj20/private-cloud/server/internal/media"
@@ -166,8 +168,12 @@ func TestReRunRebuildsALostVariant(t *testing.T) {
 	ctx := context.Background()
 	log := slog.New(slog.NewTextHandler(io.Discard, nil))
 
+	// Deliberately not the same dimensions as any other test's image. testJPEG is
+	// deterministic, so identical dimensions are identical bytes, and the whole
+	// point of content addressing is that identical bytes share one media_variant
+	// row — across fixtures whose blob stores are separate temp directories.
 	node, err := f.svc.Upload(ctx, f.user, f.root, "repairable.jpg",
-		bytes.NewReader(testJPEG(t, 2000, 1500)), "image/jpeg")
+		bytes.NewReader(testJPEG(t, 1800, 1200)), "image/jpeg")
 	if err != nil {
 		t.Fatalf("upload: %v", err)
 	}
@@ -247,6 +253,74 @@ func TestSmallImageIsNotForeverUnfinished(t *testing.T) {
 	}
 	if got := media.ExpectedVariants("image/jpeg", w, h); len(got) != 0 {
 		t.Errorf("ExpectedVariants(64x64) = %v, want none", got)
+	}
+}
+
+// TestSharedPhotoKeepsItsThumbnailAndMetadata is the Phase 5 / Phase 7 seam.
+//
+// The download path was made grant-aware and the media reads were not, so a
+// grantee could fetch a shared photo's full bytes and was told it had no media
+// metadata and no thumbnail. serveMediaVariant's own comment explains what that
+// costs: a grid of tiles quietly falls back to originals and "would pull
+// gigabytes and look like a slow network instead of a missing job" — which is
+// exactly what a shared album did.
+func TestSharedPhotoKeepsItsThumbnailAndMetadata(t *testing.T) {
+	f := newFixture(t)
+	ctx := context.Background()
+	other := f.other(t)
+
+	folder := f.mkdir(f.root, "holiday")
+	node, err := f.svc.Upload(ctx, f.user, folder.ID, "beach.jpg",
+		bytes.NewReader(testJPEG(t, 1400, 900)), "image/jpeg")
+	if err != nil {
+		t.Fatalf("upload: %v", err)
+	}
+
+	handler := media.NewHandler(
+		files.NewMediaOpener(f.svc),
+		files.NewMediaStore(f.store),
+		files.NewMediaBlobWriter(f.svc),
+		slog.New(slog.NewTextHandler(io.Discard, nil)),
+	)
+	if err := handler.Handle(ctx, &node.ID, f.user); err != nil {
+		t.Fatalf("media job: %v", err)
+	}
+
+	// Shared as a folder, so the grant covers a photo it does not name.
+	if _, err := f.store.CreateGrant(ctx, f.user, folder.ID, other, files.RoleViewer); err != nil {
+		t.Fatalf("CreateGrant: %v", err)
+	}
+
+	meta, ok, err := f.store.MediaMetaForNode(ctx, other, node.ID)
+	if err != nil || !ok {
+		t.Fatalf("grantee got no media metadata: ok=%v err=%v", ok, err)
+	}
+	if meta.Width != 1400 || len(meta.Variants) == 0 {
+		t.Errorf("grantee metadata = %dx%d variants=%v", meta.Width, meta.Height, meta.Variants)
+	}
+
+	metas, err := f.store.MediaMetaForNodes(ctx, other, []uuid.UUID{node.ID})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := metas[node.ID]; !ok {
+		t.Error("the batch read a shared album's grid uses skipped a shared photo")
+	}
+
+	if _, rc, err := f.svc.OpenMediaVariant(ctx, other, node.ID, media.VariantThumb); err != nil {
+		t.Errorf("grantee could not read the shared photo's thumbnail: %v", err)
+	} else {
+		rc.Close()
+	}
+
+	// A stranger still gets nothing, which is what makes the above a share rather
+	// than a hole.
+	stranger := f.third(t)
+	if _, ok, _ := f.store.MediaMetaForNode(ctx, stranger, node.ID); ok {
+		t.Error("a stranger read this photo's metadata")
+	}
+	if _, _, err := f.svc.OpenMediaVariant(ctx, stranger, node.ID, media.VariantThumb); err == nil {
+		t.Error("a stranger read this photo's thumbnail")
 	}
 }
 
