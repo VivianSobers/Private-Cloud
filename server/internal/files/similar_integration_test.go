@@ -237,3 +237,55 @@ func TestRetrieveChunksHonoursScope(t *testing.T) {
 		}
 	}
 }
+
+// The scope predicate lives in SQL now, so it inherits the hazard every SQL
+// prefix test in this codebase has: a pattern built from data widens silently if
+// it is a LIKE pattern. A folder named "100%_done" would match "1009Xdone" —
+// the same defect the grant predicate had, in a second place.
+//
+// starts_with takes a plain string and has no metacharacters at all.
+func TestRetrieveScopeEscapesLikeMetacharacters(t *testing.T) {
+	f := newFixture(t)
+	ctx := context.Background()
+	bow := bowEmbedder{dim: 1024}
+
+	extractH := extract.NewHandler(files.NewExtractOpener(f.svc), f.store, extract.New(), nil)
+	embedH := embed.NewHandler(f.store, f.store, bow, nil)
+
+	scoped := f.mkdir(f.root, "100%_done")
+	decoy := f.mkdir(f.root, "1009Xdone")
+
+	for _, tc := range []struct {
+		parent uuid.UUID
+		name   string
+	}{
+		{scoped.ID, "inside.txt"},
+		{decoy.ID, "outside.txt"},
+	} {
+		node, err := f.svc.Upload(ctx, f.user, tc.parent, tc.name,
+			strings.NewReader("widgets gears cogs sprockets levers"), "text/plain")
+		if err != nil {
+			t.Fatalf("upload %s: %v", tc.name, err)
+		}
+		if err := extractH.Handle(ctx, &node.ID, f.user); err != nil {
+			t.Fatal(err)
+		}
+		if err := embedH.Handle(ctx, &node.ID, f.user); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	query, _ := bow.Embed(ctx, []string{"widgets and gears"})
+	chunks, err := f.store.RetrieveChunks(ctx, f.user, query[0], bow.Model(), 10, false, "/100%_done")
+	if err != nil {
+		t.Fatalf("RetrieveChunks: %v", err)
+	}
+	if len(chunks) == 0 {
+		t.Fatal("the scope matched nothing inside itself")
+	}
+	for _, c := range chunks {
+		if !strings.HasPrefix(c.Node.Path, "/100%_done/") {
+			t.Errorf("a metacharacter in the scope widened it to %s", c.Node.Path)
+		}
+	}
+}

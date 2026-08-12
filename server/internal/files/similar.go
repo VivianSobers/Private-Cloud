@@ -59,7 +59,7 @@ func (s *Store) SimilarTo(ctx context.Context, userID, nodeID uuid.UUID, model s
 	// candidate. A document is "similar" if ANY of its passages is close to ANY
 	// of the source's — averaging would let one long, unrelated section drown a
 	// genuine match.
-	candidates, err := s.scanVectors(ctx, userID, model, len(vectors[0]), includeShared)
+	candidates, err := s.scanVectors(ctx, userID, model, len(vectors[0]), includeShared, "")
 	if err != nil {
 		return nil, err
 	}
@@ -108,16 +108,13 @@ func (s *Store) SimilarTo(ctx context.Context, userID, nodeID uuid.UUID, model s
 // scope, when non-empty, restricts retrieval to a subtree — the same ACL-filtered
 // candidate set, narrowed further.
 func (s *Store) RetrieveChunks(ctx context.Context, userID uuid.UUID, query []float32, model string, limit int, includeShared bool, under string) ([]*Chunk, error) {
-	candidates, err := s.scanVectors(ctx, userID, model, len(query), includeShared)
+	candidates, err := s.scanVectors(ctx, userID, model, len(query), includeShared, under)
 	if err != nil {
 		return nil, err
 	}
 
 	out := make([]*Chunk, 0, len(candidates))
 	for _, c := range candidates {
-		if under != "" && c.Node.Path != under && !hasPathPrefix(c.Node.Path, under) {
-			continue
-		}
 		out = append(out, &Chunk{
 			Node:  c.Node,
 			Seq:   c.seq,
@@ -180,7 +177,19 @@ type scannedChunk struct {
 // SemanticSearch documents: embeddings are content-addressed, so two users
 // owning the same document share one vector row by construction. Every Phase 8
 // feature goes through here so none of them can get that wrong independently.
-func (s *Store) scanVectors(ctx context.Context, userID uuid.UUID, model string, dim int, includeShared bool) ([]scannedChunk, error) {
+//
+// under, when non-empty, restricts the scan to one subtree. It is applied in
+// SQL, BEFORE the limit, and that ordering is the whole point of the parameter
+// existing here rather than as a filter in Go. The limit takes the most recently
+// updated maxSemanticScan chunks; filtering afterwards meant a question scoped to
+// an older subtree on a large library matched nothing at all, and answered
+// "no_matching_documents" — which is indistinguishable from the subtree
+// genuinely having no answer, so nobody would think to look further.
+//
+// starts_with with a trailing separator, not LIKE, for the reason the grant
+// predicate documents at length: the pattern would be built from a column, so a
+// scope of /100%_done would otherwise also cover /1009Xdone.
+func (s *Store) scanVectors(ctx context.Context, userID uuid.UUID, model string, dim int, includeShared bool, under string) ([]scannedChunk, error) {
 	rows, err := s.pool.Query(ctx, `
 		SELECT `+nodeCols+`, de.chunk_seq, de.vector
 		`+nodeFrom+`
@@ -189,8 +198,9 @@ func (s *Store) scanVectors(ctx context.Context, userID uuid.UUID, model string,
 		WHERE `+Visibility(includeShared)+`
 		  AND n.parent_id IS NOT NULL
 		  AND n.trashed_at IS NULL
+		  AND ($5 = '' OR n.path = $5 OR starts_with(n.path, $5 || '/'))
 		ORDER BY n.updated_at DESC, n.id, de.chunk_seq
-		LIMIT $4`, userID, model, dim, maxSemanticScan)
+		LIMIT $4`, userID, model, dim, maxSemanticScan, under)
 	if err != nil {
 		return nil, err
 	}
@@ -263,13 +273,4 @@ func (s *Store) vectorsForNode(ctx context.Context, nodeID uuid.UUID, model stri
 		return nil, nil
 	}
 	return out, nil
-}
-
-// hasPathPrefix reports whether path lies under prefix, comparing whole
-// segments. "/projectX" is not under "/project".
-func hasPathPrefix(path, prefix string) bool {
-	if len(path) <= len(prefix) {
-		return false
-	}
-	return path[:len(prefix)] == prefix && path[len(prefix)] == '/'
 }
