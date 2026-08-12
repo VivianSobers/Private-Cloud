@@ -590,12 +590,35 @@ func (s *Store) MergePeople(ctx context.Context, ownerID, from, into uuid.UUID) 
 		`UPDATE people SET updated_at = now() WHERE id = $1`, into); err != nil {
 		return err
 	}
+	if err := s.reapEmptyPeople(ctx, tx, ownerID); err != nil {
+		return err
+	}
 	// The target absorbed an arbitrary number of faces at once, which the
 	// incremental fold cannot express; it is rebuilt on next use.
 	if err := s.invalidateCentroids(ctx, tx, into); err != nil {
 		return err
 	}
 	return tx.Commit(ctx)
+}
+
+// reapEmptyPeople deletes clusters that no longer hold a face.
+//
+// ListPeople hides them with HAVING count > 0, which is right for the reader and
+// wrong as the only treatment. Nothing ever deleted the rows, so they
+// accumulated for the life of the deployment — one per merge, one per cluster
+// whose last face was reassigned or dismissed away. Each is invisible in the UI
+// and still a row somebody may have typed a real person's name into, kept
+// somewhere they can neither see nor remove it.
+//
+// Called from the two operations that empty a cluster. Not from the clustering
+// pass, which creates clusters and never empties one.
+func (s *Store) reapEmptyPeople(ctx context.Context, q pgxQuerier, ownerID uuid.UUID) error {
+	_, err := q.Exec(ctx, `
+		DELETE FROM people p
+		WHERE p.owner_id = $1
+		  AND NOT EXISTS (SELECT 1 FROM faces f WHERE f.person_id = p.id)`,
+		ownerID)
+	return err
 }
 
 // ForgetPerson deletes a cluster without touching the photographs or the
@@ -689,7 +712,13 @@ func (s *Store) ReassignFace(ctx context.Context, ownerID, faceID uuid.UUID, per
 	if personID != nil {
 		stale = append(stale, *personID)
 	}
-	return s.invalidateCentroids(ctx, s.pool, stale...)
+	if err := s.invalidateCentroids(ctx, s.pool, stale...); err != nil {
+		return err
+	}
+
+	// Moving the last face out of a cluster empties it, and an empty cluster is
+	// only hidden, not gone. See reapEmptyPeople.
+	return s.reapEmptyPeople(ctx, s.pool, ownerID)
 }
 
 // FacesInNode lists the faces detected in one photo, for a "who is in this

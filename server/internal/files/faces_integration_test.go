@@ -294,6 +294,65 @@ func TestPersonNodesAreNewestFirstAndDistinct(t *testing.T) {
 	}
 }
 
+// A cluster that no longer holds a face is deleted, not merely hidden.
+//
+// ListPeople filters them out with HAVING count > 0, so nothing in the UI showed
+// the rows piling up — one per merge, one per cluster whose last face was
+// reassigned away — and each is a row somebody may have typed a real person's
+// name into, kept where they can neither see nor remove it.
+func TestEmptiedClustersAreDeletedNotHidden(t *testing.T) {
+	f := newFixture(t)
+	ctx := context.Background()
+
+	countPeople := func() int {
+		t.Helper()
+		var n int
+		if err := f.store.Pool().QueryRow(ctx,
+			`SELECT count(*) FROM people WHERE owner_id = $1`, f.user).Scan(&n); err != nil {
+			t.Fatal(err)
+		}
+		return n
+	}
+
+	a := f.upload(f.root, "reap-a.jpg", "a")
+	b := f.upload(f.root, "reap-b.jpg", "b")
+	storeFaces(t, f, a.ID, faceVec(8, 0.01))
+	storeFaces(t, f, b.ID, faceVec(14, 0.01))
+	if got := countPeople(); got != 2 {
+		t.Fatalf("setup: %d rows in people, want 2", got)
+	}
+
+	people, err := f.store.ListPeople(ctx, f.user)
+	if err != nil || len(people) != 2 {
+		t.Fatalf("ListPeople: %d, err=%v", len(people), err)
+	}
+	if err := f.store.MergePeople(ctx, f.user, people[1].ID, people[0].ID); err != nil {
+		t.Fatalf("MergePeople: %v", err)
+	}
+	if got := countPeople(); got != 1 {
+		t.Errorf("after a merge: %d rows in people, want 1 — the emptied one survived", got)
+	}
+
+	// Reassigning the last face out of a cluster empties it the other way.
+	faces, err := f.store.FacesInNode(ctx, f.user, b.ID)
+	if err != nil || len(faces) != 1 {
+		t.Fatalf("FacesInNode: %d, err=%v", len(faces), err)
+	}
+	if err := f.store.ReassignFace(ctx, f.user, faces[0].ID, nil); err != nil {
+		t.Fatalf("ReassignFace: %v", err)
+	}
+	faces, err = f.store.FacesInNode(ctx, f.user, a.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := f.store.ReassignFace(ctx, f.user, faces[0].ID, nil); err != nil {
+		t.Fatalf("ReassignFace: %v", err)
+	}
+	if got := countPeople(); got != 0 {
+		t.Errorf("after emptying every cluster: %d rows in people, want 0", got)
+	}
+}
+
 // The same person in two photos lands in one cluster; a different person starts
 // their own.
 func TestFacesClusterByPerson(t *testing.T) {
