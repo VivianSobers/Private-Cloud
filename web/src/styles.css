@@ -571,3 +571,63 @@ dialog::backdrop {
   height: 100%;
   background: var(--accent);
 }
+
+/* --- Gallery interactions (Phase 5) --------------------------------------- */
+.photos-toolbar {
+  min-height: 2rem;
+  align-items: center;
+  margin-bottom: 0.5rem;
+}
+.photo-tile.selected {
+  outline: 3px solid var(--accent);
+  outline-offset: -3px;
+}
+.tile-check {
+  position: absolute;
+  top: 4px;
+  right: 4px;
+  width: 20px;
+  height: 20px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 50%;
+  font-size: 0.75rem;
+  color: var(--accent-fg);
+  background: var(--accent);
+  border: 2px solid var(--bg);
+}
+.album-picker {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+}
+.managed-tile {
+  position: relative;
+  margin: 0;
+  aspect-ratio: 1 / 1;
+  border-radius: var(--radius);
+  overflow: hidden;
+  background: var(--bg-subtle);
+}
+.managed-tile.is-cover {
+  outline: 3px solid var(--accent);
+  outline-offset: -3px;
+}
+.tile-actions {
+  position: absolute;
+  inset: auto 0 0 0;
+  display: flex;
+  gap: 2px;
+  padding: 3px;
+  justify-content: center;
+  background: rgba(0, 0, 0, 0.55);
+}
+.tile-actions button {
+  padding: 0.1rem 0.35rem;
+  font-size: 0.8rem;
+  line-height: 1.2;
+}
