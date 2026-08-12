@@ -69,8 +69,19 @@ func (s *Server) handleAdminListUsers(w http.ResponseWriter, r *http.Request) {
 		// failed usage read leaves the numbers absent rather than failing the
 		// whole list.
 		if usage, err := s.files.Store().Usage(r.Context(), u.ID); err == nil {
-			entry["used_bytes"] = usage.LiveBytes
+			// used_bytes is TotalBytes — the same figure the quota is measured
+			// against, and the same one /usage reports. It was LiveBytes, so an
+			// admin watched an account refused at its 4 GiB limit while the column
+			// beside the limit read 2 GiB, with nothing on the screen to explain the
+			// gap. A number labelled "used" that is not the number enforcement uses
+			// is worse than no number.
+			entry["used_bytes"] = usage.TotalBytes()
+			// The parts, so the total is explicable rather than merely correct. An
+			// admin looking at a full account needs to know whether the answer is
+			// "empty the trash", "wait for retention" or "buy a disk".
+			entry["live_bytes"] = usage.LiveBytes
 			entry["trash_bytes"] = usage.TrashBytes
+			entry["version_bytes"] = usage.VersionBytes
 			entry["file_count"] = usage.FileCount
 		}
 		out = append(out, entry)

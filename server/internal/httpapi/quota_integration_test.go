@@ -125,6 +125,52 @@ func TestEditorWritesAreChargedToTheOwnersQuota(t *testing.T) {
 
 // usage reports the quota so a client can render a meter rather than discovering
 // the limit by hitting it.
+// TestAdminUsageMatchesEnforcement pins the two numbers together.
+//
+// The admin column read LiveBytes while checkQuota counted live, trashed and
+// retained bytes, so an admin could watch an account refused at its limit with
+// the column beside that limit reading well under it. A number labelled "used"
+// that is not the number enforcement uses is worse than no number: it makes the
+// refusal look like a bug in the server rather than a full disk.
+func TestAdminUsageMatchesEnforcement(t *testing.T) {
+	f := newAPIFixture(t)
+
+	// Something live, something trashed, and a superseded version — one of each
+	// thing the quota counts and the old column did not.
+	f.upload(f.root(), "kept.txt", strings.Repeat("k", 300))
+	f.upload(f.root(), "kept.txt", strings.Repeat("K", 500)) // supersedes the above
+	binned := nodeID(t, f.upload(f.root(), "binned.txt", strings.Repeat("b", 700)))
+	if rec := f.do(http.MethodDelete, "/api/v1/nodes/"+binned, nil, f.cookie); rec.Code != http.StatusOK {
+		t.Fatalf("trash = %d", rec.Code)
+	}
+
+	usage := decode(t, f.json(http.MethodGet, "/api/v1/usage", nil))
+	total := usage["total_bytes"].(float64)
+
+	users := decode(t, f.do(http.MethodGet, "/api/v1/admin/users", nil, f.admin))["users"].([]any)
+	var found bool
+	for _, raw := range users {
+		u := raw.(map[string]any)
+		if u["username"] != f.username {
+			continue
+		}
+		found = true
+		if u["used_bytes"].(float64) != total {
+			t.Errorf("admin used_bytes = %v, /usage total_bytes = %v — two definitions of used",
+				u["used_bytes"], total)
+		}
+		// And the parts are there, so the total can be explained.
+		for _, part := range []string{"live_bytes", "trash_bytes", "version_bytes"} {
+			if _, ok := u[part]; !ok {
+				t.Errorf("admin user listing is missing %q", part)
+			}
+		}
+	}
+	if !found {
+		t.Fatal("the fixture's user was not in the admin listing")
+	}
+}
+
 func TestUsageReportsTheQuota(t *testing.T) {
 	f := newAPIFixture(t)
 	f.setQuota(t, 4096)
