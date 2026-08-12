@@ -446,7 +446,17 @@ logins, admin actions, share creation — not every read. A log that records
 everything is one nobody reads, and on this hardware it would outgrow the files
 it describes. `request_id` ties an entry back to the API access log.
 
-### Phase 8 — Advanced intelligence
+### Phase 8 — Advanced intelligence ✅ shipped
+
+> **Notes added on implementation.** `POST /chat` is **non-streaming only** —
+> `stream: true` is not implemented, and `scope.node_ids` / `scope.tags` are
+> **not accepted** (a scope that parses and silently does nothing is worse than
+> an absent one). Only `scope.under` works. When no generation sidecar is
+> configured the endpoint still returns `200` with citations and an
+> `answer_unavailable` code rather than failing. `GET /nodes/{id}/faces` was
+> added alongside the reassign route, since a "who is in this picture" overlay
+> needs the face ids before it can reassign one. See
+> [phase-8-server-design.md](phase-8-server-design.md).
 
 Every endpoint here depends on a GPU sidecar and must degrade the way semantic
 search already does: **`503` with a stable code, never a 500 and never a hang.**

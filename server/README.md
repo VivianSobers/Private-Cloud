@@ -119,6 +119,13 @@ between the network and the auth code in slice 2.
 | `POST /api/v1/albums/{id}/items` | session | Add nodes; re-adding is a no-op |
 | `PATCH /api/v1/albums/{id}/items` | session | Replace the whole order (drag-reorder) |
 | `DELETE /api/v1/albums/{id}/items/{nodeId}` | session | Remove from the album; the file stays |
+| `GET /api/v1/nodes/{id}/similar` | session | Files like this one, by meaning |
+| `POST /api/v1/chat` | session | Ask your library; answers cite their sources |
+| `GET /api/v1/people` | session | Face clusters, largest first, unnamed until named |
+| `GET\|PATCH\|DELETE /api/v1/people/{id}` | session | Photos of a person / name it / forget the cluster |
+| `POST /api/v1/people/{id}/merge` | session | Two clusters are the same person |
+| `GET /api/v1/nodes/{id}/faces` | session | Who is in this picture |
+| `POST /api/v1/nodes/{id}/faces/{faceId}/reassign` | session | Fix one wrong detection |
 | `GET /api/v1/grants` | session | Both directions: shared out, shared with me |
 | `GET\|POST /api/v1/nodes/{id}/grants` | session | Direct grants on a node / share with a user |
 | `PATCH\|DELETE /api/v1/grants/{id}` | session | Change a role / revoke (either party may) |
