@@ -90,8 +90,21 @@ func (s *Server) handleChat(w http.ResponseWriter, r *http.Request) {
 
 	citations := make([]map[string]any, 0, len(chunks))
 	passages := make([]embed.Passage, 0, len(chunks))
-	for i, c := range chunks {
-		ref := strconv.Itoa(i + 1)
+	for _, c := range chunks {
+		// A passage with no text is not a citation. fillChunkText leaves Text
+		// empty when doc_text has been pruned or the chunker has changed shape
+		// since the vector was written, and both are ordinary rather than
+		// exceptional. Offering it to the generator is worse than dropping it: an
+		// empty passage contributes nothing to the answer and everything to the
+		// impression that the answer is grounded, since the citation beside it
+		// names a real file the user can open and read something unrelated in.
+		//
+		// Dropped before the ref is assigned, so the numbering a reader sees has
+		// no gaps in it.
+		if strings.TrimSpace(c.Text) == "" {
+			continue
+		}
+		ref := strconv.Itoa(len(citations) + 1)
 		citations = append(citations, map[string]any{
 			"ref":       ref,
 			"node_id":   c.Node.ID,
@@ -112,9 +125,11 @@ func (s *Server) handleChat(w http.ResponseWriter, r *http.Request) {
 		"citations": citations,
 	}
 
-	if len(chunks) == 0 {
-		// Nothing retrieved. Answering anyway would be the model inventing
-		// something, which is the exact failure this design refuses to ship.
+	// Nothing citable. Either retrieval matched nothing, or everything it matched
+	// has lost its text — and the answer is the same either way, because a model
+	// asked to answer from no passages invents one, which is the exact failure
+	// this design refuses to ship.
+	if len(passages) == 0 {
 		out["answer_unavailable"] = "no_matching_documents"
 		writeJSON(w, r, http.StatusOK, out)
 		return
