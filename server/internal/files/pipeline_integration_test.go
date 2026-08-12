@@ -70,6 +70,101 @@ func (e pipelineEnqueuer) EnqueueMedia(ctx context.Context, nodeID, ownerID uuid
 	_, _, _ = e.store.Enqueue(ctx, media.Kind, &nodeID, ownerID, jobs.EnqueueOptions{})
 }
 
+// recordingEnqueuer captures which nodes were scheduled for which kind of
+// derived work, without needing a jobs table.
+type recordingEnqueuer struct {
+	extract map[uuid.UUID]bool
+	media   map[uuid.UUID]bool
+}
+
+func newRecordingEnqueuer() *recordingEnqueuer {
+	return &recordingEnqueuer{extract: map[uuid.UUID]bool{}, media: map[uuid.UUID]bool{}}
+}
+
+func (e *recordingEnqueuer) EnqueueExtract(_ context.Context, nodeID, _ uuid.UUID) {
+	e.extract[nodeID] = true
+}
+
+func (e *recordingEnqueuer) EnqueueMedia(_ context.Context, nodeID, _ uuid.UUID) {
+	e.media[nodeID] = true
+}
+
+// TestEveryWritePathSchedulesDerivedWork covers all four ways a file gets into
+// this system at once, because covering them one at a time is how one of them
+// came to be missed.
+//
+// FinishStaged - the shared tail of resumable uploads and of every WebDAV write
+// - never called scheduleExtract, on either of its storage branches. Everything
+// arriving that way had no extracted text, no embedding, no EXIF, no thumbnail
+// and no faces. It was invisible to content search, to /chat, to the timeline
+// and to /people, and nothing anywhere reported it: the upload succeeded and the
+// file looked entirely normal.
+//
+// The web client switches to resumable uploads at 8 MiB, so in practice this was
+// "large files are not indexed", which is close to the worst possible split
+// because large files are exactly the ones worth searching.
+func TestEveryWritePathSchedulesDerivedWork(t *testing.T) {
+	f := newFixture(t)
+	ctx := context.Background()
+
+	rec := newRecordingEnqueuer()
+	f.svc.SetEnqueuer(rec)
+
+	// 1. The simple POST path.
+	direct, err := f.svc.Upload(ctx, f.user, f.root, "direct.txt",
+		strings.NewReader("posted directly"), "text/plain")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// 2. The resumable path, which is also WebDAV's: both end in FinishStaged.
+	body := "staged through the resumable protocol"
+	sess, err := f.svc.CreateUpload(ctx, f.user, f.root, "staged.txt", int64(len(body)), "text/plain")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.svc.AppendChunk(ctx, f.user, sess.ID, 0, strings.NewReader(body)); err != nil {
+		t.Fatal(err)
+	}
+	staged, err := f.svc.FinishUpload(ctx, f.user, sess.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	for _, tc := range []struct {
+		path string
+		node *files.Node
+	}{
+		{"POST /upload", direct},
+		{"resumable finish / WebDAV write", staged},
+	} {
+		if !rec.extract[tc.node.ID] {
+			t.Errorf("%s did not schedule text extraction for %s", tc.path, tc.node.Name)
+		}
+	}
+
+	// A media file scheduled through the staged path gets media analysis too —
+	// the enqueue-time MIME filter has to survive the same journey.
+	png := string([]byte{0x89, 'P', 'N', 'G', '\r', '\n', 0x1a, '\n'}) + "not a real png body"
+	sess, err = f.svc.CreateUpload(ctx, f.user, f.root, "photo.png", int64(len(png)), "image/png")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.svc.AppendChunk(ctx, f.user, sess.ID, 0, strings.NewReader(png)); err != nil {
+		t.Fatal(err)
+	}
+	photo, err := f.svc.FinishUpload(ctx, f.user, sess.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !rec.media[photo.ID] {
+		t.Error("a staged image did not schedule media analysis")
+	}
+	if rec.media[staged.ID] {
+		t.Error("a staged text file scheduled media analysis")
+	}
+}
+
 // The whole Phase 4 extraction pipeline, end to end: uploading a file enqueues a
 // real job; a worker claims it, runs the real extract handler, and stores the
 // text and tags; the file is then findable by a word from its body. Each piece is

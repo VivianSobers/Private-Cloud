@@ -371,7 +371,26 @@ func (s *Service) OpenVersion(ctx context.Context, ownerID, nodeID, versionID uu
 // sha256 is the whole-file digest accumulated while the bytes arrived; it is
 // recorded on the blob path and unused on the CAS path, where the manifest's
 // BLAKE3 serves as the content hash.
+//
+// Derived work is scheduled HERE, on the shared tail, rather than inside either
+// storage branch. It was missing from both, which meant every file uploaded
+// resumably or over WebDAV had no extracted text, no embedding, no EXIF, no
+// thumbnail and no faces — invisible to content search, /chat, the timeline and
+// /people, with nothing to indicate anything had been skipped. Upload,
+// uploadViaCAS and PutManifestFile each remembered; this function has two exit
+// paths and two callers, which is precisely the shape that gets forgotten.
 func (s *Service) FinishStaged(ctx context.Context, ownerID, parentID uuid.UUID, name, stagingKey string, size int64, sha256 []byte, mime string) (*Node, error) {
+	node, err := s.finishStaged(ctx, ownerID, parentID, name, stagingKey, size, sha256, mime)
+	if err != nil {
+		return nil, err
+	}
+	s.scheduleExtract(ctx, node)
+	return node, nil
+}
+
+// finishStaged is the storage-format half, kept separate so the enqueue above
+// cannot be attached to one branch and not the other.
+func (s *Service) finishStaged(ctx context.Context, ownerID, parentID uuid.UUID, name, stagingKey string, size int64, sha256 []byte, mime string) (*Node, error) {
 	if s.stager == nil {
 		return nil, errors.New("the configured storage backend does not support staged writes")
 	}
