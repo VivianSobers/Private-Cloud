@@ -40,7 +40,10 @@ src/App.tsx        shell, session state, view switching
 src/SignIn.tsx     bootstrap, sign-in, recovery redemption
 src/Browser.tsx    the file browser
 src/Photos.tsx     photo timeline + albums (Phase 5 media surface)
-src/Ask.tsx        ask-your-library semantic retrieval (Phase 8; runs on Phase 4 search)
+src/Ask.tsx        ask-your-library: /chat answer + citations (Phase 8)
+src/People.tsx     face clusters — view + name (Phase 8)
+src/Offline.tsx    files pinned for offline access (Phase 6)
+src/pin.ts         offline-pin store (Cache API + index)
 src/PeopleShare.tsx  grant/revoke user access on a node (Phase 7)
 src/SharedWithMe.tsx roots others shared with me (Phase 7)
 src/Admin.tsx      admin console: users + audit log (Phase 7, admin-only)

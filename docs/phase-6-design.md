@@ -120,11 +120,24 @@ This is the mobile client's foundation reached with no native toolchain: the sam
 `/api/v1` surface, installed as an app. Native-feeling polish (offline file
 pinning, push) is a later slice.
 
+## 5b. Slice 6 — Offline file pinning ✅
+
+Mobile polish landed: a file can be **pinned for offline access**. Its bytes are
+stored in a dedicated Cache Storage bucket (`pc-pinned`, [web/src/pin.ts](../web/src/pin.ts))
+and the service worker serves that bucket when the network is gone —
+network-first for freshness and to revalidate auth, cache on failure. A small
+localStorage index remembers *which* files are pinned so the **Offline** view can
+list them, since Cache Storage keys on URLs alone. Pin/unpin lives in the photo
+viewer; the shell-cache version bump deliberately preserves the pin bucket so an
+app update never evicts a user's offline files. (Runtime service-worker behaviour
+wants on-device verification; the logic is conservative and only ever touches the
+bare content URL a pin created.)
+
 ## 6. Later slices (not yet)
 
 - The platform tray icon adapter + desktop installers / auto-update.
-- Mobile polish: offline pinning of chosen files, share-target, push **delivery**
-  (the subscription is stored server-side; something still has to send).
+- Push **delivery** (the subscription is stored server-side; something still has
+  to send) and a share-target.
 
 ---
 

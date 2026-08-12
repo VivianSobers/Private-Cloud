@@ -19,15 +19,19 @@ runs entirely on the semantic search the server already shipped in Phase 4
   these documents is a later slice — it needs a generation endpoint (a model on a
   4090), which does not exist yet.
 
-## Not yet (need new server surface)
+## Now that the backend landed ✅
 
-- **Generated answers** — `POST /ask` (or `/chat`): retrieve, then have a model
-  compose an answer citing the documents above. Front-end plugs into the same
-  results this view already renders.
-- **People / faces** — a face-clustering job and `GET /people`; a "name this
-  face" UI.
-- **Similar files** — a near-duplicate endpoint; a "more like this" affordance in
-  the browser and gallery.
+Guru shipped `/chat`, `/people`, and `/nodes/{id}/similar`, so the rest of the
+Phase 8 front-end is built against them (shapes verified against the handlers —
+no drift):
 
-Each of these is additive and lands in the contract first, like every other
-cross-track feature.
+- **Generated answers** — Ask now calls `POST /chat`: a written answer when a
+  generator is configured, always with mandatory **citations** to the source
+  documents, degrading to citations-only (`answer_unavailable`) when generation
+  is disabled or the sidecar is down.
+- **People / faces** ([web/src/People.tsx](../web/src/People.tsx)) — the face
+  clusters from `GET /people`, each openable to its photos, with naming via
+  `PATCH /people/{id}`.
+- **Similar files** — a "Find similar" affordance in the photo viewer
+  (`GET /nodes/{id}/similar`) that shows a strip of related files and lets you
+  step between them without leaving the lightbox.
