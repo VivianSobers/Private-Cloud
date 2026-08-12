@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 
 import { api, ApiError, formatDate, type Album, type Node, type SimilarHit } from "./api";
+import { isPinned, pinFile, supportsPinning, unpinFile } from "./pin";
 
 // The Photos view: a timeline of media sorted by when the shutter fired, and
 // hand-ordered albums. It reads the Phase 5 media surface (see the API contract);
@@ -479,11 +480,27 @@ function Lightbox({ node, onClose }: { node: Node; onClose: () => void }) {
   }, [onClose]);
 
   const [src, setSrc] = useState(api.contentUrl(current.id, "preview"));
+  const [pinned, setPinned] = useState(isPinned(current.id));
   useEffect(() => {
     setSrc(api.contentUrl(current.id, "preview"));
     setShowSimilar(false);
     setSimilar(null);
+    setPinned(isPinned(current.id));
   }, [current.id]);
+
+  const togglePin = async () => {
+    try {
+      if (pinned) {
+        await unpinFile(current.id);
+        setPinned(false);
+      } else {
+        await pinFile({ id: current.id, name: current.name, path: current.path, size: current.size });
+        setPinned(true);
+      }
+    } catch {
+      // A pin can fail offline or unauthorized; leave the state as it was.
+    }
+  };
 
   const findSimilar = async () => {
     setShowSimilar(true);
@@ -511,6 +528,11 @@ function Lightbox({ node, onClose }: { node: Node; onClose: () => void }) {
         <button className="link" onClick={() => void findSimilar()}>
           Find similar
         </button>
+        {supportsPinning() && (
+          <button className="link" onClick={() => void togglePin()}>
+            {pinned ? "Pinned offline ✓" : "Pin offline"}
+          </button>
+        )}
         <a className="link" href={api.downloadUrl(current.id, true)}>
           Download
         </a>
