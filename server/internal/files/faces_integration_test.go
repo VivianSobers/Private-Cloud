@@ -38,6 +38,120 @@ func storeFaces(t *testing.T, f *fixture, nodeID uuid.UUID, vecs ...[]float32) {
 	}
 }
 
+// TestCorrectionsSurviveTheNextUpload is the property the correction paths
+// exist for and did not have.
+//
+// A dismissed face and a not-yet-clustered face were both person_id IS NULL, and
+// ClusterUnassignedFaces claims exactly that, so every correction was reverted
+// by the next photo the user uploaded. "Forget this person" rebuilt the cluster;
+// "this is not a face" put the face back into one. A correction path that undoes
+// itself on the user's next ordinary action is worse than none, because they
+// stop believing the ones that do work.
+func TestCorrectionsSurviveTheNextUpload(t *testing.T) {
+	f := newFixture(t)
+	ctx := context.Background()
+
+	a := f.upload(f.root, "forget-a.jpg", "a")
+	b := f.upload(f.root, "forget-b.jpg", "b")
+	storeFaces(t, f, a.ID, faceVec(3, 0.01))
+	storeFaces(t, f, b.ID, faceVec(3, 0.02))
+
+	people, err := f.store.ListPeople(ctx, f.user)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(people) != 1 {
+		t.Fatalf("setup produced %d clusters, want 1", len(people))
+	}
+	if err := f.store.ForgetPerson(ctx, f.user, people[0].ID); err != nil {
+		t.Fatalf("ForgetPerson: %v", err)
+	}
+
+	// The ordinary next action: another photo arrives and is clustered.
+	c := f.upload(f.root, "forget-c.jpg", "c")
+	storeFaces(t, f, c.ID, faceVec(9, 0.01))
+
+	people, err = f.store.ListPeople(ctx, f.user)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, p := range people {
+		if p.FaceCount > 1 {
+			t.Errorf("a forgotten cluster came back with %d faces", p.FaceCount)
+		}
+	}
+	if len(people) != 1 {
+		t.Errorf("got %d cluster(s) after forgetting one and adding one, want 1", len(people))
+	}
+
+	// The detections themselves are still there — forgetting a person must not
+	// discard what the detector found, only the grouping.
+	faces, err := f.store.FacesInNode(ctx, f.user, a.ID)
+	if err != nil || len(faces) != 1 {
+		t.Fatalf("detections lost by ForgetPerson: %d, err=%v", len(faces), err)
+	}
+	if faces[0].PersonID != nil {
+		t.Error("a forgotten face was re-clustered")
+	}
+}
+
+// Dismissing one face is the single-detection correction, and it has to hold for
+// the same reason forgetting a person does.
+func TestDismissedFaceIsNotReclustered(t *testing.T) {
+	f := newFixture(t)
+	ctx := context.Background()
+
+	a := f.upload(f.root, "dismiss-a.jpg", "a")
+	storeFaces(t, f, a.ID, faceVec(11, 0.01))
+
+	faces, err := f.store.FacesInNode(ctx, f.user, a.ID)
+	if err != nil || len(faces) != 1 {
+		t.Fatalf("setup: %d faces, err=%v", len(faces), err)
+	}
+	if err := f.store.ReassignFace(ctx, f.user, faces[0].ID, nil); err != nil {
+		t.Fatalf("ReassignFace(nil): %v", err)
+	}
+
+	b := f.upload(f.root, "dismiss-b.jpg", "b")
+	storeFaces(t, f, b.ID, faceVec(11, 0.02)) // would have matched the dismissed one
+
+	faces, err = f.store.FacesInNode(ctx, f.user, a.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if faces[0].PersonID != nil {
+		t.Error("a dismissed face was re-clustered by the next upload")
+	}
+
+	// Re-detection must not resurrect it either: seq identifies the same face
+	// across runs, so an operator running a reindex does not undo the correction.
+	storeFaces(t, f, a.ID, faceVec(11, 0.01))
+	faces, err = f.store.FacesInNode(ctx, f.user, a.ID)
+	if err != nil || len(faces) != 1 {
+		t.Fatalf("after re-detection: %d faces, err=%v", len(faces), err)
+	}
+	if faces[0].PersonID != nil {
+		t.Error("re-detection resurrected a dismissed face")
+	}
+
+	// Placing it on a person clears the dismissal — somebody who has just put a
+	// face somewhere has plainly not dismissed it.
+	people, err := f.store.ListPeople(ctx, f.user)
+	if err != nil || len(people) == 0 {
+		t.Fatalf("no cluster to reassign into: %d, err=%v", len(people), err)
+	}
+	if err := f.store.ReassignFace(ctx, f.user, faces[0].ID, &people[0].ID); err != nil {
+		t.Fatalf("ReassignFace(person): %v", err)
+	}
+	faces, err = f.store.FacesInNode(ctx, f.user, a.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if faces[0].PersonID == nil {
+		t.Error("reassigning a dismissed face to a person did not take")
+	}
+}
+
 // The same person in two photos lands in one cluster; a different person starts
 // their own.
 func TestFacesClusterByPerson(t *testing.T) {

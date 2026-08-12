@@ -81,17 +81,47 @@ func (s *Store) ReplaceFaces(ctx context.Context, ownerID, nodeID uuid.UUID, mod
 	}
 	defer tx.Rollback(ctx)
 
+	// Dismissals survive re-detection. Detection is deterministic for a given
+	// model, so seq identifies the same face across runs, and somebody who has
+	// already said "this is not a face" should not have to say it again because
+	// an operator ran a reindex. Read before the delete, which is what would
+	// otherwise lose them.
+	dismissed := map[int]bool{}
+	rows, err := tx.Query(ctx,
+		`SELECT seq FROM faces WHERE node_id = $1 AND model = $2 AND dismissed_at IS NOT NULL`,
+		nodeID, model)
+	if err != nil {
+		return err
+	}
+	for rows.Next() {
+		var seq int
+		if err := rows.Scan(&seq); err != nil {
+			rows.Close()
+			return err
+		}
+		dismissed[seq] = true
+	}
+	rows.Close()
+	if err := rows.Err(); err != nil {
+		return err
+	}
+
 	if _, err := tx.Exec(ctx,
 		`DELETE FROM faces WHERE node_id = $1 AND model = $2`, nodeID, model); err != nil {
 		return err
 	}
 
 	for i, f := range faces {
+		var dismissedAt *time.Time
+		if dismissed[i] {
+			now := time.Now()
+			dismissedAt = &now
+		}
 		if _, err := tx.Exec(ctx, `
-			INSERT INTO faces (owner_id, node_id, box_x, box_y, box_w, box_h, model, dim, vector, seq)
-			VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)`,
+			INSERT INTO faces (owner_id, node_id, box_x, box_y, box_w, box_h, model, dim, vector, seq, dismissed_at)
+			VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)`,
 			ownerID, nodeID, f.Box[0], f.Box[1], f.Box[2], f.Box[3],
-			model, dim, embed.Pack(f.Vector), i); err != nil {
+			model, dim, embed.Pack(f.Vector), i, dismissedAt); err != nil {
 			return err
 		}
 	}
@@ -113,9 +143,14 @@ func (s *Store) ClusterUnassignedFaces(ctx context.Context, ownerID uuid.UUID, m
 		return err
 	}
 
+	// dismissed_at IS NULL is what makes a correction stick. A dismissed face and
+	// a not-yet-clustered face were both person_id IS NULL, so every "forget this
+	// person" and every "this is not a face" was undone by the next photo the
+	// user uploaded — the clustering pass simply found them again.
 	rows, err := s.pool.Query(ctx, `
 		SELECT id, vector FROM faces
-		WHERE owner_id = $1 AND model = $2 AND person_id IS NULL
+		WHERE owner_id = $1 AND model = $2
+		  AND person_id IS NULL AND dismissed_at IS NULL
 		ORDER BY detected_at, seq
 		LIMIT $3`, ownerID, model, MaxFaceScan)
 	if err != nil {
@@ -395,9 +430,33 @@ func (s *Store) MergePeople(ctx context.Context, ownerID, from, into uuid.UUID) 
 }
 
 // ForgetPerson deletes a cluster without touching the photographs or the
-// detections in them — the faces simply become unassigned again.
+// detections in them.
+//
+// Its faces are DISMISSED, not merely unassigned. Unassigned is the state a
+// brand-new detection is in, so leaving them there meant the next clustering
+// pass rebuilt the cluster the user had just asked to be rid of — the request
+// undone by the next photo they uploaded. The detections themselves survive,
+// because the faces are still in the photographs and re-running detection to
+// rediscover them would be pure waste.
+//
+// A transaction rather than one CTE statement: the delete's ON DELETE SET NULL
+// writes the same rows the dismissal does, and Postgres refuses two updates to a
+// row from one command. Two statements in order, and the dismissal must be
+// inside the transaction — a crash between them would leave faces the next pass
+// re-clusters, which is the bug this is fixing.
 func (s *Store) ForgetPerson(ctx context.Context, ownerID, personID uuid.UUID) error {
-	tag, err := s.pool.Exec(ctx,
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback(ctx) //nolint:errcheck // no-op after commit
+
+	if _, err := tx.Exec(ctx,
+		`UPDATE faces SET dismissed_at = now() WHERE person_id = $1 AND owner_id = $2`,
+		personID, ownerID); err != nil {
+		return err
+	}
+	tag, err := tx.Exec(ctx,
 		`DELETE FROM people WHERE id = $1 AND owner_id = $2`, personID, ownerID)
 	if err != nil {
 		return err
@@ -405,22 +464,33 @@ func (s *Store) ForgetPerson(ctx context.Context, ownerID, personID uuid.UUID) e
 	if tag.RowsAffected() == 0 {
 		return ErrPersonNotFound
 	}
-	return nil
+	return tx.Commit(ctx)
 }
 
 // ReassignFace moves one face to a different cluster — the correction path for a
 // single wrong detection, as opposed to merge's whole-cluster case.
 //
-// A nil personID detaches the face, which is how a user says "this is not a
+// A nil personID DISMISSES the face, which is how a user says "this is not a
 // face" or "this is nobody I care about" without deleting the detection.
+//
+// Dismissing has to be distinguishable from never-clustered, because the
+// clustering pass claims everything unassigned. Setting person_id to NULL and
+// stopping there meant the next photo uploaded put the face straight back into a
+// cluster, so the correction lasted until the user's next upload.
+//
+// Assigning to a person clears the tombstone in the same statement: a face
+// someone has just placed is, by definition, not one they have dismissed.
 func (s *Store) ReassignFace(ctx context.Context, ownerID, faceID uuid.UUID, personID *uuid.UUID) error {
 	if personID != nil {
 		if _, err := s.GetPerson(ctx, ownerID, *personID); err != nil {
 			return err
 		}
 	}
-	tag, err := s.pool.Exec(ctx,
-		`UPDATE faces SET person_id = $3 WHERE id = $1 AND owner_id = $2`,
+	tag, err := s.pool.Exec(ctx, `
+		UPDATE faces
+		SET person_id = $3,
+		    dismissed_at = CASE WHEN $3::uuid IS NULL THEN now() ELSE NULL END
+		WHERE id = $1 AND owner_id = $2`,
 		faceID, ownerID, personID)
 	if err != nil {
 		return err
