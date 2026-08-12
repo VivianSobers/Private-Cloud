@@ -58,7 +58,10 @@ type Grant struct {
 	Role      string
 	// InheritedFrom names the ancestor a grant came from when it was not made on
 	// the node being asked about, so a UI can explain WHY someone has access
-	// rather than showing an unexplained entry.
+	// rather than showing an unexplained entry — and, just as importantly, that
+	// it cannot be revoked here. Nil on a grant made directly on the node, and on
+	// every grant returned by the list endpoints, where there is no node being
+	// asked about for it to be relative to.
 	InheritedFrom *uuid.UUID
 	CreatedAt     time.Time
 }
@@ -257,22 +260,49 @@ func (s *Store) SharedRoots(ctx context.Context, userID uuid.UUID) ([]*Node, []*
 	return nodes, grants, nil
 }
 
-// GrantsForNode lists the DIRECT grants on one node.
+// GrantsForNode lists everyone who can reach one node, and why.
 //
-// Direct only, deliberately. An inherited grant belongs to the ancestor that
-// carries it, so showing it here would imply it could be revoked here — which it
-// cannot. The web client made the same choice independently; this is the server
-// half of it.
+// Direct grants and inherited ones, with InheritedFrom naming the ancestor that
+// carries an inherited entry — which is exactly what that field was declared
+// for, and what nothing ever set.
+//
+// Direct-only was the earlier answer, on the grounds that showing an inherited
+// grant here would imply it could be revoked here. That is a real hazard and
+// this is the better answer to it: the honest problem was never that inherited
+// access is irrelevant on this node — it is the most relevant thing about it,
+// since it is access the owner may not remember giving — but that an entry with
+// no explanation looks revocable. InheritedFrom IS the explanation, and its
+// presence is what tells a client to offer "manage on /Projects" instead of a
+// revoke button.
+//
+// Ordered so direct entries come first per person: revoking the one you can see
+// here is the action, and the inherited entry below it is the caveat.
 func (s *Store) GrantsForNode(ctx context.Context, ownerID, nodeID uuid.UUID) ([]*Grant, error) {
 	rows, err := s.pool.Query(ctx, `
-		SELECT `+grantCols+`
+		SELECT `+grantCols+`,
+		       CASE WHEN g.node_id = $1 THEN NULL ELSE g.node_id END
 		`+grantFrom+`
-		WHERE g.node_id = $1 AND g.owner_id = $2
-		ORDER BY gu.username`, nodeID, ownerID)
+		JOIN nodes target ON target.id = $1
+		WHERE g.owner_id = $2
+		  AND n.trashed_at IS NULL
+		  AND (target.path = n.path OR starts_with(target.path, n.path || '/'))
+		ORDER BY gu.username, (g.node_id = $1) DESC, length(n.path) DESC`,
+		nodeID, ownerID)
 	if err != nil {
 		return nil, err
 	}
-	return scanGrants(rows)
+	defer rows.Close()
+
+	out := make([]*Grant, 0, 8)
+	for rows.Next() {
+		var g Grant
+		if err := rows.Scan(&g.ID, &g.NodeID, &g.Path, &g.OwnerID, &g.Owner,
+			&g.GranteeID, &g.Grantee, &g.Role, &g.CreatedAt, &g.InheritedFrom); err != nil {
+			return nil, err
+		}
+		out = append(out, &g)
+	}
+	return out, rows.Err()
 }
 
 // ListGrants returns both directions: what the caller shared out, and what was

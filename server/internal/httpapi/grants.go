@@ -78,6 +78,9 @@ func grantJSON(g *files.Grant) map[string]any {
 		"role":       g.Role,
 		"created_at": g.CreatedAt,
 	}
+	// Present only on an entry that came from an ancestor. Its ABSENCE is what
+	// marks a grant as revocable at the node being asked about, so a client can
+	// tell "remove this" from "managed on /Projects" without a second request.
 	if g.InheritedFrom != nil {
 		out["inherited_from"] = *g.InheritedFrom
 	}

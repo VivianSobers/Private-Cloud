@@ -4,6 +4,8 @@ import (
 	"errors"
 	"testing"
 
+	"github.com/google/uuid"
+
 	"github.com/guru-bharadwaj20/private-cloud/server/internal/files"
 )
 
@@ -113,6 +115,78 @@ func TestFolderGrantDoesNotLeakToSiblings(t *testing.T) {
 
 // A folder whose name contains LIKE metacharacters must grant access to itself
 // and nothing else.
+// TestGrantsForNodeExplainInheritedAccess makes the InheritedFrom field real.
+//
+// It was declared, serialised by grantJSON, typed in the web client, and
+// explained by three comments — and nothing ever assigned it, so it was null in
+// every response the server has ever sent. The listing it belongs to returned
+// direct grants only, on the grounds that showing an inherited one would imply
+// it could be revoked here.
+//
+// That hazard is real and this is the answer to it. Inherited access is the most
+// relevant thing about a node, because it is access the owner may not remember
+// giving; what made it unsafe to show was an entry with no explanation.
+func TestGrantsForNodeExplainInheritedAccess(t *testing.T) {
+	f := newFixture(t)
+	other := f.other(t)
+	third := f.third(t)
+
+	folder := f.mkdir(f.root, "projects")
+	inner := f.mkdir(folder.ID, "q3")
+	doc := f.upload(inner.ID, "plan.txt", "body")
+
+	// One grant high up, one directly on the file.
+	if _, err := f.store.CreateGrant(f.ctx, f.user, folder.ID, other, files.RoleViewer); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.store.CreateGrant(f.ctx, f.user, doc.ID, third, files.RoleEditor); err != nil {
+		t.Fatal(err)
+	}
+
+	grants, err := f.store.GrantsForNode(f.ctx, f.user, doc.ID)
+	if err != nil {
+		t.Fatalf("GrantsForNode: %v", err)
+	}
+	if len(grants) != 2 {
+		t.Fatalf("got %d grant(s) on the file, want both the direct and the inherited one", len(grants))
+	}
+
+	byGrantee := map[uuid.UUID]*files.Grant{}
+	for _, g := range grants {
+		byGrantee[g.GranteeID] = g
+	}
+
+	inherited := byGrantee[other]
+	if inherited == nil {
+		t.Fatal("the folder grant did not appear on the file inside it")
+	}
+	if inherited.InheritedFrom == nil {
+		t.Error("an inherited grant is not marked as inherited — it looks revocable here")
+	} else if *inherited.InheritedFrom != folder.ID {
+		t.Errorf("inherited_from = %s, want the folder %s", *inherited.InheritedFrom, folder.ID)
+	}
+	if inherited.Path != folder.Path {
+		t.Errorf("inherited grant's path = %q, want the ancestor's %q", inherited.Path, folder.Path)
+	}
+
+	direct := byGrantee[third]
+	if direct == nil {
+		t.Fatal("the direct grant is missing")
+	}
+	if direct.InheritedFrom != nil {
+		t.Errorf("a grant made on this node is marked inherited from %s", *direct.InheritedFrom)
+	}
+
+	// The folder itself carries only its own grant — inheritance runs downward.
+	up, err := f.store.GrantsForNode(f.ctx, f.user, folder.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(up) != 1 || up[0].InheritedFrom != nil {
+		t.Errorf("the folder reports %d grant(s); a descendant's grant leaked upward", len(up))
+	}
+}
+
 func TestFolderGrantEscapesLikeMetacharacters(t *testing.T) {
 	f := newFixture(t)
 	other := f.other(t)
