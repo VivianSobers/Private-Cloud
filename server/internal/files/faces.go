@@ -506,18 +506,31 @@ func scanPerson(row pgx.Row) (*Person, error) {
 	return &p, nil
 }
 
-// PersonNodes returns the photos a cluster appears in.
+// PersonNodes returns the photos a cluster appears in, newest first.
+//
+// EXISTS rather than a join with DISTINCT ON. A photo can hold several faces of
+// the same person, so the join needed deduplicating — but Postgres requires
+// DISTINCT ON's expression to lead the sort, which forced ORDER BY n.id and made
+// the result a list in random UUID order. Stable, and meaningless to look at:
+// "photos of this person" is a thing people scroll, and paging through it by
+// UUID puts last week between 2019 and 2004.
+//
+// EXISTS asks the question that was actually being asked — does this node
+// contain this person — and leaves the ordering free.
 func (s *Store) PersonNodes(ctx context.Context, ownerID, personID uuid.UUID, limit, offset int) ([]*Node, error) {
 	if _, err := s.GetPerson(ctx, ownerID, personID); err != nil {
 		return nil, err
 	}
 	limit = ClampSearchLimit(limit)
 	rows, err := s.pool.Query(ctx, `
-		SELECT DISTINCT ON (n.id) `+nodeCols+`
+		SELECT `+nodeCols+`
 		`+nodeFrom+`
-		JOIN faces f ON f.node_id = n.id
-		WHERE f.person_id = $1 AND n.owner_id = $2 AND n.trashed_at IS NULL
-		ORDER BY n.id, n.updated_at DESC
+		WHERE n.owner_id = $2 AND n.trashed_at IS NULL
+		  AND EXISTS (
+			SELECT 1 FROM faces f
+			WHERE f.node_id = n.id AND f.person_id = $1
+		  )
+		ORDER BY n.updated_at DESC, n.id DESC
 		LIMIT $3 OFFSET $4`, personID, ownerID, limit, clampOffset(offset))
 	if err != nil {
 		return nil, err

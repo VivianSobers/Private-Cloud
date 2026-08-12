@@ -251,6 +251,49 @@ func TestCachedCentroidsStayHonest(t *testing.T) {
 	}
 }
 
+// A person's photos come back newest first, and each photo once however many
+// faces of them it holds.
+//
+// The old query deduplicated with DISTINCT ON, which forces its expression to
+// lead the ORDER BY — so the list came back in UUID order. Stable, and
+// meaningless: paging through "photos of this person" put last week between 2019
+// and 2004.
+func TestPersonNodesAreNewestFirstAndDistinct(t *testing.T) {
+	f := newFixture(t)
+	ctx := context.Background()
+
+	var ids []uuid.UUID
+	for _, name := range []string{"ord-1.jpg", "ord-2.jpg", "ord-3.jpg"} {
+		n := f.upload(f.root, name, name)
+		ids = append(ids, n.ID)
+		// Two faces of the same person in each photo, which is what the removed
+		// DISTINCT ON was there for.
+		storeFaces(t, f, n.ID, faceVec(6, 0.01), faceVec(6, 0.02))
+	}
+
+	people, err := f.store.ListPeople(ctx, f.user)
+	if err != nil || len(people) != 1 {
+		t.Fatalf("setup: %d cluster(s), err=%v", len(people), err)
+	}
+
+	nodes, err := f.store.PersonNodes(ctx, f.user, people[0].ID, 50, 0)
+	if err != nil {
+		t.Fatalf("PersonNodes: %v", err)
+	}
+	if len(nodes) != 3 {
+		t.Fatalf("got %d photo(s), want 3 — each once", len(nodes))
+	}
+	for i := 1; i < len(nodes); i++ {
+		if nodes[i].UpdatedAt.After(nodes[i-1].UpdatedAt) {
+			t.Errorf("photo %d is newer than the one before it: not newest-first", i)
+		}
+	}
+	// The most recently uploaded photo leads.
+	if nodes[0].ID != ids[len(ids)-1] {
+		t.Errorf("first result is %s, want the newest photo %s", nodes[0].Name, "ord-3.jpg")
+	}
+}
+
 // The same person in two photos lands in one cluster; a different person starts
 // their own.
 func TestFacesClusterByPerson(t *testing.T) {
