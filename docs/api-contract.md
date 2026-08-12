@@ -344,7 +344,16 @@ A client that does not register one simply polls `GET /changes`, which is the
 existing, working path — push is a latency optimisation, never a correctness
 requirement. Any client must work with it switched off.
 
-### Phase 7 — Multi-user & sharing
+### Phase 7 — Multi-user & sharing ✅ shipped
+
+> **Note added on implementation.** Two reads are deliberately **not** gated on
+> `?include_shared=true`: `GET /nodes/{id}` and `GET /nodes/{id}/content`. The
+> flag stops a *listing* handing a client rows it did not ask for; both of these
+> name one node explicitly, so nothing can surprise the caller — and gating them
+> would make `GET /shared` incoherent, handing out ids the client is then
+> refused permission to fetch. An editor's writes are owned by, and charged to,
+> the node's owner; an editor cannot move a shared file into their own tree. See
+> [phase-7-server-design.md](phase-7-server-design.md).
 
 > **The one phase with a compatibility hazard.** Everything today is
 > owner-scoped: every query filters `owner_id = $me`, and search and tags are

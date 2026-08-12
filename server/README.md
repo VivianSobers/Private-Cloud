@@ -119,6 +119,17 @@ between the network and the auth code in slice 2.
 | `POST /api/v1/albums/{id}/items` | session | Add nodes; re-adding is a no-op |
 | `PATCH /api/v1/albums/{id}/items` | session | Replace the whole order (drag-reorder) |
 | `DELETE /api/v1/albums/{id}/items/{nodeId}` | session | Remove from the album; the file stays |
+| `GET /api/v1/grants` | session | Both directions: shared out, shared with me |
+| `GET\|POST /api/v1/nodes/{id}/grants` | session | Direct grants on a node / share with a user |
+| `PATCH\|DELETE /api/v1/grants/{id}` | session | Change a role / revoke (either party may) |
+| `GET /api/v1/shared` | session | Roots others granted me |
+| `…?include_shared=true` | session | Opt-in widening on children, search and tags |
+| `GET\|POST /api/v1/admin/users` | **admin** | List with usage / provision + recovery codes |
+| `PATCH /api/v1/admin/users/{id}` | **admin** | Admin flag, disabled, quota, display name |
+| `DELETE /api/v1/admin/users/{id}` | **admin** | Disables and revokes; **never deletes content** |
+| `GET /api/v1/admin/users/{id}/sessions` | **admin** | A user's live sessions |
+| `DELETE /api/v1/admin/users/{id}/sessions/{sid}` | **admin** | Revoke one |
+| `GET /api/v1/admin/audit` | **admin** | Authorisation-relevant events |
 | `GET /api/v1/devices` | session | Registered clients; `current` marks the caller |
 | `PATCH\|DELETE /api/v1/devices/{id}` | session | Rename / revoke a device token |
 | `POST\|DELETE /api/v1/devices/{id}/push` | session | Register / unregister a Web Push endpoint |
@@ -463,6 +474,7 @@ Applied automatically at startup.
 | `00019` | media metadata and variants (Phase 5) |
 | `00020` | albums and album items (Phase 5) |
 | `00021` | device names on sessions, push subscriptions (Phase 6) |
+| `00022` | grants and the audit log (Phase 7) |
 
 Blob refcounts are maintained by a **trigger**, not by application code.
 `file_versions` rows disappear through `ON DELETE CASCADE` — purging a folder
