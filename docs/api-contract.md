@@ -531,7 +531,18 @@ event, then `done`.
 - Retrieval only ever reaches content the caller could already open, so chat
   never becomes a way to read around a permission.
 
-### Phase 9 — Scale & resilience
+### Phase 9 — Scale & resilience 🟡 partly shipped
+
+> **Note added on implementation.** `GET /admin/storage` exists and reports pool
+> health, backup freshness, accounted bytes and queue depth — read from the same
+> textfile collectors the alerts scrape. Its shape differs from the sketch below
+> in one deliberate way: there is **no `tiers` array**, because no cold tier
+> exists. It reports `tiering: {enabled: false}` instead, since a `cold` tier
+> holding zero bytes would imply the feature is present and merely empty. Pool
+> capacity is likewise not reported: the database knows what the application
+> stored (`accounted`), the collector knows what the disks hold, and conflating
+> them gives a number wrong in both readings. See
+> [phase-9-design.md](phase-9-design.md).
 
 Mostly ops, so the API surface is small: it exists to let the admin console show
 what the runbooks already describe.

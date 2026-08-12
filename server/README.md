@@ -137,6 +137,7 @@ between the network and the auth code in slice 2.
 | `GET /api/v1/admin/users/{id}/sessions` | **admin** | A user's live sessions |
 | `DELETE /api/v1/admin/users/{id}/sessions/{sid}` | **admin** | Revoke one |
 | `GET /api/v1/admin/audit` | **admin** | Authorisation-relevant events |
+| `GET /api/v1/admin/storage` | **admin** | Pool health, backup freshness, queue depth |
 | `GET /api/v1/devices` | session | Registered clients; `current` marks the caller |
 | `PATCH\|DELETE /api/v1/devices/{id}` | session | Rename / revoke a device token |
 | `POST\|DELETE /api/v1/devices/{id}/push` | session | Register / unregister a Web Push endpoint |
