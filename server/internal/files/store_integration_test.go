@@ -65,6 +65,7 @@ type fixture struct {
 	// lazily, so the tests that never need a second user do not pay for one.
 	pool    *pgxpool.Pool
 	otherID uuid.UUID
+	thirdID uuid.UUID
 }
 
 func newFixture(t *testing.T) *fixture {
@@ -136,6 +137,25 @@ func (f *fixture) other(t *testing.T) uuid.UUID {
 		t.Fatalf("ensure root for second user: %v", err)
 	}
 	f.otherID = u.ID
+	return u.ID
+}
+
+// third returns a third user's id — needed wherever a test has to show that
+// access does not spread beyond the two parties to a grant.
+func (f *fixture) third(t *testing.T) uuid.UUID {
+	t.Helper()
+	if f.thirdID != uuid.Nil {
+		return f.thirdID
+	}
+	username := "third-" + uuid.NewString()[:8]
+	u, err := auth.NewStore(f.pool).CreateUser(f.ctx, uuid.New(), username, username, false)
+	if err != nil {
+		t.Fatalf("create third user: %v", err)
+	}
+	if _, err := f.store.EnsureRoot(f.ctx, u.ID); err != nil {
+		t.Fatalf("ensure root for third user: %v", err)
+	}
+	f.thirdID = u.ID
 	return u.ID
 }
 
