@@ -329,6 +329,9 @@ func printStatus(st control.StatusResponse) {
 	fmt.Printf("  folder:     %s\n", st.Root)
 	fmt.Printf("  state:      %s\n", phase)
 	fmt.Printf("  tracked:    %d items\n", st.Tracked)
+	if st.IgnoreRules > 0 {
+		fmt.Printf("  ignoring:   %d .pcsyncignore rule(s)\n", st.IgnoreRules)
+	}
 	fmt.Printf("  last sync:  %s\n", tray.RelTime(st.LastSync))
 	fmt.Printf("  transfers:  ↓ %d files (%s) · ↑ %d files (%s)  this session\n",
 		st.PulledFiles, tray.HumanBytes(st.PulledBytes), st.PushedFiles, tray.HumanBytes(st.PushedBytes))

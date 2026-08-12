@@ -39,6 +39,7 @@ type Status struct {
 	Tracked     int              `json:"tracked"`       // nodes in the local state db
 	Conflicts   []ConflictRecord `json:"conflicts"`     // recent, newest last
 	Since       time.Time        `json:"since"`         // when this daemon started
+	IgnoreRules int              `json:"ignore_rules"`  // active .pcsyncignore rules
 
 	// Session transfer tallies since Since.
 	PulledFiles int64 `json:"pulled_files"`
@@ -66,6 +67,9 @@ func (e *Engine) Snapshot() Status {
 	s.PushedFiles = e.pushedFiles.Load()
 	s.PulledBytes = e.pulledBytes.Load()
 	s.PushedBytes = e.pushedBytes.Load()
+	if m := e.ignore.Load(); m != nil {
+		s.IgnoreRules = m.Count()
+	}
 
 	// Counted outside the lock: it touches the database, and the sync loop is the
 	// only writer, so a count taken here is at worst one reconcile stale — fine for
