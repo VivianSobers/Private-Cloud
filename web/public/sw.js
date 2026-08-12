@@ -10,7 +10,8 @@
 //   - everything else       passes straight through.
 //
 // Bumping CACHE invalidates everything on the next activate.
-const CACHE = "pc-shell-v1";
+const CACHE = "pc-shell-v2";
+const PIN = "pc-pinned"; // offline-pinned file bytes, managed by the page (pin.ts)
 const SHELL = "/index.html";
 
 self.addEventListener("install", (event) => {
@@ -23,7 +24,9 @@ self.addEventListener("activate", (event) => {
   event.waitUntil(
     caches
       .keys()
-      .then((keys) => Promise.all(keys.filter((k) => k !== CACHE).map((k) => caches.delete(k))))
+      // Keep the current shell cache AND the pinned-files bucket; a shell version
+      // bump must never evict a user's offline files.
+      .then((keys) => Promise.all(keys.filter((k) => k !== CACHE && k !== PIN).map((k) => caches.delete(k))))
       .then(() => self.clients.claim()),
   );
 });
@@ -35,7 +38,23 @@ self.addEventListener("fetch", (event) => {
   const url = new URL(req.url);
   if (url.origin !== self.location.origin) return;
 
-  // The API is authenticated and must always reach the network.
+  // Pinned file content: try the network first (fresh, and it revalidates auth),
+  // and fall back to the offline pin bucket when the network is gone. Only the
+  // bare content URL is handled — the exact key the page pins — so nothing else
+  // under /api is ever cached.
+  if (/^\/api\/v1\/nodes\/[^/]+\/content$/.test(url.pathname)) {
+    event.respondWith(
+      fetch(req).catch(() =>
+        caches
+          .open(PIN)
+          .then((c) => c.match(req))
+          .then((hit) => hit || Response.error()),
+      ),
+    );
+    return;
+  }
+
+  // The rest of the API is authenticated and must always reach the network.
   if (url.pathname.startsWith("/api/")) return;
 
   // App shell: serve the network, keep the cached copy fresh, fall back offline.
