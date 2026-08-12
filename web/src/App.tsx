@@ -5,13 +5,14 @@ import { SignIn } from "./SignIn";
 import { Admin } from "./Admin";
 import { Ask } from "./Ask";
 import { Browser } from "./Browser";
+import { Offline } from "./Offline";
 import { People } from "./People";
 import { Photos } from "./Photos";
 import { Settings } from "./Settings";
 import { SharedWithMe } from "./SharedWithMe";
 import { RecoveryCodes } from "./RecoveryCodes";
 
-type View = "files" | "photos" | "people" | "ask" | "shared" | "admin" | "settings";
+type View = "files" | "photos" | "people" | "ask" | "shared" | "offline" | "admin" | "settings";
 
 export function App() {
   const [me, setMe] = useState<Me | null>(null);
@@ -86,6 +87,9 @@ export function App() {
           <button className="link" onClick={() => setView("shared")} aria-current={view === "shared"}>
             Shared
           </button>
+          <button className="link" onClick={() => setView("offline")} aria-current={view === "offline"}>
+            Offline
+          </button>
           {me.user.is_admin && (
             <button className="link" onClick={() => setView("admin")} aria-current={view === "admin"}>
               Admin
@@ -139,6 +143,8 @@ export function App() {
         <Ask />
       ) : view === "shared" ? (
         <SharedWithMe />
+      ) : view === "offline" ? (
+        <Offline />
       ) : view === "admin" && me.user.is_admin ? (
         <Admin />
       ) : view === "admin" ? (
