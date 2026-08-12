@@ -108,7 +108,10 @@ func (s *Server) writeGrantError(w http.ResponseWriter, r *http.Request, op stri
 	case errors.Is(err, files.ErrGrantNotFound):
 		writeError(w, r, http.StatusNotFound, "not_found", "no such grant")
 	case errors.Is(err, files.ErrInvalidRole):
-		writeError(w, r, http.StatusBadRequest, "invalid_role", "role must be viewer or editor")
+		// The domain error already names the acceptable roles, from the same list
+		// the validator reads — so this cannot drift out of step with what is
+		// actually allowed the way a hand-written copy of it did.
+		writeError(w, r, http.StatusBadRequest, "invalid_role", err.Error())
 	case errors.Is(err, files.ErrCannotGrantToSelf):
 		writeError(w, r, http.StatusBadRequest, "invalid_request", "you already have access to your own files")
 	case errors.Is(err, files.ErrForbidden):

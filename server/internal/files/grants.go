@@ -3,6 +3,8 @@ package files
 import (
 	"context"
 	"errors"
+	"slices"
+	"strings"
 	"time"
 
 	"github.com/google/uuid"
@@ -21,22 +23,36 @@ import (
 // rename and restore — four places to get it wrong, each of which silently
 // grants or removes access.
 
-// Roles. Three exist; only two are grantable.
+// GrantableRoles are the roles that may be stored in a grant, and the only
+// values the API accepts.
+//
+// A slice rather than a hand-maintained condition and a hand-written error
+// message that both had to be kept in step with it.
+var GrantableRoles = []string{RoleViewer, RoleEditor}
+
+// Grantable roles.
 const (
 	RoleViewer = "viewer"
 	RoleEditor = "editor"
-	// RoleOwner is what the node's actual owner has. It is never stored in the
-	// grants table — a CHECK constraint forbids it — because a row claiming
-	// ownership would be a second, contradictory source of truth about who owns
-	// a node.
-	RoleOwner = "owner"
 )
+
+// RoleOwner is what a node's actual owner has, and is NOT a grantable role.
+//
+// Deliberately declared apart from the two above rather than beside them. It is
+// not a fourth-of-three or a special case of the same enum: it is derived from
+// nodes.owner_id, it is never stored in the grants table (a CHECK constraint
+// forbids it), and a row claiming it would be a second, contradictory source of
+// truth about who owns a node. Sitting in the same const block as the grantable
+// roles made it look like one that merely happens to be rejected, which is the
+// reading that eventually produces a validator accepting it.
+const RoleOwner = "owner"
 
 var (
 	// ErrGrantNotFound means no such grant, or it is not the caller's to see.
 	ErrGrantNotFound = errors.New("grant not found")
-	// ErrInvalidRole is a role outside {viewer, editor}.
-	ErrInvalidRole = errors.New("role must be viewer or editor")
+	// ErrInvalidRole is a role outside GrantableRoles — including "owner", which
+	// is a real role and still not one anybody may be granted.
+	ErrInvalidRole = errors.New("role must be one of: " + strings.Join(GrantableRoles, ", "))
 	// ErrCannotGrantToSelf rejects granting yourself access to your own tree.
 	ErrCannotGrantToSelf = errors.New("cannot grant to yourself")
 	// ErrForbidden means the caller can see the node but may not do this to it.
@@ -44,7 +60,7 @@ var (
 )
 
 // ValidRole reports whether a role may be stored in a grant.
-func ValidRole(role string) bool { return role == RoleViewer || role == RoleEditor }
+func ValidRole(role string) bool { return slices.Contains(GrantableRoles, role) }
 
 // Grant is one access record.
 type Grant struct {
