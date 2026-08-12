@@ -198,6 +198,159 @@ func normalisePath(p string) string {
 	return interpolationRe.ReplaceAllString(strings.TrimRight(p, "/"), "*")
 }
 
+// awaitingClient are routes this server serves that no client in this repository
+// calls yet, each with the reason.
+//
+// Being here is not a defect. The split of work means the two halves land at
+// different times, and a server route arriving before its UI is the normal
+// direction — the reverse is the one that hurts. What IS a defect is a route
+// sitting unconsumed with nobody able to say whether that is deliberate, which is
+// how a feature comes to be finished, tested, documented and forgotten.
+//
+// So the list is a declaration with an owner and a reason, and
+// TestEveryRouteIsConsumedOrDeclaredPending fails both ways: an undeclared
+// unconsumed route, and a declaration for a route that is now called or no longer
+// exists. Deleting a line from here is part of shipping the client for it.
+var awaitingClient = map[string]string{
+	"/api/v1/devices":                  "Phase 6 device management; no UI yet",
+	"/api/v1/devices/*":                "Phase 6 device management; no UI yet",
+	"/api/v1/devices/*/push":           "Phase 6 Web Push; the PWA does not subscribe yet",
+	"/api/v1/people":                   "Phase 8 people browser; no UI yet",
+	"/api/v1/people/*":                 "Phase 8 people browser; no UI yet",
+	"/api/v1/people/*/merge":           "Phase 8 cluster correction; no UI yet",
+	"/api/v1/nodes/*/faces":            "Phase 8 face overlay; no UI yet",
+	"/api/v1/nodes/*/faces/*/reassign": "Phase 8 face correction; no UI yet",
+	"/api/v1/nodes/*/similar":          "Phase 8 more-like-this; no UI yet",
+	"/api/v1/chat":                     "Phase 8 ask; the Ask view still calls /search?semantic=true",
+	"/api/v1/admin/storage":            "Phase 9 storage health; no admin UI yet",
+	"/api/v1/admin/users/*/sessions":   "Phase 7 admin console; sign-out-everywhere is not wired up",
+	"/api/v1/admin/users/*/sessions/*": "Phase 7 admin console; see above",
+}
+
+// invisiblyConsumed are routes a client DOES call, in a way this test cannot
+// see. They are declared rather than silently exempted, because "no client calls
+// this" and "the extractor cannot follow this call" are completely different
+// facts and only one of them is a reason to be worried.
+//
+// Two shapes defeat static extraction. pcsync builds paths by concatenation —
+// "/api/v1/chunks/" + hash — so only the prefix is a literal and the parameter
+// segment is invisible. And tus-js-client is handed an endpoint and derives every
+// subsequent URL from the Location header, so the per-upload path appears in no
+// source file at all.
+var invisiblyConsumed = map[string]string{
+	"/api/v1/uploads/*":        "tus; the client follows the Location header",
+	"/api/v1/chunks/*":         "pcsync; path built by concatenation",
+	"/api/v1/nodes/*/manifest": "pcsync; path built by concatenation",
+	"/api/v1/auth/oidc/login":  "SSO; a plain link in SignIn.tsx, not a fetch",
+	// The provider redirects the browser here; nothing in this repository calls it.
+	"/api/v1/auth/oidc/callback": "SSO; the identity provider redirects here",
+}
+
+// operationalRoutes are not part of the client API surface at all.
+var operationalRoutes = map[string]bool{
+	"/healthz": true, "/readyz": true, "/metrics": true,
+	"/api/v1/version": true,
+	"/api/":           true,
+	davPrefix:         true, davPrefix + "/": true,
+}
+
+// TestEveryRouteIsConsumedOrDeclaredPending is TestWebClientCallsOnlyRoutesThatExist
+// pointed the other way.
+//
+// That test catches a client calling an endpoint that does not exist, which was
+// the original drift. This one catches the drift that replaced it: the audit
+// found roughly thirty routes built, tested and documented that no client calls
+// — five device endpoints, the whole people browser, /chat, /similar,
+// /admin/storage — and nothing anywhere recorded whether that was a plan or an
+// oversight.
+//
+// It cannot tell those apart on its own, and does not try. It requires somebody
+// to have written down which, and fails when a route is neither consumed nor
+// declared. It also fails on a stale declaration, so the list shrinks as clients
+// ship rather than becoming a graveyard nobody prunes.
+func TestEveryRouteIsConsumedOrDeclaredPending(t *testing.T) {
+	consumed := map[string]bool{}
+	for _, src := range []struct{ path, desc string }{
+		{"../../../web/src/api.ts", "web client"},
+		{"../../../web/src/webauthn.ts", "web client (WebAuthn)"},
+		{"../../../web/src/upload.ts", "web client (uploads)"},
+		{"../../../client/internal/api/client.go", "sync client"},
+	} {
+		source, err := os.ReadFile(filepath.FromSlash(src.path))
+		if err != nil {
+			t.Skipf("%s not present: %v", src.desc, err)
+		}
+		for _, call := range apiPathsIn(string(source)) {
+			consumed[normalisePath(call)] = true
+		}
+	}
+
+	seen := map[string]bool{}
+	for _, pattern := range newContractServer(t).Routes() {
+		path := pattern
+		if _, p, ok := strings.Cut(pattern, " "); ok {
+			path = p
+		}
+		if operationalRoutes[path] {
+			continue
+		}
+		shape := normalisePath(path)
+		seen[shape] = true
+
+		_, pending := awaitingClient[shape]
+		_, invisible := invisiblyConsumed[shape]
+
+		if consumed[shape] {
+			if pending {
+				t.Errorf("awaitingClient still lists %q, but a client calls it now — "+
+					"delete the line, that is what shipping it looks like", shape)
+			}
+			if invisible {
+				t.Errorf("invisiblyConsumed lists %q, but the extractor finds it "+
+					"perfectly well — drop the exemption", shape)
+			}
+			continue
+		}
+		if !pending && !invisible {
+			t.Errorf("%s is served and no client calls it, and nothing says why.\n"+
+				"Add it to awaitingClient with a reason, or to invisiblyConsumed if a "+
+				"client does call it in a way this test cannot see. A route nobody "+
+				"calls and nobody has decided about is how a feature gets finished "+
+				"and then forgotten.", shape)
+		}
+	}
+
+	for _, decl := range []struct {
+		name  string
+		items map[string]string
+	}{
+		{"awaitingClient", awaitingClient},
+		{"invisiblyConsumed", invisiblyConsumed},
+	} {
+		for shape := range decl.items {
+			if !seen[shape] {
+				t.Errorf("%s names %q, which this server does not serve — "+
+					"drop the line or fix the shape", decl.name, shape)
+			}
+		}
+	}
+}
+
+// apiPathsIn extracts /api/v1 paths from a source file, whether they are written
+// as TypeScript template literals or as Go string concatenation.
+func apiPathsIn(source string) []string {
+	var out []string
+	for _, m := range anyAPIPathRe.FindAllStringSubmatch(source, -1) {
+		if p := strings.TrimRight(pathPart(m[1]), "/"); p != "" {
+			out = append(out, p)
+		}
+	}
+	return out
+}
+
+// anyAPIPathRe matches an /api/v1 path opened by a backtick or a double quote.
+var anyAPIPathRe = regexp.MustCompile("[`\"](/api/v1[^`\"]*)")
+
 // TestDeclaredRouteFactsNameRealRoutes keeps the two hand-declared maps honest.
 //
 // Probing derives "does this need credentials", which is most of what a client
