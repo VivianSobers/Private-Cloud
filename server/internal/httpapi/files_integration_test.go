@@ -494,6 +494,26 @@ func TestFsckRequiresAdmin(t *testing.T) {
 	}
 }
 
+// The report has to carry every field it computes. Two were added to FsckReport
+// in Phase 5 and never added to the response, so the check ran and the answer
+// was discarded — and it is the one part of the report that names a problem an
+// operator can fix without a backup.
+func TestFsckReportsEveryFieldItComputes(t *testing.T) {
+	f := newAPIFixture(t)
+
+	body := decode(t, f.do(http.MethodPost, "/api/v1/admin/fsck", nil, f.admin))
+	for _, field := range []string{
+		"checked", "chunks_checked", "variants_checked",
+		"orphans", "orphan_bytes",
+		"missing", "missing_chunks", "missing_variants",
+		"refcount_drift", "size_mismatch", "temp_files_removed", "repaired",
+	} {
+		if _, ok := body[field]; !ok {
+			t.Errorf("fsck response is missing %q", field)
+		}
+	}
+}
+
 func TestUploadRequiresAName(t *testing.T) {
 	f := newAPIFixture(t)
 	rec := f.do(http.MethodPost, "/api/v1/upload", strings.NewReader("body"), f.cookie)

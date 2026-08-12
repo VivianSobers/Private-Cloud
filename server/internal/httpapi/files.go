@@ -893,13 +893,22 @@ func (s *Server) handleFsck(w http.ResponseWriter, r *http.Request) {
 		s.serverError(w, r, "fsck", err)
 		return
 	}
+	// Every field the report computes is reported. The two variant fields were
+	// added to FsckReport in Phase 5 and never added here, so the check ran, found
+	// rendered thumbnails whose bytes were gone, and dropped the answer on the
+	// floor — the one part of the report an operator can act on without reaching
+	// for a backup.
 	writeJSON(w, r, http.StatusOK, map[string]any{
-		"checked":            report.Checked,
-		"chunks_checked":     report.ChunksChecked,
-		"orphans":            len(report.Orphans),
-		"orphan_bytes":       report.OrphanBytes,
-		"missing":            report.Missing,
-		"missing_chunks":     report.MissingChunks,
+		"checked":          report.Checked,
+		"chunks_checked":   report.ChunksChecked,
+		"variants_checked": report.VariantsChecked,
+		"orphans":          len(report.Orphans),
+		"orphan_bytes":     report.OrphanBytes,
+		"missing":          report.Missing,
+		"missing_chunks":   report.MissingChunks,
+		// Kept apart from `missing` deliberately: a variant is derived, so this
+		// list is a reindex rather than a restore. See FsckReport.MissingVariants.
+		"missing_variants":   report.MissingVariants,
 		"refcount_drift":     report.RefcountDrift,
 		"size_mismatch":      report.SizeMismatch,
 		"temp_files_removed": report.TempFilesRemoved,
