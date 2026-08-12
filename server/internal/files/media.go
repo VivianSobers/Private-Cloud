@@ -342,7 +342,7 @@ func (s *Store) MediaVariantKeys(ctx context.Context) (map[string]struct{}, erro
 	return out, rows.Err()
 }
 
-// TimelineNodes returns the owner's media, newest first by capture time.
+// TimelineNodes returns media the caller can see, newest first by capture time.
 //
 // Kept separate from search because it sorts by when the shutter fired and pages
 // by date rather than by relevance. The JOIN against media_meta is what makes it
@@ -355,19 +355,24 @@ func (s *Store) MediaVariantKeys(ctx context.Context) (map[string]struct{}, erro
 // still omits taken_at in that case, so the client can show "date unknown"
 // rather than presenting an import date as a capture date; the fallback exists
 // so those files land in a sensible place instead of clumping at one end.
-func (s *Store) TimelineNodes(ctx context.Context, ownerID uuid.UUID, from, to *time.Time, limit, offset int) ([]*Node, error) {
+//
+// includeShared widens it to photos other people have shared, on the same opt-in
+// every other listing uses. It was the one listing that could not, which made it
+// the only place a shared album's contents were unreachable by date — and left
+// the gallery with two views that disagreed about what the library contains.
+func (s *Store) TimelineNodes(ctx context.Context, userID uuid.UUID, from, to *time.Time, limit, offset int, includeShared bool) ([]*Node, error) {
 	limit = ClampSearchLimit(limit)
 	rows, err := s.pool.Query(ctx, `
 		SELECT `+nodeCols+`
 		`+nodeFrom+`
 		JOIN media_meta mm ON mm.content_hash = coalesce(b.sha256, m.content_hash)
-		WHERE n.owner_id = $1
+		WHERE `+Visibility(includeShared)+`
 		  AND n.trashed_at IS NULL
 		  AND ($2::timestamptz IS NULL OR coalesce(mm.taken_at, n.updated_at) >= $2)
 		  AND ($3::timestamptz IS NULL OR coalesce(mm.taken_at, n.updated_at) <= $3)
 		ORDER BY coalesce(mm.taken_at, n.updated_at) DESC, n.id DESC
 		LIMIT $4 OFFSET $5`,
-		ownerID, from, to, limit, clampOffset(offset))
+		userID, from, to, limit, clampOffset(offset))
 	if err != nil {
 		return nil, err
 	}

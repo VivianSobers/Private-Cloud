@@ -131,7 +131,7 @@ func (s *Server) handleTimeline(w http.ResponseWriter, r *http.Request) {
 	offset := atoiDefault(q.Get("offset"), 0)
 	user := CurrentUser(r.Context())
 
-	nodes, err := s.files.Store().TimelineNodes(r.Context(), user.ID, from, to, limit, offset)
+	nodes, err := s.files.Store().TimelineNodes(r.Context(), user.ID, from, to, limit, offset, includeShared(r))
 	if err != nil {
 		s.serverError(w, r, "media timeline", err)
 		return

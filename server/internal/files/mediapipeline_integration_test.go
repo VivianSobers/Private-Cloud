@@ -114,7 +114,7 @@ func TestMediaPipelineEndToEnd(t *testing.T) {
 	}
 
 	// And it is in the timeline, which is the gallery's actual read.
-	items, err := f.store.TimelineNodes(ctx, f.user, nil, nil, 50, 0)
+	items, err := f.store.TimelineNodes(ctx, f.user, nil, nil, 50, 0, false)
 	if err != nil {
 		t.Fatalf("timeline: %v", err)
 	}
