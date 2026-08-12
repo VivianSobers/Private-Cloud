@@ -87,8 +87,26 @@ type haveRequest struct {
 	Hashes []string `json:"hashes"`
 }
 
-// handleHaveChunks answers which of the given chunk hashes the server is missing,
-// so a client uploads only the new ones.
+// handleHaveChunks answers which of the given chunk hashes the caller must
+// upload, so a client sends only what it has to.
+//
+// It answers from the caller's OWN chunks, not from the global chunk table.
+//
+// The global answer was an existence oracle: ten thousand hashes per request,
+// no ownership check, and a truthful yes/no about whether any given content is
+// stored anywhere on this server. handleGetChunk goes to some trouble to avoid
+// exactly that — it gates every read on UserReferencesChunk and its comment says
+// so — and this endpoint handed the same information over for free, ten lines
+// away.
+//
+// Scoping it costs a transfer, not a byte of disk. PutChunk writes through
+// PutKeyed, which is a no-op when the key already exists, so a chunk uploaded
+// because we declined to admit we had it is stored exactly once and the
+// refcount rises as usual. Cross-user STORAGE dedup is untouched; what is gone
+// is cross-user BANDWIDTH dedup, which is the half that was doing the leaking.
+// Within one account — a file copied, a file re-uploaded, two files sharing a
+// prefix — nothing changes at all, and that is where the delta protocol's
+// savings actually come from.
 func (s *Server) handleHaveChunks(w http.ResponseWriter, r *http.Request) {
 	var req haveRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
@@ -110,14 +128,14 @@ func (s *Server) handleHaveChunks(w http.ResponseWriter, r *http.Request) {
 		hashes = append(hashes, h)
 	}
 
-	present, err := s.files.CAS().HasChunks(r.Context(), hashes)
+	held, err := s.files.Store().UserReferencesChunks(r.Context(), CurrentUser(r.Context()).ID, hashes)
 	if err != nil {
 		s.serverError(w, r, "have chunks", err)
 		return
 	}
 	missing := make([]string, 0)
 	for _, h := range hashes {
-		if !present[h] {
+		if !held[h] {
 			missing = append(missing, hex.EncodeToString(h[:]))
 		}
 	}

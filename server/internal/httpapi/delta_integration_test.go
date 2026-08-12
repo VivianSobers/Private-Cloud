@@ -63,19 +63,26 @@ func TestDeltaProtocolOverHTTP(t *testing.T) {
 		}
 	}
 
-	// 3. Now nothing is missing.
-	rec = f.json(http.MethodPost, "/api/v1/chunks/have", map[string]any{"hashes": order})
-	if n := len(toStrings(decode(t, rec)["missing"].([]any))); n != 0 {
-		t.Fatalf("%d chunks still missing after upload", n)
-	}
-
-	// 4. Commit the manifest into a file.
+	// 3. Commit the manifest into a file.
 	rec = f.json(http.MethodPost, "/api/v1/manifests?parent_id="+root+"&name=big.bin",
 		map[string]any{"content_hash": content, "chunks": order})
 	if rec.Code != http.StatusCreated {
 		t.Fatalf("commit manifest = %d: %s", rec.Code, rec.Body)
 	}
 	id := nodeID(t, rec)
+
+	// 4. NOW nothing is missing — and the ordering of these two steps is the
+	// contract, not an accident. /chunks/have answers from what the caller's own
+	// files are made of, so a chunk becomes "held" when a file references it, not
+	// when its bytes land. Uploading alone does not make it so; committing does.
+	//
+	// This is what makes the second save of a large file cheap, which is the case
+	// the delta protocol exists for: the unchanged chunks are already referenced
+	// by the version on the server, so only the changed block moves.
+	rec = f.json(http.MethodPost, "/api/v1/chunks/have", map[string]any{"hashes": order})
+	if n := len(toStrings(decode(t, rec)["missing"].([]any))); n != 0 {
+		t.Fatalf("%d chunks still missing after the file referencing them was committed", n)
+	}
 
 	// 5. The whole file reads back byte-for-byte.
 	rec = f.do(http.MethodGet, "/api/v1/nodes/"+id+"/content", nil, f.cookie)
@@ -145,6 +152,47 @@ func TestGetChunkRequiresReference(t *testing.T) {
 	}
 	if rec := f.do(http.MethodGet, "/api/v1/chunks/"+h, nil, f.cookie); rec.Code != http.StatusOK {
 		t.Errorf("referenced chunk was not readable: %d", rec.Code)
+	}
+}
+
+// TestHaveChunksIsNotAnExistenceOracle is the /chunks/have counterpart to
+// TestGetChunkRequiresReference.
+//
+// handleGetChunk was careful about this and handleHaveChunks was not, so the
+// guarantee the one enforced was readable straight off the other: ten thousand
+// hashes a request, no ownership check, a truthful answer about whether any
+// given content is stored anywhere on the server.
+func TestHaveChunksIsNotAnExistenceOracle(t *testing.T) {
+	f := newAPIFixture(t)
+	root := nodeID(t, f.do(http.MethodGet, "/api/v1/nodes/root", nil, f.cookie))
+
+	data := []byte(uuid.NewString() + " content belonging to somebody else")
+	sum := blake3.Sum256(data)
+	h := hex.EncodeToString(sum[:])
+
+	if rec := f.do(http.MethodPut, "/api/v1/chunks/"+h, bytes.NewReader(data), f.cookie); rec.Code != http.StatusCreated {
+		t.Fatalf("put chunk = %d", rec.Code)
+	}
+	rec := f.json(http.MethodPost, "/api/v1/manifests?parent_id="+root+"&name=private.bin",
+		map[string]any{"content_hash": h, "chunks": []string{h}})
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("commit = %d: %s", rec.Code, rec.Body)
+	}
+
+	// The owner is told they hold it — dedup within an account still works.
+	rec = f.json(http.MethodPost, "/api/v1/chunks/have", map[string]any{"hashes": []string{h}})
+	if n := len(toStrings(decode(t, rec)["missing"].([]any))); n != 0 {
+		t.Errorf("the owner was told to re-upload their own chunk")
+	}
+
+	// Another account is told to upload it, even though the server plainly has
+	// the bytes. That answer is indistinguishable from "this content does not
+	// exist here", which is the entire property.
+	rec = f.do(http.MethodPost, "/api/v1/chunks/have",
+		jsonBody(t, map[string]any{"hashes": []string{h}}), f.admin)
+	missing := toStrings(decode(t, rec)["missing"].([]any))
+	if len(missing) != 1 || missing[0] != h {
+		t.Errorf("a stranger learned the server holds this content: missing = %v", missing)
 	}
 }
 
