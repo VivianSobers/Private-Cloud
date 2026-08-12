@@ -119,7 +119,46 @@ func NewServer(log *slog.Logger, database *db.DB, m *metrics.Metrics, authSvc *a
 // bodyLimit is innermost, closest to the handler that reads the body.
 func (s *Server) Handler() http.Handler {
 	mux := http.NewServeMux()
+	s.registerRoutes(mux)
 
+	return withRequestID(s.withRecovery(s.withObservability(withSecurityHeaders(withBodyLimit(mux)))))
+}
+
+// router is the part of *http.ServeMux the route table uses.
+//
+// It exists so the same registration code can be replayed into something that
+// only records patterns instead of into a live mux — see Routes. One route
+// table with two consumers, rather than a second hand-maintained copy that
+// would be wrong the first time somebody added a route and forgot it.
+type router interface {
+	Handle(pattern string, handler http.Handler)
+	HandleFunc(pattern string, handler func(http.ResponseWriter, *http.Request))
+}
+
+// Routes returns every pattern this server registers, in registration order.
+//
+// Derived by replaying the real route table, never by copying it, which is what
+// makes it usable as the source for the generated OpenAPI document: the spec
+// cannot claim an endpoint the mux does not serve, or miss one it does.
+func (s *Server) Routes() []string {
+	var rec patternRecorder
+	s.registerRoutes(&rec)
+	return rec.patterns
+}
+
+type patternRecorder struct{ patterns []string }
+
+func (p *patternRecorder) Handle(pattern string, _ http.Handler) {
+	p.patterns = append(p.patterns, pattern)
+}
+
+func (p *patternRecorder) HandleFunc(pattern string, _ func(http.ResponseWriter, *http.Request)) {
+	p.patterns = append(p.patterns, pattern)
+}
+
+// registerRoutes declares the entire HTTP surface. Everything the server serves
+// is registered here and nowhere else.
+func (s *Server) registerRoutes(mux router) {
 	// Operational endpoints, deliberately unauthenticated and unversioned.
 	// They are reachable only from the tailnet (Caddy binds to the Tailscale
 	// IP), and Kubernetes-style probes must not require credentials.
@@ -281,8 +320,6 @@ func (s *Server) Handler() http.Handler {
 	// Anything else under /api/ gets a JSON 404 rather than net/http's plain
 	// text, so clients can parse every error the same way.
 	mux.HandleFunc("/api/", s.handleNotFound)
-
-	return withRequestID(s.withRecovery(s.withObservability(withSecurityHeaders(withBodyLimit(mux)))))
 }
 
 // --- handlers ---------------------------------------------------------------

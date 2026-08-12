@@ -9,8 +9,36 @@ This is the **one file both developers edit** (see
 - **Contract-first.** A new feature's endpoints land here *before* the handler
   or the UI is built. That is what lets the front-of-API track start immediately
   against a mock.
-- Keep this human-readable; a generated OpenAPI (`openapi.yaml`) can be derived
-  from the handlers later and checked against this doc by the contract test.
+- Keep this human-readable. The machine-checkable half now exists as
+  [`openapi.yaml`](openapi.yaml) — see below.
+
+### Which file answers which question
+
+This document describes endpoints that are **shipped** *and* endpoints that are
+only **proposed**, because that is what lets the front-of-API track start before
+the handler exists. The consequence is that it cannot tell you what is
+implemented — and for three phases it did not: whole views were built in `web/`
+against Phase 5, 7 and 8 endpoints that do not exist, and nothing said so.
+
+So the two files split the job:
+
+| Question | File |
+|---|---|
+| *Does this endpoint exist, and does it need auth?* | [`openapi.yaml`](openapi.yaml) — **generated** from the server's route table |
+| *What does this endpoint mean — bodies, semantics, why?* | this file |
+
+`openapi.yaml` is regenerated and diffed by a contract test
+(`server/internal/httpapi/contract_test.go`), so it cannot claim a route the mux
+does not serve, or miss one it does. It contains **no proposed endpoints by
+construction**: if it is not there, it is not served. The same test pins the
+proposed surface below as *not yet answering*, so implementing one of these
+fails the build until the spec and the README roadmap are updated with it.
+
+Regenerate after any route change:
+
+```bash
+cd server && go test ./internal/httpapi -run TestOpenAPISpecMatchesRegisteredRoutes -update-openapi
+```
 
 ---
 

@@ -1,0 +1,1226 @@
+# GENERATED FILE — DO NOT EDIT BY HAND.
+#
+# Regenerate with:
+#
+#     go test ./internal/httpapi -run TestOpenAPISpecMatchesRegisteredRoutes -update-openapi
+#
+# from server/. A contract test fails when this file and the server's route
+# table disagree, so it is always an accurate answer to "does this endpoint
+# exist, and does it need a session?"
+openapi: 3.1.0
+info:
+  title: private-cloud API
+  version: v1
+  description: |
+    The endpoints this server actually serves, generated from its route table.
+
+    This file is deliberately narrow. It answers existence, method and auth
+    posture — the things a client blocks on and the things that can be derived
+    from the server itself. It does NOT describe request and response bodies:
+    those live in docs/api-contract.md, which is written by hand and is the
+    source of truth for what an endpoint means.
+
+    The two documents have different jobs, and the difference matters. The
+    contract also specifies endpoints that are only PROPOSED (Phases 5-9), so a
+    client cannot use it to tell what is implemented. This file contains no
+    proposed endpoints by construction. If it is not here, it is not served.
+
+    Auth posture is derived by probing each route without credentials, not
+    declared, so it cannot go stale when a handler's wrapper changes.
+servers:
+  - url: /
+    description: Same origin as the web app — WebAuthn binds passkeys to an origin.
+paths:
+  "/api/v1/admin/fsck":
+    post:
+      operationId: postApiV1AdminFsck
+      x-required-role: admin
+      security:
+        - sessionCookie: []
+        - bearerToken: []
+      responses:
+        "default":
+          description: |
+            See docs/api-contract.md for this endpoint's request and response
+            bodies. Every failure uses the Error schema below.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+  "/api/v1/auth/app-passwords":
+    get:
+      operationId: getApiV1AuthAppPasswords
+      security:
+        - sessionCookie: []
+        - bearerToken: []
+      responses:
+        "default":
+          description: |
+            See docs/api-contract.md for this endpoint's request and response
+            bodies. Every failure uses the Error schema below.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+    post:
+      operationId: postApiV1AuthAppPasswords
+      security:
+        - sessionCookie: []
+        - bearerToken: []
+      responses:
+        "default":
+          description: |
+            See docs/api-contract.md for this endpoint's request and response
+            bodies. Every failure uses the Error schema below.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+  "/api/v1/auth/app-passwords/{id}":
+    parameters:
+      - name: id
+        in: path
+        required: true
+        schema:
+          type: string
+    delete:
+      operationId: deleteApiV1AuthAppPasswordsId
+      security:
+        - sessionCookie: []
+        - bearerToken: []
+      responses:
+        "default":
+          description: |
+            See docs/api-contract.md for this endpoint's request and response
+            bodies. Every failure uses the Error schema below.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+  "/api/v1/auth/credentials":
+    get:
+      operationId: getApiV1AuthCredentials
+      security:
+        - sessionCookie: []
+        - bearerToken: []
+      responses:
+        "default":
+          description: |
+            See docs/api-contract.md for this endpoint's request and response
+            bodies. Every failure uses the Error schema below.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+  "/api/v1/auth/credentials/{id}":
+    parameters:
+      - name: id
+        in: path
+        required: true
+        schema:
+          type: string
+    delete:
+      operationId: deleteApiV1AuthCredentialsId
+      security:
+        - sessionCookie: []
+        - bearerToken: []
+      responses:
+        "default":
+          description: |
+            See docs/api-contract.md for this endpoint's request and response
+            bodies. Every failure uses the Error schema below.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+  "/api/v1/auth/login/begin":
+    post:
+      operationId: postApiV1AuthLoginBegin
+      security: []
+      responses:
+        "default":
+          description: |
+            See docs/api-contract.md for this endpoint's request and response
+            bodies. Every failure uses the Error schema below.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+  "/api/v1/auth/login/finish":
+    post:
+      operationId: postApiV1AuthLoginFinish
+      security: []
+      responses:
+        "default":
+          description: |
+            See docs/api-contract.md for this endpoint's request and response
+            bodies. Every failure uses the Error schema below.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+  "/api/v1/auth/logout":
+    post:
+      operationId: postApiV1AuthLogout
+      security: []
+      responses:
+        "default":
+          description: |
+            See docs/api-contract.md for this endpoint's request and response
+            bodies. Every failure uses the Error schema below.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+  "/api/v1/auth/me":
+    get:
+      operationId: getApiV1AuthMe
+      security:
+        - sessionCookie: []
+        - bearerToken: []
+      responses:
+        "default":
+          description: |
+            See docs/api-contract.md for this endpoint's request and response
+            bodies. Every failure uses the Error schema below.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+  "/api/v1/auth/oidc/callback":
+    get:
+      operationId: getApiV1AuthOidcCallback
+      security: []
+      responses:
+        "default":
+          description: |
+            See docs/api-contract.md for this endpoint's request and response
+            bodies. Every failure uses the Error schema below.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+  "/api/v1/auth/oidc/login":
+    get:
+      operationId: getApiV1AuthOidcLogin
+      security: []
+      responses:
+        "default":
+          description: |
+            See docs/api-contract.md for this endpoint's request and response
+            bodies. Every failure uses the Error schema below.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+  "/api/v1/auth/recovery/redeem":
+    post:
+      operationId: postApiV1AuthRecoveryRedeem
+      security: []
+      responses:
+        "default":
+          description: |
+            See docs/api-contract.md for this endpoint's request and response
+            bodies. Every failure uses the Error schema below.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+  "/api/v1/auth/recovery/regenerate":
+    post:
+      operationId: postApiV1AuthRecoveryRegenerate
+      security:
+        - sessionCookie: []
+        - bearerToken: []
+      responses:
+        "default":
+          description: |
+            See docs/api-contract.md for this endpoint's request and response
+            bodies. Every failure uses the Error schema below.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+  "/api/v1/auth/register/begin":
+    post:
+      operationId: postApiV1AuthRegisterBegin
+      security: []
+      responses:
+        "default":
+          description: |
+            See docs/api-contract.md for this endpoint's request and response
+            bodies. Every failure uses the Error schema below.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+  "/api/v1/auth/register/finish":
+    post:
+      operationId: postApiV1AuthRegisterFinish
+      security: []
+      responses:
+        "default":
+          description: |
+            See docs/api-contract.md for this endpoint's request and response
+            bodies. Every failure uses the Error schema below.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+  "/api/v1/auth/sessions":
+    get:
+      operationId: getApiV1AuthSessions
+      security:
+        - sessionCookie: []
+        - bearerToken: []
+      responses:
+        "default":
+          description: |
+            See docs/api-contract.md for this endpoint's request and response
+            bodies. Every failure uses the Error schema below.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+  "/api/v1/auth/sessions/{id}":
+    parameters:
+      - name: id
+        in: path
+        required: true
+        schema:
+          type: string
+    delete:
+      operationId: deleteApiV1AuthSessionsId
+      security:
+        - sessionCookie: []
+        - bearerToken: []
+      responses:
+        "default":
+          description: |
+            See docs/api-contract.md for this endpoint's request and response
+            bodies. Every failure uses the Error schema below.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+  "/api/v1/auth/status":
+    get:
+      operationId: getApiV1AuthStatus
+      security: []
+      responses:
+        "default":
+          description: |
+            See docs/api-contract.md for this endpoint's request and response
+            bodies. Every failure uses the Error schema below.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+  "/api/v1/auth/token":
+    post:
+      operationId: postApiV1AuthToken
+      security:
+        - appPassword: []
+      responses:
+        "default":
+          description: |
+            See docs/api-contract.md for this endpoint's request and response
+            bodies. Every failure uses the Error schema below.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+  "/api/v1/changes":
+    get:
+      operationId: getApiV1Changes
+      security:
+        - sessionCookie: []
+        - bearerToken: []
+      responses:
+        "default":
+          description: |
+            See docs/api-contract.md for this endpoint's request and response
+            bodies. Every failure uses the Error schema below.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+  "/api/v1/chunks/have":
+    post:
+      operationId: postApiV1ChunksHave
+      security:
+        - sessionCookie: []
+        - bearerToken: []
+      responses:
+        "default":
+          description: |
+            See docs/api-contract.md for this endpoint's request and response
+            bodies. Every failure uses the Error schema below.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+  "/api/v1/chunks/{hash}":
+    parameters:
+      - name: hash
+        in: path
+        required: true
+        schema:
+          type: string
+    get:
+      operationId: getApiV1ChunksHash
+      security:
+        - sessionCookie: []
+        - bearerToken: []
+      responses:
+        "default":
+          description: |
+            See docs/api-contract.md for this endpoint's request and response
+            bodies. Every failure uses the Error schema below.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+    put:
+      operationId: putApiV1ChunksHash
+      security:
+        - sessionCookie: []
+        - bearerToken: []
+      responses:
+        "default":
+          description: |
+            See docs/api-contract.md for this endpoint's request and response
+            bodies. Every failure uses the Error schema below.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+  "/api/v1/folders":
+    post:
+      operationId: postApiV1Folders
+      security:
+        - sessionCookie: []
+        - bearerToken: []
+      responses:
+        "default":
+          description: |
+            See docs/api-contract.md for this endpoint's request and response
+            bodies. Every failure uses the Error schema below.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+  "/api/v1/manifests":
+    post:
+      operationId: postApiV1Manifests
+      security:
+        - sessionCookie: []
+        - bearerToken: []
+      responses:
+        "default":
+          description: |
+            See docs/api-contract.md for this endpoint's request and response
+            bodies. Every failure uses the Error schema below.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+  "/api/v1/nodes/resolve":
+    get:
+      operationId: getApiV1NodesResolve
+      security:
+        - sessionCookie: []
+        - bearerToken: []
+      responses:
+        "default":
+          description: |
+            See docs/api-contract.md for this endpoint's request and response
+            bodies. Every failure uses the Error schema below.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+  "/api/v1/nodes/root":
+    get:
+      operationId: getApiV1NodesRoot
+      security:
+        - sessionCookie: []
+        - bearerToken: []
+      responses:
+        "default":
+          description: |
+            See docs/api-contract.md for this endpoint's request and response
+            bodies. Every failure uses the Error schema below.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+  "/api/v1/nodes/{id}":
+    parameters:
+      - name: id
+        in: path
+        required: true
+        schema:
+          type: string
+    get:
+      operationId: getApiV1NodesId
+      security:
+        - sessionCookie: []
+        - bearerToken: []
+      responses:
+        "default":
+          description: |
+            See docs/api-contract.md for this endpoint's request and response
+            bodies. Every failure uses the Error schema below.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+    patch:
+      operationId: patchApiV1NodesId
+      security:
+        - sessionCookie: []
+        - bearerToken: []
+      responses:
+        "default":
+          description: |
+            See docs/api-contract.md for this endpoint's request and response
+            bodies. Every failure uses the Error schema below.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+    delete:
+      operationId: deleteApiV1NodesId
+      security:
+        - sessionCookie: []
+        - bearerToken: []
+      responses:
+        "default":
+          description: |
+            See docs/api-contract.md for this endpoint's request and response
+            bodies. Every failure uses the Error schema below.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+  "/api/v1/nodes/{id}/children":
+    parameters:
+      - name: id
+        in: path
+        required: true
+        schema:
+          type: string
+    get:
+      operationId: getApiV1NodesIdChildren
+      security:
+        - sessionCookie: []
+        - bearerToken: []
+      responses:
+        "default":
+          description: |
+            See docs/api-contract.md for this endpoint's request and response
+            bodies. Every failure uses the Error schema below.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+  "/api/v1/nodes/{id}/content":
+    parameters:
+      - name: id
+        in: path
+        required: true
+        schema:
+          type: string
+    get:
+      operationId: getApiV1NodesIdContent
+      security:
+        - sessionCookie: []
+        - bearerToken: []
+      responses:
+        "default":
+          description: |
+            See docs/api-contract.md for this endpoint's request and response
+            bodies. Every failure uses the Error schema below.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+    head:
+      operationId: headApiV1NodesIdContent
+      security:
+        - sessionCookie: []
+        - bearerToken: []
+      responses:
+        "default":
+          description: |
+            See docs/api-contract.md for this endpoint's request and response
+            bodies. Every failure uses the Error schema below.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+  "/api/v1/nodes/{id}/manifest":
+    parameters:
+      - name: id
+        in: path
+        required: true
+        schema:
+          type: string
+    get:
+      operationId: getApiV1NodesIdManifest
+      security:
+        - sessionCookie: []
+        - bearerToken: []
+      responses:
+        "default":
+          description: |
+            See docs/api-contract.md for this endpoint's request and response
+            bodies. Every failure uses the Error schema below.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+  "/api/v1/nodes/{id}/shares":
+    parameters:
+      - name: id
+        in: path
+        required: true
+        schema:
+          type: string
+    post:
+      operationId: postApiV1NodesIdShares
+      security:
+        - sessionCookie: []
+        - bearerToken: []
+      responses:
+        "default":
+          description: |
+            See docs/api-contract.md for this endpoint's request and response
+            bodies. Every failure uses the Error schema below.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+  "/api/v1/nodes/{id}/tags":
+    parameters:
+      - name: id
+        in: path
+        required: true
+        schema:
+          type: string
+    get:
+      operationId: getApiV1NodesIdTags
+      security:
+        - sessionCookie: []
+        - bearerToken: []
+      responses:
+        "default":
+          description: |
+            See docs/api-contract.md for this endpoint's request and response
+            bodies. Every failure uses the Error schema below.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+    post:
+      operationId: postApiV1NodesIdTags
+      security:
+        - sessionCookie: []
+        - bearerToken: []
+      responses:
+        "default":
+          description: |
+            See docs/api-contract.md for this endpoint's request and response
+            bodies. Every failure uses the Error schema below.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+  "/api/v1/nodes/{id}/tags/{tag}":
+    parameters:
+      - name: id
+        in: path
+        required: true
+        schema:
+          type: string
+      - name: tag
+        in: path
+        required: true
+        schema:
+          type: string
+    delete:
+      operationId: deleteApiV1NodesIdTagsTag
+      security:
+        - sessionCookie: []
+        - bearerToken: []
+      responses:
+        "default":
+          description: |
+            See docs/api-contract.md for this endpoint's request and response
+            bodies. Every failure uses the Error schema below.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+  "/api/v1/nodes/{id}/versions":
+    parameters:
+      - name: id
+        in: path
+        required: true
+        schema:
+          type: string
+    get:
+      operationId: getApiV1NodesIdVersions
+      security:
+        - sessionCookie: []
+        - bearerToken: []
+      responses:
+        "default":
+          description: |
+            See docs/api-contract.md for this endpoint's request and response
+            bodies. Every failure uses the Error schema below.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+  "/api/v1/nodes/{id}/versions/{versionId}/content":
+    parameters:
+      - name: id
+        in: path
+        required: true
+        schema:
+          type: string
+      - name: versionId
+        in: path
+        required: true
+        schema:
+          type: string
+    get:
+      operationId: getApiV1NodesIdVersionsVersionIdContent
+      security:
+        - sessionCookie: []
+        - bearerToken: []
+      responses:
+        "default":
+          description: |
+            See docs/api-contract.md for this endpoint's request and response
+            bodies. Every failure uses the Error schema below.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+    head:
+      operationId: headApiV1NodesIdVersionsVersionIdContent
+      security:
+        - sessionCookie: []
+        - bearerToken: []
+      responses:
+        "default":
+          description: |
+            See docs/api-contract.md for this endpoint's request and response
+            bodies. Every failure uses the Error schema below.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+  "/api/v1/nodes/{id}/versions/{versionId}/restore":
+    parameters:
+      - name: id
+        in: path
+        required: true
+        schema:
+          type: string
+      - name: versionId
+        in: path
+        required: true
+        schema:
+          type: string
+    post:
+      operationId: postApiV1NodesIdVersionsVersionIdRestore
+      security:
+        - sessionCookie: []
+        - bearerToken: []
+      responses:
+        "default":
+          description: |
+            See docs/api-contract.md for this endpoint's request and response
+            bodies. Every failure uses the Error schema below.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+  "/api/v1/s/{token}":
+    parameters:
+      - name: token
+        in: path
+        required: true
+        schema:
+          type: string
+    get:
+      operationId: getApiV1SToken
+      security: []
+      responses:
+        "default":
+          description: |
+            See docs/api-contract.md for this endpoint's request and response
+            bodies. Every failure uses the Error schema below.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+  "/api/v1/s/{token}/content":
+    parameters:
+      - name: token
+        in: path
+        required: true
+        schema:
+          type: string
+    get:
+      operationId: getApiV1STokenContent
+      security: []
+      responses:
+        "default":
+          description: |
+            See docs/api-contract.md for this endpoint's request and response
+            bodies. Every failure uses the Error schema below.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+    head:
+      operationId: headApiV1STokenContent
+      security: []
+      responses:
+        "default":
+          description: |
+            See docs/api-contract.md for this endpoint's request and response
+            bodies. Every failure uses the Error schema below.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+  "/api/v1/s/{token}/unlock":
+    parameters:
+      - name: token
+        in: path
+        required: true
+        schema:
+          type: string
+    post:
+      operationId: postApiV1STokenUnlock
+      security: []
+      responses:
+        "default":
+          description: |
+            See docs/api-contract.md for this endpoint's request and response
+            bodies. Every failure uses the Error schema below.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+  "/api/v1/search":
+    get:
+      operationId: getApiV1Search
+      security:
+        - sessionCookie: []
+        - bearerToken: []
+      responses:
+        "default":
+          description: |
+            See docs/api-contract.md for this endpoint's request and response
+            bodies. Every failure uses the Error schema below.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+  "/api/v1/shares":
+    get:
+      operationId: getApiV1Shares
+      security:
+        - sessionCookie: []
+        - bearerToken: []
+      responses:
+        "default":
+          description: |
+            See docs/api-contract.md for this endpoint's request and response
+            bodies. Every failure uses the Error schema below.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+  "/api/v1/shares/{id}":
+    parameters:
+      - name: id
+        in: path
+        required: true
+        schema:
+          type: string
+    delete:
+      operationId: deleteApiV1SharesId
+      security:
+        - sessionCookie: []
+        - bearerToken: []
+      responses:
+        "default":
+          description: |
+            See docs/api-contract.md for this endpoint's request and response
+            bodies. Every failure uses the Error schema below.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+  "/api/v1/tags":
+    get:
+      operationId: getApiV1Tags
+      security:
+        - sessionCookie: []
+        - bearerToken: []
+      responses:
+        "default":
+          description: |
+            See docs/api-contract.md for this endpoint's request and response
+            bodies. Every failure uses the Error schema below.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+  "/api/v1/tags/{tag}":
+    parameters:
+      - name: tag
+        in: path
+        required: true
+        schema:
+          type: string
+    get:
+      operationId: getApiV1TagsTag
+      security:
+        - sessionCookie: []
+        - bearerToken: []
+      responses:
+        "default":
+          description: |
+            See docs/api-contract.md for this endpoint's request and response
+            bodies. Every failure uses the Error schema below.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+  "/api/v1/trash":
+    get:
+      operationId: getApiV1Trash
+      security:
+        - sessionCookie: []
+        - bearerToken: []
+      responses:
+        "default":
+          description: |
+            See docs/api-contract.md for this endpoint's request and response
+            bodies. Every failure uses the Error schema below.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+    delete:
+      operationId: deleteApiV1Trash
+      security:
+        - sessionCookie: []
+        - bearerToken: []
+      responses:
+        "default":
+          description: |
+            See docs/api-contract.md for this endpoint's request and response
+            bodies. Every failure uses the Error schema below.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+  "/api/v1/trash/{id}":
+    parameters:
+      - name: id
+        in: path
+        required: true
+        schema:
+          type: string
+    delete:
+      operationId: deleteApiV1TrashId
+      security:
+        - sessionCookie: []
+        - bearerToken: []
+      responses:
+        "default":
+          description: |
+            See docs/api-contract.md for this endpoint's request and response
+            bodies. Every failure uses the Error schema below.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+  "/api/v1/trash/{id}/restore":
+    parameters:
+      - name: id
+        in: path
+        required: true
+        schema:
+          type: string
+    post:
+      operationId: postApiV1TrashIdRestore
+      security:
+        - sessionCookie: []
+        - bearerToken: []
+      responses:
+        "default":
+          description: |
+            See docs/api-contract.md for this endpoint's request and response
+            bodies. Every failure uses the Error schema below.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+  "/api/v1/upload":
+    post:
+      operationId: postApiV1Upload
+      security:
+        - sessionCookie: []
+        - bearerToken: []
+      responses:
+        "default":
+          description: |
+            See docs/api-contract.md for this endpoint's request and response
+            bodies. Every failure uses the Error schema below.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+  "/api/v1/uploads":
+    post:
+      operationId: postApiV1Uploads
+      security:
+        - sessionCookie: []
+        - bearerToken: []
+      responses:
+        "default":
+          description: |
+            See docs/api-contract.md for this endpoint's request and response
+            bodies. Every failure uses the Error schema below.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+    options:
+      operationId: optionsApiV1Uploads
+      security: []
+      responses:
+        "default":
+          description: |
+            See docs/api-contract.md for this endpoint's request and response
+            bodies. Every failure uses the Error schema below.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+  "/api/v1/uploads/{id}":
+    parameters:
+      - name: id
+        in: path
+        required: true
+        schema:
+          type: string
+    head:
+      operationId: headApiV1UploadsId
+      security:
+        - sessionCookie: []
+        - bearerToken: []
+      responses:
+        "default":
+          description: |
+            See docs/api-contract.md for this endpoint's request and response
+            bodies. Every failure uses the Error schema below.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+    patch:
+      operationId: patchApiV1UploadsId
+      security:
+        - sessionCookie: []
+        - bearerToken: []
+      responses:
+        "default":
+          description: |
+            See docs/api-contract.md for this endpoint's request and response
+            bodies. Every failure uses the Error schema below.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+    delete:
+      operationId: deleteApiV1UploadsId
+      security:
+        - sessionCookie: []
+        - bearerToken: []
+      responses:
+        "default":
+          description: |
+            See docs/api-contract.md for this endpoint's request and response
+            bodies. Every failure uses the Error schema below.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+  "/api/v1/usage":
+    get:
+      operationId: getApiV1Usage
+      security:
+        - sessionCookie: []
+        - bearerToken: []
+      responses:
+        "default":
+          description: |
+            See docs/api-contract.md for this endpoint's request and response
+            bodies. Every failure uses the Error schema below.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+  "/api/v1/version":
+    get:
+      operationId: getApiV1Version
+      security: []
+      responses:
+        "default":
+          description: |
+            See docs/api-contract.md for this endpoint's request and response
+            bodies. Every failure uses the Error schema below.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+  "/healthz":
+    get:
+      operationId: getHealthz
+      security: []
+      responses:
+        "default":
+          description: |
+            See docs/api-contract.md for this endpoint's request and response
+            bodies. Every failure uses the Error schema below.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+  "/metrics":
+    get:
+      operationId: getMetrics
+      security: []
+      responses:
+        "default":
+          description: |
+            See docs/api-contract.md for this endpoint's request and response
+            bodies. Every failure uses the Error schema below.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+  "/readyz":
+    get:
+      operationId: getReadyz
+      security: []
+      responses:
+        "default":
+          description: |
+            See docs/api-contract.md for this endpoint's request and response
+            bodies. Every failure uses the Error schema below.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+
+# Routes registered by prefix rather than by method pattern. They are served
+# but are not OpenAPI operations; see the description above.
+x-prefix-routes:
+  - "/api/"
+  - "/dav"
+  - "/dav/"
+
+components:
+  securitySchemes:
+    sessionCookie:
+      type: apiKey
+      in: cookie
+      name: pc_session
+      description: Set by the WebAuthn, recovery-code and OIDC login flows.
+    bearerToken:
+      type: http
+      scheme: bearer
+      description: |
+        A device token from POST /api/v1/auth/token. Used by pcsync and other
+        headless clients.
+    appPassword:
+      type: http
+      scheme: basic
+      description: |
+        A username and an app password, which is shown once at creation and
+        stored argon2id-hashed. Accepted ONLY at POST /api/v1/auth/token and
+        over /dav — an app password cannot reach the rest of the JSON API, so a
+        leaked one cannot enrol a passkey or take the account.
+  schemas:
+    Error:
+      type: object
+      required: [error]
+      description: |
+        The shape of EVERY failure from every endpoint. Nested, not flat: a
+        client that reads "error" as a string will get an object and fail to
+        parse every error path. See the correction note in docs/api-contract.md.
+      properties:
+        error:
+          type: object
+          required: [code, message]
+          properties:
+            code:
+              type: string
+              description: Stable and safe to branch on.
+              examples: [not_found, unauthenticated, rate_limited]
+            message:
+              type: string
+              description: Human text. May be reworded; do not branch on it.
+            request_id:
+              type: string
+              description: Echoed in the X-Request-Id header.
+    Node:
+      type: object
+      description: |
+        A file or folder, returned wherever either appears. Absent fields are
+        omitted rather than null. Storage detail (blob keys, internal version
+        ids) is deliberately not exposed.
+      required: [id, kind, name, path, created_at, updated_at]
+      properties:
+        id: {type: string, format: uuid}
+        kind: {type: string, enum: [file, folder]}
+        name: {type: string}
+        path: {type: string}
+        parent_id:
+          type: string
+          format: uuid
+          description: Absent on the root.
+        created_at: {type: string, format: date-time}
+        updated_at: {type: string, format: date-time}
+        size:
+          type: integer
+          description: Files only.
+        mime:
+          type: string
+          description: Files only.
+        sha256:
+          type: string
+          description: |
+            Whole-blob files only. A node carries sha256 XOR blake3, never both —
+            the key names the algorithm, and a client verifying a download must
+            run the one it was given.
+        blake3:
+          type: string
+          description: Chunked (manifest-backed) files only. See sha256.
+        trashed_at:
+          type: string
+          format: date-time
+          description: Present only on trashed nodes.
