@@ -38,6 +38,12 @@ var (
 	ErrMissingChunk = errors.New("manifest references a chunk that is not stored")
 	// ErrChunkNotFound is a read of a chunk that is not stored.
 	ErrChunkNotFound = errors.New("chunk not found")
+	// ErrContentHashMismatch is a manifest commit whose named chunks do not
+	// reassemble to the whole-file hash the client declared. Distinct from
+	// ErrHashMismatch, which is about one chunk: this one is about the file they
+	// compose, and the two have very different causes — a corrupt transfer versus
+	// a client asserting an identity that is not its content's.
+	ErrContentHashMismatch = errors.New("chunks do not reassemble to the declared content hash")
 )
 
 // Entry is one chunk of a manifest as the delta protocol exposes it: the address
@@ -109,6 +115,46 @@ func (s *Store) ReadChunkStored(ctx context.Context, hash [32]byte) (stored []by
 		return nil, "", 0, err
 	}
 	return stored, compression, size, nil
+}
+
+// verifyContentHash recomputes a file's whole-file BLAKE3 from the chunks a
+// client named, in the order it named them.
+//
+// It reproduces exactly what the chunker does on the streaming path — hash the
+// plaintext of every chunk in order, into one BLAKE3 — so the two upload paths
+// agree on what a file's identity is. If they did not, an identical file
+// uploaded two ways would fail to dedup, and worse, would carry two different
+// keys into every derived table.
+//
+// Each chunk is re-verified against its own address on the way through. Its
+// bytes were checked when they were stored, but a commit is precisely the moment
+// a caller asserts what a file contains, and rot between the two would otherwise
+// be blessed here as a valid file.
+func (s *Store) verifyContentHash(ctx context.Context, expected [32]byte, hashes [][32]byte) error {
+	whole := blake3.New()
+	for _, h := range hashes {
+		stored, compression, size, err := s.ReadChunkStored(ctx, h)
+		if err != nil {
+			return err
+		}
+		plain, err := Decompress(stored, compression, size)
+		if err != nil {
+			return err
+		}
+		if got := blake3.Sum256(plain); got != h {
+			return fmt.Errorf("chunk %x failed verification: content hashes to %x", h, got)
+		}
+		if _, err := whole.Write(plain); err != nil {
+			return err
+		}
+	}
+
+	var got [32]byte
+	copy(got[:], whole.Sum(nil))
+	if got != expected {
+		return ErrContentHashMismatch
+	}
+	return nil
 }
 
 // HasChunks reports which of the given hashes are already stored, so a client
@@ -201,11 +247,12 @@ func (s *Store) PutChunk(ctx context.Context, expected [32]byte, plain []byte) (
 // manifest, ready for a file version to reference.
 //
 // Offsets and total size come from the chunks' own recorded sizes, never the
-// client's claim: the client supplies the order and the whole-file hash, the
-// server owns the geometry. A referenced chunk that was never uploaded is
-// rejected up front rather than as a raw foreign-key error. An identical live
-// manifest is reused (whole-file dedup), exactly as streaming Write does.
-// Returns the manifest and whether it was reused.
+// client's claim: the client supplies the ORDER, and the server owns everything
+// else — the geometry and, since verifyContentHash below, the identity. A
+// referenced chunk that was never uploaded is rejected up front rather than as a
+// raw foreign-key error. An identical live manifest is reused (whole-file
+// dedup), exactly as streaming Write does. Returns the manifest and whether it
+// was reused.
 func (s *Store) CommitManifest(ctx context.Context, contentHash [32]byte, hashes [][32]byte) (*Manifest, bool, error) {
 	if len(hashes) == 0 {
 		return nil, false, ErrEmptyManifest
@@ -249,6 +296,26 @@ func (s *Store) CommitManifest(ctx context.Context, contentHash [32]byte, hashes
 		total += int64(sz)
 	}
 	chunkCount := len(hashes)
+
+	// The client's whole-file hash is VERIFIED against the chunks it named,
+	// before the reuse lookup below and before any row is written.
+	//
+	// Everything downstream treats content_hash as the identity of the bytes:
+	// dedup joins on it, and doc_text, doc_embedding, media_meta and media_variant
+	// are all keyed by it. Taking it on trust made it a capability rather than a
+	// checksum. GET /nodes/{id}/manifest hands a file's hash, size and chunk count
+	// to anyone who can read it — including a grantee whose access is later
+	// revoked — and the reuse branch below matches on exactly those three, so a
+	// caller could name any chunks summing to that size and be handed back the
+	// EXISTING manifest, and with it the whole of somebody else's file.
+	//
+	// The chunks are already on local disk, so this is a local read, not a
+	// transfer: the delta protocol still moves only what changed. PutChunk
+	// verifies each chunk against its own address; this is the same rule applied
+	// to the whole they compose, and it is the only place it can be applied.
+	if err := s.verifyContentHash(ctx, contentHash, hashes); err != nil {
+		return nil, false, err
+	}
 
 	// Reuse a live identical manifest. Only manifests a live version references
 	// are candidates — an orphan may be mid-delete by GC.

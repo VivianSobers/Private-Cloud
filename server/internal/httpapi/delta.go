@@ -246,6 +246,13 @@ func (s *Server) handleCommitManifest(w http.ResponseWriter, r *http.Request) {
 
 	node, err := s.files.PutManifestFile(r.Context(), CurrentUser(r.Context()).ID, parentID, name, contentHash, hashes, req.MIME)
 	switch {
+	case errors.Is(err, cas.ErrContentHashMismatch):
+		// The named chunks do not reassemble to the declared hash. For an honest
+		// client this means its local chunking and the server's disagree, which is
+		// worth saying plainly rather than hiding behind a generic 400.
+		writeError(w, r, http.StatusBadRequest, "content_hash_mismatch",
+			"the named chunks do not reassemble to the declared content_hash")
+		return
 	case errors.Is(err, cas.ErrMissingChunk):
 		writeError(w, r, http.StatusBadRequest, "missing_chunk", "a referenced chunk has not been uploaded")
 		return

@@ -119,6 +119,74 @@ func TestDeltaUploadRoundTrips(t *testing.T) {
 	}
 }
 
+// TestCommitVerifiesTheWholeFileHash is the file-level counterpart to
+// TestPutChunkVerifiesAddress, and it guards a sharper edge.
+//
+// content_hash is not a checksum here, it is an IDENTITY: dedup joins on it, and
+// doc_text, doc_embedding, media_meta and media_variant are all keyed by it. So a
+// commit that could declare an arbitrary hash could claim another file's derived
+// content — and, through the reuse branch, that file's manifest outright.
+func TestCommitVerifiesTheWholeFileHash(t *testing.T) {
+	_, store := casFixture(t)
+	data := casData(200<<10, 11)
+	hashes, content := splitToChunks(t, store, data)
+
+	wrong := content
+	wrong[0] ^= 0xff
+	if _, _, err := store.CommitManifest(t.Context(), wrong, hashes); !errors.Is(err, cas.ErrContentHashMismatch) {
+		t.Errorf("commit with a wrong content hash = %v, want ErrContentHashMismatch", err)
+	}
+
+	// Reordering the same chunks is a different file, and so a different hash.
+	// Without whole-file verification this would have passed: the chunks all
+	// exist, the total size is identical and so is the count.
+	shuffled := make([][32]byte, len(hashes))
+	copy(shuffled, hashes)
+	shuffled[0], shuffled[len(shuffled)-1] = shuffled[len(shuffled)-1], shuffled[0]
+	if _, _, err := store.CommitManifest(t.Context(), content, shuffled); !errors.Is(err, cas.ErrContentHashMismatch) {
+		t.Errorf("commit with reordered chunks = %v, want ErrContentHashMismatch", err)
+	}
+
+	// The honest commit still works, and still dedups.
+	if _, _, err := store.CommitManifest(t.Context(), content, hashes); err != nil {
+		t.Fatalf("the correct commit was refused: %v", err)
+	}
+}
+
+// TestCommitCannotClaimAnotherFilesManifest is the attack the verification
+// exists to stop, written out end to end.
+//
+// The reuse branch matches on (content_hash, total_size, chunk_count). All three
+// are readable by anyone who can open the file — GET /nodes/{id}/manifest hands
+// them over — and access can be revoked afterwards while the knowledge cannot.
+// Chunks of a chosen size are trivial to manufacture, so before this fix the
+// three together were enough to be handed the victim's manifest id.
+func TestCommitCannotClaimAnotherFilesManifest(t *testing.T) {
+	_, store := casFixture(t)
+
+	victim := casData(120<<10, 12)
+	victimHashes, victimContent := splitToChunks(t, store, victim)
+	victimManifest, _, err := store.CommitManifest(t.Context(), victimContent, victimHashes)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// The attacker's own chunks: different bytes, and they do not reassemble to
+	// the victim's hash. Their count and total size are irrelevant now, which is
+	// the point — the match no longer turns on properties that are cheap to forge.
+	attacker := casData(120<<10, 13)
+	attackerHashes, _ := splitToChunks(t, store, attacker)
+
+	m, reused, err := store.CommitManifest(t.Context(), victimContent, attackerHashes)
+	if !errors.Is(err, cas.ErrContentHashMismatch) {
+		t.Fatalf("claiming another file's content hash = (%v, reused=%v, err=%v), want ErrContentHashMismatch",
+			m, reused, err)
+	}
+	if m != nil && m.ID == victimManifest.ID {
+		t.Fatal("a forged commit was handed the victim's manifest")
+	}
+}
+
 func TestCommitRejectsMissingChunk(t *testing.T) {
 	_, store := casFixture(t)
 	// A hash for content the server was never given.
