@@ -136,9 +136,18 @@ func (s *Store) ReplaceFaces(ctx context.Context, ownerID, nodeID uuid.UUID, mod
 	return s.ClusterUnassignedFaces(ctx, ownerID, model)
 }
 
+// cluster is a person's running centroid and how many faces it averages.
+//
+// The count is what makes the centroid update honest — see the note on the
+// assignment loop below.
+type cluster struct {
+	centroid []float32
+	count    int
+}
+
 // ClusterUnassignedFaces assigns every unclustered face to a person.
 func (s *Store) ClusterUnassignedFaces(ctx context.Context, ownerID uuid.UUID, model string) error {
-	centroids, err := s.personCentroids(ctx, ownerID, model)
+	clusters, err := s.personCentroids(ctx, ownerID, model)
 	if err != nil {
 		return err
 	}
@@ -179,8 +188,8 @@ func (s *Store) ClusterUnassignedFaces(ctx context.Context, ownerID uuid.UUID, m
 
 	for _, p := range todo {
 		bestID, bestScore := uuid.Nil, FaceMatchThreshold
-		for personID, centroid := range centroids {
-			if score := embed.Cosine(p.vec, centroid); score > bestScore {
+		for personID, c := range clusters {
+			if score := embed.Cosine(p.vec, c.centroid); score > bestScore {
 				bestID, bestScore = personID, score
 			}
 		}
@@ -197,7 +206,7 @@ func (s *Store) ClusterUnassignedFaces(ctx context.Context, ownerID uuid.UUID, m
 				RETURNING person_id`, ownerID, p.id).Scan(&bestID); err != nil {
 				return err
 			}
-			centroids[bestID] = p.vec
+			clusters[bestID] = &cluster{centroid: p.vec, count: 1}
 			continue
 		}
 
@@ -207,25 +216,41 @@ func (s *Store) ClusterUnassignedFaces(ctx context.Context, ownerID uuid.UUID, m
 		}
 		// The centroid moves toward the face just added, so a cluster tracks a
 		// person across lighting and age rather than being pinned to whichever
-		// photo happened to arrive first.
-		centroids[bestID] = meanVector(centroids[bestID], p.vec)
+		// photo happened to arrive first — but it moves by 1/(n+1), not halfway.
+		//
+		// An unweighted midpoint made every new face worth as much as the entire
+		// cluster it joined, so one borderline match dragged a hundred-photo
+		// centroid halfway to itself. That is how a cluster drifts off the person
+		// it is supposed to be: the next face matches the drifted centroid rather
+		// than anyone in particular, and the error compounds one photo at a time
+		// until a named cluster is full of strangers. Naming is a promise, and
+		// this is the arithmetic that has to keep it.
+		c := clusters[bestID]
+		c.centroid = weightedMean(c.centroid, c.count, p.vec)
+		c.count++
 	}
 	return nil
 }
 
-// personCentroids computes the mean vector of each cluster.
-func (s *Store) personCentroids(ctx context.Context, ownerID uuid.UUID, model string) (map[uuid.UUID][]float32, error) {
+// personCentroids computes each cluster's mean vector and its size.
+//
+// The size is returned, not discarded: it is what lets the assignment loop move
+// a centroid by 1/(n+1) rather than halfway. An ORDER BY on the scan so that a
+// library past MaxFaceScan truncates deterministically — an arbitrary subset
+// would make clustering depend on Postgres's row order, which is to say on
+// nothing.
+func (s *Store) personCentroids(ctx context.Context, ownerID uuid.UUID, model string) (map[uuid.UUID]*cluster, error) {
 	rows, err := s.pool.Query(ctx, `
 		SELECT person_id, vector FROM faces
 		WHERE owner_id = $1 AND model = $2 AND person_id IS NOT NULL
+		ORDER BY person_id, detected_at, seq
 		LIMIT $3`, ownerID, model, MaxFaceScan)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
 
-	sums := map[uuid.UUID][]float32{}
-	counts := map[uuid.UUID]int{}
+	out := map[uuid.UUID]*cluster{}
 	for rows.Next() {
 		var (
 			id  uuid.UUID
@@ -235,39 +260,35 @@ func (s *Store) personCentroids(ctx context.Context, ownerID uuid.UUID, model st
 			return nil, err
 		}
 		v := embed.Unpack(raw)
-		if cur, ok := sums[id]; ok {
-			for i := range cur {
-				if i < len(v) {
-					cur[i] += v[i]
-				}
-			}
-		} else {
+		c, ok := out[id]
+		if !ok {
 			cp := make([]float32, len(v))
 			copy(cp, v)
-			sums[id] = cp
+			out[id] = &cluster{centroid: cp, count: 1}
+			continue
 		}
-		counts[id]++
+		// A running mean rather than sum-then-divide: the vectors are float32 and
+		// a cluster can hold thousands, so a sum is the one place this loses
+		// precision for no reason.
+		c.centroid = weightedMean(c.centroid, c.count, v)
+		c.count++
 	}
-	if err := rows.Err(); err != nil {
-		return nil, err
-	}
-
-	for id, sum := range sums {
-		n := float32(counts[id])
-		for i := range sum {
-			sum[i] /= n
-		}
-	}
-	return sums, nil
+	return out, rows.Err()
 }
 
-func meanVector(a, b []float32) []float32 {
-	out := make([]float32, len(a))
-	for i := range a {
-		if i < len(b) {
-			out[i] = (a[i] + b[i]) / 2
+// weightedMean folds one more vector into a mean of n, moving it by 1/(n+1).
+//
+// Deliberately not a midpoint. Averaging a cluster's centroid with a single new
+// face makes that face worth as much as everyone already in the cluster, which
+// is only correct when the cluster has exactly one member.
+func weightedMean(mean []float32, n int, v []float32) []float32 {
+	out := make([]float32, len(mean))
+	w := float32(n)
+	for i := range mean {
+		if i < len(v) {
+			out[i] = (mean[i]*w + v[i]) / (w + 1)
 		} else {
-			out[i] = a[i]
+			out[i] = mean[i]
 		}
 	}
 	return out
