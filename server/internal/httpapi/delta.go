@@ -207,7 +207,20 @@ func (s *Server) handlePutChunk(w http.ResponseWriter, r *http.Request) {
 	r.Body = http.MaxBytesReader(w, r.Body, cas.MaxChunkSize+1)
 	plain, err := io.ReadAll(r.Body)
 	if err != nil {
-		writeError(w, r, http.StatusRequestEntityTooLarge, "too_large", "chunk exceeds the maximum chunk size")
+		// Only a MaxBytesError is "too large". Every read failure was reported as
+		// one, so a client whose connection dropped mid-chunk was told its chunk
+		// exceeded the maximum size — a permanent, unfixable condition — and a
+		// sync client that believes that has no move except to give up on the
+		// file, on this attempt and on every retry after it. A truncated body is
+		// a transient worth retrying, and now says so.
+		var maxErr *http.MaxBytesError
+		if errors.As(err, &maxErr) {
+			writeError(w, r, http.StatusRequestEntityTooLarge, "too_large",
+				"chunk exceeds the maximum chunk size")
+			return
+		}
+		writeError(w, r, http.StatusBadRequest, "incomplete_body",
+			"the chunk body could not be read in full; retry")
 		return
 	}
 
