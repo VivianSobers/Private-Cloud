@@ -167,6 +167,22 @@ func (s *Service) Upload(ctx context.Context, ownerID, parentID uuid.UUID, name 
 		return nil, err
 	}
 
+	// Refuse an owner who is ALREADY at their limit before reading a byte.
+	//
+	// The authoritative check is still inside PutFile's transaction, because only
+	// there is the final size known and only there is it free of a race. But that
+	// check happens after the whole stream has been written to disk, so an account
+	// with no room could push 5 GiB through the pool on every request and have it
+	// reclaimed by GC afterwards — the writes are real, repeatable and cost
+	// nothing to the caller.
+	//
+	// This cannot bound a single upload, since the stream's length is unknown
+	// here; it bounds the repeat. Once the first one lands the account is over,
+	// and every subsequent attempt is refused before it touches the disk.
+	if err := s.checkQuotaFor(ctx, ownerID, 0); err != nil {
+		return nil, err
+	}
+
 	if s.cas != nil {
 		head := make([]byte, cas.WholeFileThreshold)
 		n, err := io.ReadFull(r, head)
