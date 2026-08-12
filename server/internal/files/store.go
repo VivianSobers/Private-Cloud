@@ -169,21 +169,61 @@ func (s *Store) ListTrash(ctx context.Context, ownerID uuid.UUID) ([]*Node, erro
 	return scanNodes(rows)
 }
 
+// usageBytes is the accounting every "how much is this owner using" question
+// answers from, so a quota refusal and the number shown next to it can never
+// disagree.
+//
+// Two properties it has to have, and each was got wrong by an earlier form:
+//
+//   - It counts SUPERSEDED VERSIONS, not only head versions. With KeepVersions
+//     at 25 and a 90-day retention, a genuinely-changing file kept two dozen
+//     older copies that cost real disk and were charged to nobody.
+//   - It counts each distinct CONTENT once. That is what makes the above
+//     survivable: with content addressing, a file saved fifty times without
+//     changing is one copy on disk, so charging fifty would invent usage that
+//     does not exist. DISTINCT ON over the content hash is the same identity
+//     dedup itself uses.
+//
+// The ORDER BY picks which bucket shared content lands in: a live head first,
+// then any head, then whatever is left. So a file that is both current and
+// present in an older version is reported as live, once — never split across
+// two buckets and never counted twice.
+const usageBytes = `
+	WITH content AS (
+		SELECT DISTINCT ON (coalesce(b.sha256, m.content_hash))
+		       v.size                                AS size,
+		       v.id = n.head_version_id              AS is_head,
+		       n.trashed_at IS NOT NULL              AS trashed
+		FROM nodes n
+		JOIN file_versions v  ON v.node_id = n.id
+		LEFT JOIN blobs b     ON b.id = v.blob_id
+		LEFT JOIN manifests m ON m.id = v.manifest_id
+		WHERE n.owner_id = $1 AND n.kind = 'file'
+		ORDER BY coalesce(b.sha256, m.content_hash),
+		         (v.id = n.head_version_id AND n.trashed_at IS NULL) DESC,
+		         (v.id = n.head_version_id) DESC
+	)
+	SELECT
+		coalesce(sum(size) FILTER (WHERE is_head AND NOT trashed), 0),
+		coalesce(sum(size) FILTER (WHERE is_head AND trashed), 0),
+		coalesce(sum(size) FILTER (WHERE NOT is_head), 0)
+	FROM content`
+
 func (s *Store) Usage(ctx context.Context, ownerID uuid.UUID) (Usage, error) {
 	var u Usage
-	err := s.pool.QueryRow(ctx, `
-		SELECT
-			coalesce(sum(v.size) FILTER (WHERE n.trashed_at IS NULL), 0),
-			coalesce(sum(v.size) FILTER (WHERE n.trashed_at IS NOT NULL), 0),
-			count(*)             FILTER (WHERE n.trashed_at IS NULL)
-		FROM nodes n
-		JOIN file_versions v ON v.id = n.head_version_id
-		WHERE n.owner_id = $1 AND n.kind = 'file'`, ownerID,
-	).Scan(&u.LiveBytes, &u.TrashBytes, &u.FileCount)
-	if err != nil {
+	if err := s.pool.QueryRow(ctx, usageBytes, ownerID).
+		Scan(&u.LiveBytes, &u.TrashBytes, &u.VersionBytes); err != nil {
 		return u, err
 	}
-	err = s.pool.QueryRow(ctx, `SELECT quota_bytes FROM users WHERE id = $1`, ownerID).Scan(&u.QuotaBytes)
+	// File count is nodes, not content: two identical files are two files to the
+	// person looking at them, however few bytes they cost.
+	if err := s.pool.QueryRow(ctx, `
+		SELECT count(*) FROM nodes
+		WHERE owner_id = $1 AND kind = 'file' AND trashed_at IS NULL`, ownerID).
+		Scan(&u.FileCount); err != nil {
+		return u, err
+	}
+	err := s.pool.QueryRow(ctx, `SELECT quota_bytes FROM users WHERE id = $1`, ownerID).Scan(&u.QuotaBytes)
 	return u, err
 }
 
@@ -373,16 +413,18 @@ func checkQuota(ctx context.Context, tx pgx.Tx, ownerID uuid.UUID, adding int64)
 		return nil // unlimited
 	}
 
-	var used int64
-	if err := tx.QueryRow(ctx, `
-		SELECT coalesce(sum(v.size), 0)
-		FROM nodes n JOIN file_versions v ON v.id = n.head_version_id
-		WHERE n.owner_id = $1 AND n.kind = 'file'`, ownerID).Scan(&used); err != nil {
+	// The SAME accounting the usage endpoint reports, down to the query text.
+	// Two definitions of "used" is how a user gets refused at 4 GiB while their
+	// storage page shows 2, with nothing on either screen to explain it.
+	//
+	// Trashed files count, because they still occupy the disk and a quota that
+	// ignores them lets someone store twice their allowance by never emptying the
+	// trash. Retained older versions count for exactly the same reason.
+	var live, trashed, versions int64
+	if err := tx.QueryRow(ctx, usageBytes, ownerID).Scan(&live, &trashed, &versions); err != nil {
 		return err
 	}
-	// Trashed files count. They still occupy the disk, and a quota that ignores
-	// them lets a user store twice their allowance by never emptying the trash.
-	if used+adding > *quota {
+	if live+trashed+versions+adding > *quota {
 		return ErrQuota
 	}
 	return nil

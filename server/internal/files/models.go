@@ -84,17 +84,27 @@ func (n *Node) IsRoot() bool    { return n.ParentID == nil }
 
 // Usage is the quota picture for one user.
 type Usage struct {
-	// LiveBytes counts files outside the trash.
+	// LiveBytes counts the current content of files outside the trash.
 	LiveBytes int64
 	// TrashBytes counts files in the trash. Reported separately because
 	// "delete something to free space" is only true once the trash is emptied,
 	// and hiding that makes the number look like a lie.
 	TrashBytes int64
-	FileCount  int64
-	QuotaBytes *int64
+	// VersionBytes counts superseded versions still held by the retention policy
+	// — content no longer current but not yet pruned. Reported separately for the
+	// same reason trash is: it is real disk, and it is freed by a different
+	// action (waiting, or an operator lowering the retention) than emptying the
+	// trash. Deduplicated against the other two, so a file saved many times
+	// without changing contributes nothing here, which is what CAS buys.
+	VersionBytes int64
+	FileCount    int64
+	QuotaBytes   *int64
 }
 
-func (u Usage) TotalBytes() int64 { return u.LiveBytes + u.TrashBytes }
+// TotalBytes is what a quota is measured against: everything this owner is
+// keeping on the disk, whether it is current, deleted-but-recoverable, or an
+// older version being retained.
+func (u Usage) TotalBytes() int64 { return u.LiveBytes + u.TrashBytes + u.VersionBytes }
 
 // --- names ------------------------------------------------------------------
 

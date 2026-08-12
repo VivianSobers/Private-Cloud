@@ -267,8 +267,13 @@ func (s *Server) handleUsage(w http.ResponseWriter, r *http.Request) {
 	body := map[string]any{
 		"live_bytes":  usage.LiveBytes,
 		"trash_bytes": usage.TrashBytes,
-		"total_bytes": usage.TotalBytes(),
-		"file_count":  usage.FileCount,
+		// Retained older versions, broken out rather than folded into live_bytes.
+		// They are freed by a different action than the other two — waiting, or an
+		// operator lowering the retention — so a client that only showed the total
+		// could not tell someone what to do about it.
+		"version_bytes": usage.VersionBytes,
+		"total_bytes":   usage.TotalBytes(),
+		"file_count":    usage.FileCount,
 	}
 	if usage.QuotaBytes != nil {
 		body["quota_bytes"] = *usage.QuotaBytes

@@ -11,6 +11,7 @@ package files_test
 import (
 	"errors"
 	"io"
+	"strings"
 	"testing"
 	"time"
 
@@ -178,6 +179,51 @@ func TestOpenVersionServesHistoricalBytes(t *testing.T) {
 	}
 	if string(tail) != old[4:12] {
 		t.Errorf("seeked read = %q, want %q", tail, old[4:12])
+	}
+}
+
+// TestRetainedVersionsCountTowardsUsage closes the gap between what the
+// retention policy keeps and what the quota measures.
+//
+// Usage and checkQuota both counted head versions only, so with KeepVersions at
+// 25 and a 90-day retention a genuinely-changing file kept two dozen older
+// copies that occupied real disk and were charged to nobody. The dedup half is
+// what makes charging for them fair: a file saved fifty times without changing
+// is one copy on disk, so it must cost one copy's worth and not fifty.
+func TestRetainedVersionsCountTowardsUsage(t *testing.T) {
+	f := newFixture(t)
+
+	f.upload(f.root, "doc.txt", strings.Repeat("a", 1000))
+	f.upload(f.root, "doc.txt", strings.Repeat("b", 2000))
+
+	u, err := f.store.Usage(f.ctx, f.user)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if u.LiveBytes != 2000 {
+		t.Errorf("live = %d, want the current 2000 bytes", u.LiveBytes)
+	}
+	if u.VersionBytes != 1000 {
+		t.Errorf("version bytes = %d, want the superseded 1000", u.VersionBytes)
+	}
+	if u.TotalBytes() != 3000 {
+		t.Errorf("total = %d, want 3000 — what is actually on the disk", u.TotalBytes())
+	}
+	if u.FileCount != 1 {
+		t.Errorf("file count = %d, want 1 — versions are not files", u.FileCount)
+	}
+
+	// Saving the same bytes again holds nothing new. Content addressing means the
+	// second save shares storage with the first, and charging for it would invent
+	// usage that does not exist.
+	f.upload(f.root, "doc.txt", strings.Repeat("b", 2000))
+	after, err := f.store.Usage(f.ctx, f.user)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if after.TotalBytes() != u.TotalBytes() {
+		t.Errorf("re-saving identical content changed usage from %d to %d",
+			u.TotalBytes(), after.TotalBytes())
 	}
 }
 
