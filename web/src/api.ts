@@ -94,6 +94,42 @@ export interface Access {
   shared: boolean;
 }
 
+/** A cluster of faces the server believes are the same person. Unnamed until a
+ *  user names it; `name` is absent (never "") when nobody has. */
+export interface Person {
+  id: string;
+  face_count: number;
+  created_at: string;
+  name?: string;
+  cover_node_id?: string;
+}
+
+/** One document a chat answer drew on. Citations are mandatory — an answer over
+ *  your files that can't say which file is unverifiable. */
+export interface Citation {
+  node_id: string;
+  path: string;
+  name: string;
+  chunk_seq: number;
+  score: number;
+}
+
+/** The answer to a question over the library. `answer` is present only when a
+ *  generator produced one; otherwise `answer_unavailable` says why, and the
+ *  citations are the trustworthy retrieval-only result. */
+export interface ChatResponse {
+  question: string;
+  citations: Citation[];
+  answer?: string;
+  model?: string;
+  answer_unavailable?: "no_matching_documents" | "generation_disabled" | "generation_unavailable";
+}
+
+/** A file the server judges similar to another, with its similarity score. */
+export interface SimilarHit extends Node {
+  score?: number;
+}
+
 /** A user account, as seen by an admin. */
 export interface AdminUser {
   id: string;
@@ -557,6 +593,43 @@ export const api = {
     const q = p.toString();
     return request<{ entries: AuditEntry[]; has_more?: boolean }>(`/api/v1/admin/audit${q ? `?${q}` : ""}`);
   },
+
+  // --- people, similar, chat (Phase 8) --------------------------------------
+
+  people: () => request<{ people: Person[] }>("/api/v1/people"),
+
+  person: (id: string) => request<{ person: Person; items: Node[] }>(`/api/v1/people/${id}`),
+
+  namePerson: (id: string, name: string) =>
+    request<{ person: Person }>(`/api/v1/people/${id}`, {
+      method: "PATCH",
+      body: JSON.stringify({ name }),
+    }),
+
+  mergePerson: (id: string, into: string) =>
+    request<{ status: string; into: string }>(`/api/v1/people/${id}/merge`, {
+      method: "POST",
+      body: JSON.stringify({ into }),
+    }),
+
+  deletePerson: (id: string) =>
+    request<{ status: string }>(`/api/v1/people/${id}`, { method: "DELETE" }),
+
+  similar: (id: string) =>
+    request<{ results: SimilarHit[]; count: number }>(`/api/v1/nodes/${id}/similar`),
+
+  // Ask a question over the library. Retrieval always returns citations; a written
+  // answer comes back only when a generator is configured (else answer_unavailable).
+  chat: (question: string, opts: { under?: string; includeShared?: boolean; limit?: number } = {}) =>
+    request<ChatResponse>("/api/v1/chat", {
+      method: "POST",
+      body: JSON.stringify({
+        question,
+        scope: { under: opts.under ?? "" },
+        include_shared: opts.includeShared ?? false,
+        limit: opts.limit,
+      }),
+    }),
 
   // --- versions -------------------------------------------------------------
 
