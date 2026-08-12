@@ -91,13 +91,44 @@ func (r *statusRecorder) Hijack() (net.Conn, *bufio.ReadWriter, error) {
 func withRequestID(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		id := r.Header.Get("X-Request-Id")
-		if id == "" || len(id) > 64 {
+		if !usableRequestID(id) {
 			id = newRequestID()
 		}
 		w.Header().Set("X-Request-Id", id)
 		ctx := context.WithValue(r.Context(), requestIDKey, id)
 		next.ServeHTTP(w, r.WithContext(ctx))
 	})
+}
+
+// usableRequestID reports whether an inbound correlation id may be adopted.
+//
+// Length was the only check, so any 64 bytes a client chose were echoed into the
+// response header, into every log line for the request, and into the request_id
+// field of every error body. Go sanitises header values, so this was never
+// response splitting — it was a value from an untrusted source appearing in
+// three places that all look authoritative, and the correlation id is precisely
+// the field an operator trusts without thinking, since its whole purpose is to
+// be quoted back by a user and grepped for.
+//
+// The charset is what a correlation id can legitimately be: hex from this
+// server, and the alphanumerics-with-separators that W3C trace ids and the usual
+// proxies emit. Anything outside it — spaces, quotes, newlines, ANSI escapes,
+// non-ASCII — is not a request id and is replaced with one of ours rather than
+// carried.
+func usableRequestID(id string) bool {
+	if id == "" || len(id) > 64 {
+		return false
+	}
+	for i := 0; i < len(id); i++ {
+		c := id[i]
+		switch {
+		case c >= 'a' && c <= 'z', c >= 'A' && c <= 'Z', c >= '0' && c <= '9':
+		case c == '-', c == '_', c == '.':
+		default:
+			return false
+		}
+	}
+	return true
 }
 
 func newRequestID() string {

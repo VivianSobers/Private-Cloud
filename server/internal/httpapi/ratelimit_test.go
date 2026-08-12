@@ -183,3 +183,34 @@ func TestRecoverySessionPathAllowlist(t *testing.T) {
 		}
 	}
 }
+
+// The inbound correlation id is adopted into the response header, into every log
+// line for the request, and into the request_id of every error body. Length was
+// the only check, so any 64 bytes a client chose appeared in all three — and the
+// correlation id is exactly the field an operator trusts without thinking, since
+// its whole purpose is to be quoted back by a user and grepped for.
+func TestUsableRequestID(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		id   string
+		want bool
+	}{
+		{"our own format", "a3f9c81d4e2b7a6f0c15d833", true},
+		{"a w3c trace id", "4bf92f3577b34da6a3ce929d0e0e4736", true},
+		{"separators proxies use", "req-01.abc_DEF", true},
+
+		{"empty", "", false},
+		{"too long", string(make([]byte, 65)), false},
+		{"a space", "req 1", false},
+		{"a newline", "req\n1", false},
+		{"a carriage return", "req\r1", false},
+		{"an ansi escape", "req\x1b[31m", false},
+		{"a quote", `req"1`, false},
+		{"non-ascii", "reqé", false},
+		{"json punctuation", `{"a":1}`, false},
+	} {
+		if got := usableRequestID(tc.id); got != tc.want {
+			t.Errorf("%s: usableRequestID(%q) = %v, want %v", tc.name, tc.id, got, tc.want)
+		}
+	}
+}
