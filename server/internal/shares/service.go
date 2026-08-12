@@ -48,8 +48,6 @@ func NewService(store *Store, filesSvc *files.Service, log *slog.Logger) *Servic
 	return &Service{store: store, files: filesSvc, log: log, StaleGrace: 24 * time.Hour}
 }
 
-func (s *Service) Store() *Store { return s.store }
-
 // tokenBytes is the entropy of a share token: 256 bits, unguessable, so the URL
 // itself is the primary credential.
 const tokenBytes = 32

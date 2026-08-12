@@ -229,20 +229,3 @@ func TestAuditLogRecordsGrants(t *testing.T) {
 		t.Error("no grant.create entry by the granting user")
 	}
 }
-
-// adminUserID looks up the fixture's admin account id through the admin list.
-func (f *apiFixture) adminUserID(t *testing.T) string {
-	t.Helper()
-	rec := f.do(http.MethodGet, "/api/v1/admin/users", nil, f.admin)
-	if rec.Code != http.StatusOK {
-		t.Fatalf("list users = %d", rec.Code)
-	}
-	for _, raw := range decode(t, rec)["users"].([]any) {
-		u := raw.(map[string]any)
-		if u["username"] == f.adminUsername {
-			return u["id"].(string)
-		}
-	}
-	t.Fatal("admin account not found in the user list")
-	return ""
-}
