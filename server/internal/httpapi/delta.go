@@ -2,7 +2,6 @@ package httpapi
 
 import (
 	"encoding/hex"
-	"encoding/json"
 	"errors"
 	"io"
 	"net/http"
@@ -109,8 +108,7 @@ type haveRequest struct {
 // savings actually come from.
 func (s *Server) handleHaveChunks(w http.ResponseWriter, r *http.Request) {
 	var req haveRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeError(w, r, http.StatusBadRequest, "invalid_request", "expected a JSON body")
+	if !decodeJSON(w, r, &req) {
 		return
 	}
 	if len(req.Hashes) > maxHaveHashes {
@@ -252,8 +250,7 @@ func (s *Server) handleCommitManifest(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var req commitManifestRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeError(w, r, http.StatusBadRequest, "invalid_request", "expected a JSON body")
+	if !decodeJSON(w, r, &req) {
 		return
 	}
 	contentHash, ok := parseHashHex(req.ContentHash)

@@ -234,6 +234,28 @@ func newAPIFixtureWithAI(t *testing.T, gen embed.Generator) *apiFixture {
 
 // indexDoc uploads a document and runs the real extraction and embedding
 // handlers over it, so retrieval has something to find.
+// A scope this server does not implement is refused by name, not ignored.
+//
+// The contract sketches scope.node_ids and scope.tags; neither exists. Accepting
+// them would mean a caller believing their question was narrowed to three files
+// when it was asked of everything they own — and getting a confident answer
+// drawn from documents they deliberately excluded.
+func TestChatRefusesAScopeItDoesNotImplement(t *testing.T) {
+	f := newAPIFixtureWithAI(t, nil)
+
+	rec := f.json(http.MethodPost, "/api/v1/chat", map[string]any{
+		"question": "what is in the handbook",
+		"scope":    map[string]any{"node_ids": []string{"00000000-0000-0000-0000-000000000000"}},
+	})
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("chat with an unimplemented scope = %d, want 400", rec.Code)
+	}
+	msg, _ := decode(t, rec)["error"].(map[string]any)["message"].(string)
+	if !strings.Contains(msg, "node_ids") {
+		t.Errorf("error does not name the offending field: %q", msg)
+	}
+}
+
 func (f *apiFixture) indexDoc(t *testing.T, name, body string) {
 	t.Helper()
 

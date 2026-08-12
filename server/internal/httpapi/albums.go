@@ -1,10 +1,12 @@
 package httpapi
 
 import (
+	"bytes"
 	"encoding/json"
 	"errors"
 	"io"
 	"net/http"
+	"strings"
 
 	"github.com/google/uuid"
 
@@ -275,12 +277,41 @@ func (s *Server) albumNodeIDs(w http.ResponseWriter, r *http.Request) ([]uuid.UU
 
 // decodeJSON reads a JSON body, reporting a parse failure in the standard shape.
 // The body is already size-capped by withBodyLimit.
+//
+// UNKNOWN FIELDS ARE REFUSED. Silently dropping them is how a caller comes to
+// believe something happened that did not: the request succeeds, the response
+// looks right, and the field they spelled wrong — or the one this server does
+// not implement — simply had no effect. The chat handler's own closing comment
+// says exactly this about scope.node_ids, that "a scope field that parses and
+// then silently does nothing is worse than an absent one", and then the decoder
+// underneath it accepted them.
+//
+// It also catches the ordinary version, which is more common and just as
+// invisible: a typo. `{"discription": "..."}` renamed nothing and said so with
+// a 200.
 func decodeJSON(w http.ResponseWriter, r *http.Request, dst any) bool {
-	if err := json.NewDecoder(r.Body).Decode(dst); err != nil {
-		writeError(w, r, http.StatusBadRequest, "invalid_request", "could not parse the request body")
+	dec := json.NewDecoder(r.Body)
+	dec.DisallowUnknownFields()
+	if err := dec.Decode(dst); err != nil {
+		writeError(w, r, http.StatusBadRequest, "invalid_request", decodeMessage(err))
 		return false
 	}
 	return true
+}
+
+// decodeMessage turns a decode failure into something the caller can act on.
+//
+// encoding/json phrases the unknown-field error as `json: unknown field "x"`,
+// which names the field — the single most useful thing in the response, since
+// the whole point is that the caller does not yet know which one is wrong. The
+// package prefix goes; nothing else does.
+func decodeMessage(err error) string {
+	const prefix = "json: "
+	msg := err.Error()
+	if after, ok := strings.CutPrefix(msg, prefix); ok && strings.HasPrefix(after, "unknown field") {
+		return after
+	}
+	return "could not parse the request body"
 }
 
 // decodeJSONInto decodes a body twice: once into a typed struct, and once into a
@@ -297,10 +328,15 @@ func decodeJSONInto(w http.ResponseWriter, r *http.Request, dst any, raw *map[st
 		writeError(w, r, http.StatusBadRequest, "invalid_request", "could not read the request body")
 		return false
 	}
-	if err := json.Unmarshal(body, dst); err != nil {
-		writeError(w, r, http.StatusBadRequest, "invalid_request", "could not parse the request body")
+	dec := json.NewDecoder(bytes.NewReader(body))
+	dec.DisallowUnknownFields()
+	if err := dec.Decode(dst); err != nil {
+		writeError(w, r, http.StatusBadRequest, "invalid_request", decodeMessage(err))
 		return false
 	}
+	// The raw map deliberately keeps everything, including anything the typed
+	// decode above would have rejected — it never reaches this point if there was
+	// an unknown field, so this only ever sees a body already accepted.
 	if err := json.Unmarshal(body, raw); err != nil {
 		writeError(w, r, http.StatusBadRequest, "invalid_request", "could not parse the request body")
 		return false

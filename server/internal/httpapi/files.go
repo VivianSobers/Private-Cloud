@@ -2,7 +2,6 @@ package httpapi
 
 import (
 	"encoding/hex"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -291,8 +290,7 @@ type createFolderRequest struct {
 
 func (s *Server) handleCreateFolder(w http.ResponseWriter, r *http.Request) {
 	var req createFolderRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeError(w, r, http.StatusBadRequest, "invalid_request", "expected a JSON body")
+	if !decodeJSON(w, r, &req) {
 		return
 	}
 	user := CurrentUser(r.Context())
@@ -355,8 +353,7 @@ func (s *Server) handlePatchNode(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var req patchNodeRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeError(w, r, http.StatusBadRequest, "invalid_request", "expected a JSON body")
+	if !decodeJSON(w, r, &req) {
 		return
 	}
 	if req.Name == nil && req.ParentID == nil {

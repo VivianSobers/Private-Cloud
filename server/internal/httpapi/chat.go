@@ -148,6 +148,10 @@ func (s *Server) handleChat(w http.ResponseWriter, r *http.Request) {
 }
 
 // The contract also sketches scope.node_ids and scope.tags. Neither is
-// implemented, and neither is accepted: a scope field that parses and then
-// silently does nothing is worse than an absent one, because a caller would
-// believe their question was narrowed when it was not.
+// implemented, and neither is accepted — decodeJSON refuses unknown fields, so a
+// request naming one is answered 400 with the field's name. That is what makes
+// this comment true rather than aspirational: it said the same thing while the
+// decoder underneath quietly accepted both, which is exactly the failure it
+// describes. A scope field that parses and then does nothing is worse than an
+// absent one, because a caller would believe their question was narrowed when it
+// was not.
