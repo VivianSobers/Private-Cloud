@@ -98,8 +98,6 @@ func TestProposedSurfaceIsNotServedYet(t *testing.T) {
 		method string
 		path   string
 	}{
-		{"8 — intelligence", "GET", "/api/v1/people"},
-		{"8 — intelligence", "POST", "/api/v1/chat"},
 		{"9 — scale", "GET", "/api/v1/admin/storage"},
 	}
 

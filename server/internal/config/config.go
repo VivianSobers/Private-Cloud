@@ -137,7 +137,22 @@ type EmbedConfig struct {
 	// GenerateModel is advisory, reported alongside an answer so a reader knows
 	// what produced it. The sidecar is the authority on what it actually loaded.
 	GenerateModel string
+
+	// DetectURL points at the face-detection sidecar. A third service again,
+	// because a deployment may reasonably want thumbnails and search without
+	// wanting a face model — and folding detection into the media job would tie
+	// thumbnailing, which everyone wants, to a sidecar most will not run.
+	DetectURL string
+	// DetectModel is the identity face vectors are stored under, and like the
+	// embedding model it must not change without re-detecting: vectors from two
+	// models compared as if in one space cluster strangers together.
+	DetectModel string
+	// DetectDim is the face-vector width the sidecar produces.
+	DetectDim int
 }
+
+// DetectionEnabled reports whether face detection is configured.
+func (e EmbedConfig) DetectionEnabled() bool { return e.DetectURL != "" }
 
 // GenerationEnabled reports whether written answers are configured.
 func (e EmbedConfig) GenerationEnabled() bool { return e.GenerateURL != "" }
@@ -169,6 +184,9 @@ func LoadEmbed() (EmbedConfig, error) {
 		EnableSemantic: envBool("PC_ENABLE_SEMANTIC", false),
 		GenerateURL:    env("PC_GENERATE_URL", ""),
 		GenerateModel:  env("PC_GENERATE_MODEL", ""),
+		DetectURL:      env("PC_DETECT_URL", ""),
+		DetectModel:    env("PC_DETECT_MODEL", "facenet"),
+		DetectDim:      envInt("PC_DETECT_DIM", 512),
 	}
 	if err := e.validate(); err != nil {
 		return EmbedConfig{}, err
@@ -192,6 +210,24 @@ func (e EmbedConfig) validate() error {
 			return fmt.Errorf("PC_GENERATE_URL is set but PC_EMBED_URL is not: " +
 				"answers are grounded in retrieved documents, and without embeddings " +
 				"there is nothing to retrieve")
+		}
+	}
+
+	// Face detection is independent of the document embedder: it has its own
+	// model, its own vector space and its own table, and a deployment may run one
+	// without the other.
+	if e.DetectionEnabled() {
+		if !strings.HasPrefix(e.DetectURL, "http://") && !strings.HasPrefix(e.DetectURL, "https://") {
+			return fmt.Errorf("PC_DETECT_URL must be an http:// or https:// address (got %q)", e.DetectURL)
+		}
+		if strings.HasSuffix(e.DetectURL, "/") {
+			return fmt.Errorf("PC_DETECT_URL must not end in a slash (got %q)", e.DetectURL)
+		}
+		if e.DetectModel == "" {
+			return fmt.Errorf("PC_DETECT_MODEL must not be empty: it is the identity every face vector is stored under")
+		}
+		if e.DetectDim <= 0 {
+			return fmt.Errorf("PC_DETECT_DIM must be positive (got %d)", e.DetectDim)
 		}
 	}
 

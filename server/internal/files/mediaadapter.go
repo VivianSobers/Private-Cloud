@@ -98,6 +98,22 @@ func (m mediaStore) PutMediaVariant(ctx context.Context, contentHash []byte, v m
 	})
 }
 
+// NewFaceStore adapts this package's face store to the detector handler's.
+//
+// The conversion between media.StoredFace and Face is the price of keeping the
+// dependency one-directional, exactly as NewMediaStore is.
+func NewFaceStore(s *Store) media.FaceStore { return faceStore{s: s} }
+
+type faceStore struct{ s *Store }
+
+func (f faceStore) ReplaceFaces(ctx context.Context, ownerID, nodeID uuid.UUID, model string, dim int, faces []media.StoredFace) error {
+	out := make([]Face, 0, len(faces))
+	for _, x := range faces {
+		out = append(out, Face{Box: x.Box, Vector: x.Vector})
+	}
+	return f.s.ReplaceFaces(ctx, ownerID, nodeID, model, dim, out)
+}
+
 // OpenMediaVariant returns a rendition's bytes for one of the owner's files,
 // alongside the row describing it. ErrNotFound when the variant has not been
 // rendered — the handler turns that into a 404 the client can retry, rather

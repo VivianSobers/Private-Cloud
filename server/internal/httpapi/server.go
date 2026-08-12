@@ -293,6 +293,17 @@ func (s *Server) registerRoutes(mux router) {
 	// authenticated user can ask this deployment to do.
 	mux.HandleFunc("POST /api/v1/chat", s.requireAuth(s.searchLimited(s.handleChat)))
 
+	// People. A cluster is unnamed until somebody names it; merge and reassign
+	// exist because clustering is going to be wrong, and a faces feature with no
+	// correction path is one people stop trusting after the first mistake.
+	mux.HandleFunc("GET /api/v1/people", s.requireAuth(s.handleListPeople))
+	mux.HandleFunc("GET /api/v1/people/{id}", s.requireAuth(s.handleGetPerson))
+	mux.HandleFunc("PATCH /api/v1/people/{id}", s.requireAuth(s.handlePatchPerson))
+	mux.HandleFunc("POST /api/v1/people/{id}/merge", s.requireAuth(s.handleMergePeople))
+	mux.HandleFunc("DELETE /api/v1/people/{id}", s.requireAuth(s.handleForgetPerson))
+	mux.HandleFunc("GET /api/v1/nodes/{id}/faces", s.requireAuth(s.handleListNodeFaces))
+	mux.HandleFunc("POST /api/v1/nodes/{id}/faces/{faceId}/reassign", s.requireAuth(s.handleReassignFace))
+
 	// --- sharing and collaboration (Phase 7) ---------------------------------
 	// Shared content stays OUT of the existing endpoints unless a client opts in
 	// with ?include_shared=true. Widening the default would silently change what

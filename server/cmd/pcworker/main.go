@@ -223,6 +223,21 @@ func registerHandlers(ctx context.Context, runner *jobs.Runner, store *jobs.Stor
 	log.Info("media handler registered",
 		"thumb_max_edge", media.ThumbMaxEdge, "preview_max_edge", media.PreviewMaxEdge)
 
+	// Faces: its own kind and its own sidecar, so a deployment that wants
+	// thumbnails and search need not run a face model. Registered only where BOTH
+	// the blob store and a detector are reachable — it needs image bytes and a
+	// GPU, which is the narrowest requirement of any handler here.
+	if embedCfg.DetectionEnabled() {
+		detector := media.NewDetectClient(embedCfg.DetectURL, embedCfg.DetectModel, embedCfg.DetectDim)
+		faceHandler := media.NewFaceHandler(
+			files.NewMediaOpener(filesSvc), files.NewFaceStore(fileStore), detector, log)
+		runner.Register(media.FaceKind, func(ctx context.Context, j jobs.Job) error {
+			return faceHandler.Handle(ctx, j.NodeID, j.OwnerID)
+		})
+		log.Info("face detection handler registered",
+			"sidecar", embedCfg.DetectURL, "model", embedCfg.DetectModel, "dim", embedCfg.DetectDim)
+	}
+
 	return nil
 }
 

@@ -674,9 +674,9 @@ func jobsCommand(ctx context.Context, database *db.DB, args []string) error {
 
 		switch kind {
 		case "extract", "all":
-		case "media":
+		case "media", "faces":
 		default:
-			return fmt.Errorf("unknown kind %q (want extract, media or all)", kind)
+			return fmt.Errorf("unknown kind %q (want extract, media, faces or all)", kind)
 		}
 
 		if kind == "extract" || kind == "all" {
@@ -694,6 +694,17 @@ func jobsCommand(ctx context.Context, database *db.DB, args []string) error {
 				return err
 			}
 			fmt.Printf("enqueued %d media job(s) for re-indexing\n", n)
+		}
+		if kind == "faces" {
+			// Not part of "all": face detection needs a GPU sidecar most
+			// deployments will not run, and silently queueing a job for every
+			// photo on a server with no detector would fill the dead-letter queue
+			// rather than do anything useful. Asking for it is the opt-in.
+			n, err := store.EnqueueForAllMediaFiles(ctx, media.FaceKind)
+			if err != nil {
+				return err
+			}
+			fmt.Printf("enqueued %d face-detection job(s)\n", n)
 		}
 		return nil
 
