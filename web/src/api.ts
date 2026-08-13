@@ -102,6 +102,19 @@ export interface Person {
   created_at: string;
   name?: string;
   cover_node_id?: string;
+  /** Where the cover face sits in its photo, as [x, y, w, h] fractions (0–1) —
+   *  fractions not pixels, so a client crops from whichever variant it has. */
+  cover_box?: [number, number, number, number];
+}
+
+/** One detected face inside a photo. `box` is [x, y, w, h] in fractions of the
+ *  image (0–1). `person_id` is absent when the face belongs to no cluster —
+ *  either never assigned, or detached by a user saying "this isn't a face". */
+export interface Face {
+  id: string;
+  box: [number, number, number, number];
+  seq: number;
+  person_id?: string;
 }
 
 /** One document a chat answer drew on. Citations are mandatory — an answer over
@@ -617,6 +630,20 @@ export const api = {
 
   similar: (id: string) =>
     request<{ results: SimilarHit[]; count: number }>(`/api/v1/nodes/${id}/similar`),
+
+  // Who is in this picture. Faces carry a box so the UI can draw them over the
+  // photo; an unassigned face is an honest "a face, nobody named" rather than a
+  // guess about a real person.
+  nodeFaces: (id: string) =>
+    request<{ faces: Face[] }>(`/api/v1/nodes/${id}/faces`),
+
+  // Fix one wrong detection: point a face at the right person, or pass null to
+  // detach it ("this isn't a face") without deleting the detection.
+  reassignFace: (nodeId: string, faceId: string, personId: string | null) =>
+    request<{ status: string }>(`/api/v1/nodes/${nodeId}/faces/${faceId}/reassign`, {
+      method: "POST",
+      body: JSON.stringify({ person_id: personId }),
+    }),
 
   // Ask a question over the library. Retrieval always returns citations; a written
   // answer comes back only when a generator is configured (else answer_unavailable).

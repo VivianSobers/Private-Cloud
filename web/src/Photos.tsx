@@ -1,6 +1,15 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 
-import { api, ApiError, formatDate, type Album, type Node, type SimilarHit } from "./api";
+import {
+  api,
+  ApiError,
+  formatDate,
+  type Album,
+  type Face,
+  type Node,
+  type Person,
+  type SimilarHit,
+} from "./api";
 import { isPinned, pinFile, supportsPinning, unpinFile } from "./pin";
 
 // The Photos view: a timeline of media sorted by when the shutter fired, and
@@ -467,6 +476,8 @@ function Lightbox({ node, onClose }: { node: Node; onClose: () => void }) {
   const [current, setCurrent] = useState<Node>(node);
   const [similar, setSimilar] = useState<SimilarHit[] | null>(null);
   const [showSimilar, setShowSimilar] = useState(false);
+  const [faces, setFaces] = useState<Face[] | null>(null);
+  const [showFaces, setShowFaces] = useState(false);
 
   useEffect(() => {
     setCurrent(node);
@@ -485,8 +496,31 @@ function Lightbox({ node, onClose }: { node: Node; onClose: () => void }) {
     setSrc(api.contentUrl(current.id, "preview"));
     setShowSimilar(false);
     setSimilar(null);
+    setShowFaces(false);
+    setFaces(null);
     setPinned(isPinned(current.id));
   }, [current.id]);
+
+  const findFaces = async () => {
+    setShowFaces(true);
+    try {
+      const r = await api.nodeFaces(current.id);
+      setFaces(r.faces);
+    } catch {
+      setFaces([]);
+    }
+  };
+
+  // After a reassign, re-fetch so the panel reflects the new assignment rather
+  // than optimistically guessing what the server did.
+  const reloadFaces = async () => {
+    try {
+      const r = await api.nodeFaces(current.id);
+      setFaces(r.faces);
+    } catch {
+      // Leave the current list; the row's own state already changed.
+    }
+  };
 
   const togglePin = async () => {
     try {
@@ -514,19 +548,38 @@ function Lightbox({ node, onClose }: { node: Node; onClose: () => void }) {
 
   return (
     <div className="lightbox" onClick={onClose} role="dialog" aria-label={current.name}>
-      <img
-        className="lightbox-img"
-        src={src}
-        alt={current.name}
-        onClick={(e) => e.stopPropagation()}
-        // If the preview rendition isn't ready, show the original rather than nothing.
-        onError={() => setSrc(api.contentUrl(current.id, "original"))}
-      />
+      <div className="lightbox-stage" onClick={(e) => e.stopPropagation()}>
+        <img
+          className="lightbox-img"
+          src={src}
+          alt={current.name}
+          // If the preview rendition isn't ready, show the original rather than nothing.
+          onError={() => setSrc(api.contentUrl(current.id, "original"))}
+        />
+        {/* Boxes over the faces, positioned as fractions of the frame. Drawn only
+            while the panel is open so the photo is unobstructed by default. */}
+        {showFaces &&
+          faces?.map((f) => (
+            <span
+              key={f.id}
+              className={`face-box${f.person_id ? "" : " unassigned"}`}
+              style={{
+                left: `${f.box[0] * 100}%`,
+                top: `${f.box[1] * 100}%`,
+                width: `${f.box[2] * 100}%`,
+                height: `${f.box[3] * 100}%`,
+              }}
+            />
+          ))}
+      </div>
       <div className="lightbox-caption" onClick={(e) => e.stopPropagation()}>
         <span>{current.name}</span>
         <span className="muted small">{formatDate(takenAt(current))}</span>
         <button className="link" onClick={() => void findSimilar()}>
           Find similar
+        </button>
+        <button className="link" onClick={() => void findFaces()}>
+          Who's here
         </button>
         {supportsPinning() && (
           <button className="link" onClick={() => void togglePin()}>
@@ -558,7 +611,84 @@ function Lightbox({ node, onClose }: { node: Node; onClose: () => void }) {
           )}
         </div>
       )}
+
+      {showFaces && (
+        <div className="faces-panel" onClick={(e) => e.stopPropagation()}>
+          <FacesPanel nodeId={current.id} faces={faces} onChanged={() => void reloadFaces()} />
+        </div>
+      )}
     </div>
+  );
+}
+
+/** FacesPanel lists the faces detected in a photo and lets a user correct a
+ *  wrong one: point it at the right person, or detach it entirely. Naming a
+ *  cluster lives in the People view; here we only reassign existing people, so
+ *  the panel needs no text entry — just the roster the server already knows. */
+function FacesPanel({
+  nodeId,
+  faces,
+  onChanged,
+}: {
+  nodeId: string;
+  faces: Face[] | null;
+  onChanged: () => void;
+}) {
+  const [people, setPeople] = useState<Person[] | null>(null);
+
+  useEffect(() => {
+    api
+      .people()
+      .then((r) => setPeople(r.people))
+      .catch(() => setPeople([]));
+  }, []);
+
+  const nameFor = (id?: string): string => {
+    if (!id) return "Unassigned";
+    const p = people?.find((x) => x.id === id);
+    if (!p) return "Someone";
+    return p.name ?? "Unnamed person";
+  };
+
+  const reassign = async (faceId: string, personId: string | null) => {
+    try {
+      await api.reassignFace(nodeId, faceId, personId);
+      onChanged();
+    } catch {
+      // Leave the roster as-is; the change simply didn't take.
+    }
+  };
+
+  if (faces === null) return <span className="muted small">Looking for faces…</span>;
+  if (faces.length === 0) return <span className="muted small">No faces detected here.</span>;
+
+  return (
+    <ul className="faces-list">
+      {faces.map((f) => (
+        <li key={f.id} className="face-row">
+          <span className={f.person_id ? "" : "muted"}>{nameFor(f.person_id)}</span>
+          <span className="face-actions">
+            <select
+              value={f.person_id ?? ""}
+              onChange={(e) => void reassign(f.id, e.target.value || null)}
+              aria-label="Assign this face to a person"
+            >
+              <option value="">— unassigned —</option>
+              {people?.map((p) => (
+                <option key={p.id} value={p.id}>
+                  {p.name ?? "Unnamed person"}
+                </option>
+              ))}
+            </select>
+            {f.person_id && (
+              <button className="link small" onClick={() => void reassign(f.id, null)}>
+                Not a face
+              </button>
+            )}
+          </span>
+        </li>
+      ))}
+    </ul>
   );
 }
 
