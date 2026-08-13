@@ -300,6 +300,23 @@ export interface Session {
   current: boolean;
 }
 
+/** A synced machine, as opposed to a session. A device is "one of my machines
+ *  that is syncing"; it carries a name the user chose and self-reported platform
+ *  details. `platform`/`app_version` are absent (never "") when the agent said
+ *  nothing. `current` marks the caller's own device so the UI can avoid offering
+ *  it "revoke" on the very token making the call. */
+export interface Device {
+  id: string;
+  name: string;
+  last_seen_at: string;
+  created_at: string;
+  expires_at: string;
+  has_push: boolean;
+  current: boolean;
+  platform?: string;
+  app_version?: string;
+}
+
 async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
   const res = await fetch(path, {
     ...init,
@@ -389,6 +406,22 @@ export const api = {
 
   revokeSession: (id: string) =>
     request<{ status: string }>(`/api/v1/auth/sessions/${id}`, { method: "DELETE" }),
+
+  // --- devices (Phase 6) ----------------------------------------------------
+  // Which of my machines is syncing, as opposed to which sessions are signed in.
+
+  devices: () => request<{ devices: Device[] }>("/api/v1/devices"),
+
+  renameDevice: (id: string, name: string) =>
+    request<{ status: string }>(`/api/v1/devices/${id}`, {
+      method: "PATCH",
+      body: JSON.stringify({ name }),
+    }),
+
+  // Revoke a device token — a lost laptop stops syncing on its next request, not
+  // whenever the token would have expired.
+  revokeDevice: (id: string) =>
+    request<{ status: string }>(`/api/v1/devices/${id}`, { method: "DELETE" }),
 
   // --- files ----------------------------------------------------------------
 

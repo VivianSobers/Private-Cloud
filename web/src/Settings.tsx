@@ -1,6 +1,15 @@
 import { useCallback, useEffect, useState } from "react";
 
-import { ApiError, api, formatDate, type AppPassword, type Credential, type Me, type Session } from "./api";
+import {
+  ApiError,
+  api,
+  formatDate,
+  type AppPassword,
+  type Credential,
+  type Device,
+  type Me,
+  type Session,
+} from "./api";
 import { describeError, register } from "./webauthn";
 
 interface Props {
@@ -187,10 +196,123 @@ export function Settings({ me, onChanged, onCodes }: Props) {
         </table>
       </section>
 
+      <SyncDevices />
+
       <AppPasswords />
 
       {me.user.is_admin && <AdminSection />}
     </div>
+  );
+}
+
+/**
+ * SyncDevices lists the machines running the sync client — distinct from the
+ * sessions above. A session answers "what is signed in"; a device answers "which
+ * of my machines is syncing", carries a name the user chose, and can be renamed
+ * or revoked. Revoking cuts a lost laptop off on its next request.
+ */
+function SyncDevices() {
+  const [devices, setDevices] = useState<Device[] | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const [busy, setBusy] = useState(false);
+
+  const load = useCallback(async () => {
+    try {
+      const r = await api.devices();
+      setDevices(r.devices);
+      setError(null);
+    } catch (err) {
+      // A server without the Phase 6 device endpoints simply shows no section.
+      if (err instanceof ApiError && err.status === 404) {
+        setDevices([]);
+        return;
+      }
+      setError(err instanceof ApiError ? err.message : String(err));
+    }
+  }, []);
+
+  useEffect(() => {
+    void load();
+  }, [load]);
+
+  async function guard(fn: () => Promise<unknown>) {
+    setBusy(true);
+    setError(null);
+    try {
+      await fn();
+      await load();
+    } catch (err) {
+      setError(err instanceof ApiError ? err.message : String(err));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function rename(d: Device) {
+    const name = window.prompt("Rename this device", d.name);
+    if (name === null) return;
+    const trimmed = name.trim();
+    if (trimmed === "" || trimmed === d.name) return;
+    await guard(() => api.renameDevice(d.id, trimmed));
+  }
+
+  // Nothing to show and nothing broken: stay quiet rather than render an empty card.
+  if (devices !== null && devices.length === 0 && !error) return null;
+
+  return (
+    <section className="card stack">
+      <h2 style={{ margin: 0, fontSize: "1rem" }}>Sync devices</h2>
+      <p className="muted small" style={{ margin: 0 }}>
+        Machines running the sync client. Revoking one stops it syncing on its
+        very next request — the answer to a lost laptop, not an eventual one.
+      </p>
+      {error && <div className="banner error">{error}</div>}
+      {devices === null ? (
+        <p className="muted small" style={{ margin: 0 }}>
+          Loading…
+        </p>
+      ) : (
+        <table className="listing">
+          <thead>
+            <tr>
+              <th>Device</th>
+              <th className="when" style={{ textAlign: "right" }}>
+                Last seen
+              </th>
+              <th />
+            </tr>
+          </thead>
+          <tbody>
+            {devices.map((d) => (
+              <tr key={d.id}>
+                <td className="name">
+                  {d.name}
+                  {d.current && <span className="muted small"> · this device</span>}
+                  {d.platform && <span className="muted small"> · {d.platform}</span>}
+                  {d.app_version && <span className="muted small"> · v{d.app_version}</span>}
+                  {d.has_push && <span className="muted small"> · push on</span>}
+                </td>
+                <td className="when">{formatDate(d.last_seen_at)}</td>
+                <td className="actions">
+                  <button className="link" disabled={busy} onClick={() => void rename(d)}>
+                    Rename
+                  </button>
+                  {!d.current && (
+                    <button
+                      className="link danger"
+                      disabled={busy}
+                      onClick={() => void guard(() => api.revokeDevice(d.id))}
+                    >
+                      Revoke
+                    </button>
+                  )}
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      )}
+    </section>
   );
 }
 
