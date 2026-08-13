@@ -24,6 +24,16 @@ These were listed as "still to build" in an earlier summary; they are done now:
 - **Cross-platform client builds** — `client/build-release.sh` produces static,
   CGO-free binaries + checksums for linux/macOS/Windows; verified building all
   five targets. `pcsync version` reports client-vs-server.
+- **Face correction in the viewer** — "Who's here" in the photo lightbox draws
+  the detected faces over the image and lets you reassign a wrong one to the
+  right person, or detach it entirely (`/nodes/{id}/faces`, `.../reassign`).
+- **Sync-device management** — Settings lists the machines running the sync
+  client (name, platform, last seen, push state) and can rename or revoke one; a
+  revoked device stops syncing on its next request (`/api/v1/devices`).
+- **Admin storage & session console** — the admin console gained a Storage tab
+  (accounted bytes, ZFS pool state + scrub, offsite-backup freshness, job
+  counts, honest `tiering:false`) and per-user session revocation
+  (`/admin/storage`, `/admin/users/{id}/sessions`).
 
 ---
 
@@ -35,7 +45,7 @@ These were listed as "still to build" in an earlier summary; they are done now:
 | **Desktop installers + auto-update** | Cross-built binaries + checksums exist (above). | A `.msi`/`.pkg`/Homebrew-Scoop manifest and an in-place updater — per-OS packaging and **code-signing keys** that live outside this repo. |
 | **Object-storage cold tier** | API honestly reports `tiering.enabled:false` rather than faking it. | A storage backend + tiering policy — **backend work** (the other track), not front-of-API. |
 | **DR automation** | Phase-0 restore runbooks + a restore-test script exist. | Scheduled, automated failover drills — **ops/infra** work. |
-| **Push delivery** | Subscriptions are stored server-side. | A sender (web-push/APNs/FCM) — a backend service. |
+| **Push delivery** | The store-a-subscription endpoint exists; devices show their push state in Settings. | The PWA can't *subscribe* until the server publishes a VAPID public key (`PushManager.subscribe` needs it), and nothing delivers until there's a sender (web-push/APNs/FCM) — both **backend**. |
 
 None of these are stalled on a decision; they're stalled on an environment
 (a GUI, signing keys) or belong to the backend/ops track.
