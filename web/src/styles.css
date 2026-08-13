@@ -542,6 +542,29 @@ dialog::backdrop {
 .admin-table .row-disabled {
   opacity: 0.55;
 }
+/* A nested sessions table sits in a lightly inset row under its user. */
+.admin-table .session-detail > td {
+  background: var(--bg-subtle);
+  padding: 0.5rem 0.6rem 0.75rem;
+}
+.danger {
+  color: var(--danger, #c0392b);
+}
+
+/* Storage stat tiles: a compact row of labelled numbers. */
+.stat-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 1.25rem;
+}
+.stat {
+  min-width: 5rem;
+}
+.stat-value {
+  font-size: 1.35rem;
+  font-weight: 600;
+  line-height: 1.2;
+}
 
 /* --- Ask (Phase 8 retrieval) ---------------------------------------------- */
 .ask {

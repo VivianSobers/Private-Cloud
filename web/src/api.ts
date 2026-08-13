@@ -171,6 +171,39 @@ export interface AuditEntry {
   detail?: Record<string, unknown>;
 }
 
+/** A session belonging to another user, as an admin sees it. Same rows as the
+ *  self-service session list minus `current` — an admin is never one of them. */
+export interface AdminSession {
+  id: string;
+  kind: string;
+  user_agent: string;
+  created_at: string;
+  last_seen_at: string;
+  expires_at: string;
+}
+
+/** Platform + storage health for the admin console. Fields the collectors didn't
+ *  report are absent rather than zero, so a stale or never-run source reads as
+ *  unknown instead of as a confident wrong number. */
+export interface AdminStorage {
+  /** What the database accounts for across every owner — deliberately NOT pool
+   *  capacity; the app knows what it stored, the disks know what they hold. */
+  accounted: { stored_bytes: number; trash_bytes: number; file_count: number };
+  pools: Array<{
+    name: string;
+    state: string;
+    last_scrub_age_seconds?: number;
+    /** Absent when never scrubbed — distinct from false (scrubbed, found errors). */
+    last_scrub_clean?: boolean;
+    collected_at?: string;
+  }>;
+  backup: { last_success_at?: string; last_failure_at?: string; age_seconds?: number };
+  /** Counts keyed by job state (queued/running/done/failed). */
+  jobs: Record<string, number>;
+  tiering: { enabled: boolean; note?: string };
+  collector: { path: string; available: boolean };
+}
+
 /** A user-ordered collection of nodes. NOT a folder: a node can be in many
  *  albums, and being in one does not move or copy it. */
 export interface Album {
@@ -629,6 +662,20 @@ export const api = {
 
   deleteUser: (id: string) =>
     request<{ status: string }>(`/api/v1/admin/users/${id}`, { method: "DELETE" }),
+
+  // A user's sessions, seen by an admin — like the self-service list but for
+  // another account, with no "current" (the admin is never one of these rows).
+  adminUserSessions: (id: string) =>
+    request<{ sessions: AdminSession[] }>(`/api/v1/admin/users/${id}/sessions`),
+
+  adminRevokeUserSession: (userId: string, sessionId: string) =>
+    request<{ status: string }>(`/api/v1/admin/users/${userId}/sessions/${sessionId}`, {
+      method: "DELETE",
+    }),
+
+  // Platform + storage health for the console. Reads the same collector files and
+  // jobs table the alerts use, so the console and Grafana never disagree.
+  adminStorage: () => request<AdminStorage>("/api/v1/admin/storage"),
 
   adminAudit: (opts: { actor?: string; action?: string; limit?: number; offset?: number } = {}) => {
     const p = new URLSearchParams();
