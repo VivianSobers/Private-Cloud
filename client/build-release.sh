@@ -39,9 +39,37 @@ for target in "${TARGETS[@]}"; do
     go build -trimpath -ldflags "$LDFLAGS" -o "$DIST/$out" ./cmd/pcsync
 done
 
-# Checksums, so a download can be verified — the client that already verifies
-# every synced chunk should not ask users to trust an unverified binary of itself.
-( cd "$DIST" && sha256sum pcsync-* > SHA256SUMS )
+# Linux packages (.deb/.rpm) from the just-built binaries — a pure repackage of
+# an artifact we already produced, so it needs no Go toolchain. Built UNSIGNED on
+# purpose: a locally installed package needs no signature, only a repository does
+# (see nfpm.yaml). Skipped cleanly when nfpm isn't installed, since the binaries
+# above are the deliverable and packaging is an extra.
+pkg_version="${VERSION#v}" # deb/rpm versions start with a digit; drop a leading v
+if command -v nfpm >/dev/null 2>&1; then
+  for arch in amd64 arm64; do
+    echo "  packaging linux/$arch (.deb, .rpm)"
+    # Fill the template's placeholders for this target. sed rather than nfpm env
+    # expansion because nfpm does not expand env vars inside contents.src.
+    cfg="$DIST/nfpm-$arch.yaml"
+    sed -e "s|__PC_ARCH__|$arch|g" \
+        -e "s|__PC_VERSION__|$pkg_version|g" \
+        -e "s|__PC_BIN__|$DIST/pcsync-linux-$arch|g" \
+        nfpm.yaml > "$cfg"
+    nfpm package -f "$cfg" -p deb -t "$DIST/"
+    nfpm package -f "$cfg" -p rpm -t "$DIST/"
+    rm -f "$cfg"
+  done
+else
+  echo "  note: nfpm not found — skipping .deb/.rpm (binaries above are complete)"
+  echo "        install: go install github.com/goreleaser/nfpm/v2/cmd/nfpm@latest"
+fi
+
+# Checksums over every artifact — the client that already verifies every synced
+# chunk should not ask users to trust an unverified download of itself. Listing
+# every file except the sums itself checksums each artifact exactly once, whether
+# or not nfpm ran, with no glob that could double-count a package.
+( cd "$DIST" && find . -maxdepth 1 -type f ! -name SHA256SUMS -printf '%f\n' \
+    | sort | xargs sha256sum > SHA256SUMS )
 
 echo "done -> $DIST/"
 ls -1 "$DIST"

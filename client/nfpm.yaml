@@ -1,0 +1,56 @@
+# nfpm packaging for the pcsync client — Linux .deb and .rpm.
+#
+# These packages are built UNSIGNED, on purpose and honestly: a locally installed
+# .deb (`apt install ./pcsync_*.deb`) or .rpm (`dnf install ./pcsync-*.rpm`) does
+# not need a signature, only a repository does. Repository publishing, Homebrew,
+# Scoop, and the signed .msi/.pkg are the remaining native-packaging work and
+# need signing keys that live outside this repo — see client/README.md.
+#
+# This file is a TEMPLATE: build-release.sh substitutes the __PC_*__ placeholders
+# (arch, version, and the cross-compiled binary path) per target with sed, then
+# runs `nfpm package` on the result. Substitution is done by the script rather
+# than nfpm's env expansion because nfpm does not expand env vars inside
+# `contents.src`, so the binary path has to be filled in before nfpm sees it.
+# Building from an already-built binary keeps packaging a pure repackage step.
+name: pcsync
+arch: __PC_ARCH__
+platform: linux
+version: __PC_VERSION__
+section: utils
+priority: optional
+maintainer: Vivian Sobers <vivianedwardbangalore@gmail.com>
+description: |
+  Private Cloud sync client.
+  Keeps one local folder in step with a Private Cloud server in both directions
+  over a block-level delta protocol. Pure-Go, no daemon dependencies.
+vendor: Private Cloud
+homepage: https://github.com/guru-bharadwaj20/private-cloud
+license: AGPL-3.0-or-later
+
+contents:
+  - src: __PC_BIN__
+    dst: /usr/bin/pcsync
+    file_info:
+      mode: 0755
+
+  # A systemd *user* unit: pcsync runs as the logged-in user with their own
+  # credential. Shipped disabled — each user enables it after writing a config.
+  - src: ./deploy/pcsync-packaged.service
+    dst: /usr/lib/systemd/user/pcsync.service
+
+  # Config template and the manual-install unit, as documentation — never a live
+  # config (which would carry a credential and must be per-user).
+  - src: ./config.example.json
+    dst: /usr/share/doc/pcsync/config.example.json
+    file_info:
+      mode: 0644
+  - src: ./README.md
+    dst: /usr/share/doc/pcsync/README.md
+    file_info:
+      mode: 0644
+
+deb:
+  # Local install needs no repository signature; this stays unsigned deliberately.
+  compression: xz
+rpm:
+  compression: xz

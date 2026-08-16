@@ -117,10 +117,28 @@ pcsync version                        # the client build
 pcsync version -config ./config.json  # ...and the server's, flagging a mismatch
 ```
 
-> Platform-native **installers** (a `.msi`, a `.pkg`, a Homebrew/Scoop manifest)
-> and an in-place **auto-updater** build on top of these binaries and are the
-> remaining native-client work — they need signing keys and per-OS packaging
-> that live outside this repo.
+### Linux packages (.deb / .rpm)
+
+If [`nfpm`](https://nfpm.goreleaser.com) is installed, `build-release.sh` also
+repackages the Linux binaries into `.deb` and `.rpm` for amd64 and arm64 — a pure
+repackage of an already-built binary, so it needs no Go toolchain and is skipped
+cleanly when nfpm is absent (the binaries are the deliverable; packages are an
+extra). The package installs `pcsync` to `/usr/bin`, ships a systemd **user**
+unit to `/usr/lib/systemd/user/`, and drops the config template under
+`/usr/share/doc/pcsync/`:
+
+```bash
+sudo apt install ./dist/pcsync_1.2.0_amd64.deb    # Debian/Ubuntu
+sudo dnf install ./dist/pcsync-1.2.0-1.x86_64.rpm # Fedora/RHEL
+```
+
+These packages are **unsigned on purpose**: a locally installed `.deb`/`.rpm`
+needs no signature — only a *repository* does. Publishing a signed apt/dnf repo,
+a Homebrew/Scoop manifest, and the signed `.msi`/`.pkg` are the remaining native-
+packaging work, and they need signing keys and per-OS tooling that live outside
+this repo. An in-place **auto-updater** is the other remaining native-client
+piece; for now `pcsync doctor` and `pcsync version` flag a client lagging the
+server so an update is at least never silent.
 
 ## Run as a service (systemd)
 
