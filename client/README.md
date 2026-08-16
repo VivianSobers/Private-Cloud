@@ -80,7 +80,12 @@ pcsync doctor -config ./config.json
 ✓ state database   /home/vivian/PrivateCloud/.pcsync/state.db
 ✓ server reachable https://cloud.example.ts.net (HTTP 200)
 ✓ sign in          credential accepted; tree root reachable
+✓ client version   pcsync 1.0.0 matches the server
 ```
+
+The version line is advisory: a client behind the server is a `!` warning, never a
+`✗` — a version skew invites an update but does not stop a sync, so the preflight
+still passes. A `dev` build is not compared to a release tag at all.
 
 It separates "server unreachable" from "credential rejected" so you fix the right
 thing — a `✗ sign in` with a `✓ server reachable` means the username or app

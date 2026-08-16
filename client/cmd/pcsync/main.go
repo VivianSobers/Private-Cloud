@@ -176,7 +176,7 @@ func doctorMain(args []string) int {
 
 	ctx, cancel := context.WithTimeout(context.Background(), doctor.Deadline)
 	defer cancel()
-	res := doctor.Run(ctx, cfg, userAgent())
+	res := doctor.Run(ctx, cfg, userAgent(), version)
 
 	for _, c := range res.Checks {
 		fmt.Printf("%s %-16s %s\n", c.Status.Glyph(), c.Name, c.Detail)

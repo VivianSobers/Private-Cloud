@@ -30,6 +30,9 @@ func fakeServer(t *testing.T, goodPassword string) *httptest.Server {
 	mux.HandleFunc("/api/v1/nodes/root", func(w http.ResponseWriter, _ *http.Request) {
 		_, _ = w.Write([]byte(`{"node":{"id":"root","kind":"folder","name":"","path":"/"}}`))
 	})
+	mux.HandleFunc("/api/v1/version", func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte(`{"version":"1.0.0","commit":"abc123"}`))
+	})
 	ts := httptest.NewServer(mux)
 	t.Cleanup(ts.Close)
 	return ts
@@ -58,11 +61,12 @@ func statusOf(r Result, name string) Status {
 // A healthy setup passes every check.
 func TestAllHealthy(t *testing.T) {
 	ts := fakeServer(t, "correct-password")
-	res := Run(context.Background(), cfgFor(t, ts.URL, "correct-password"), "pcsync-test")
+	// A client version equal to the server's makes the version check a clean pass.
+	res := Run(context.Background(), cfgFor(t, ts.URL, "correct-password"), "pcsync-test", "1.0.0")
 	if !res.OK() {
 		t.Fatalf("expected all checks to pass, got %+v", res.Checks)
 	}
-	for _, name := range []string{"configuration", "state database", "server reachable", "sign in"} {
+	for _, name := range []string{"configuration", "state database", "server reachable", "sign in", "client version"} {
 		if statusOf(res, name) != Pass {
 			t.Errorf("%q did not pass", name)
 		}
@@ -73,7 +77,7 @@ func TestAllHealthy(t *testing.T) {
 // diagnostic that points at the credential, not the network.
 func TestBadCredential(t *testing.T) {
 	ts := fakeServer(t, "correct-password")
-	res := Run(context.Background(), cfgFor(t, ts.URL, "WRONG"), "pcsync-test")
+	res := Run(context.Background(), cfgFor(t, ts.URL, "WRONG"), "pcsync-test", "1.0.0")
 	if res.OK() {
 		t.Fatal("expected the preflight to fail")
 	}
@@ -89,11 +93,34 @@ func TestBadCredential(t *testing.T) {
 // blaming the credential.
 func TestUnreachable(t *testing.T) {
 	// Port 1 is reserved and never listening, so the dial fails fast.
-	res := Run(context.Background(), cfgFor(t, "http://127.0.0.1:1", "x"), "pcsync-test")
+	res := Run(context.Background(), cfgFor(t, "http://127.0.0.1:1", "x"), "pcsync-test", "1.0.0")
 	if statusOf(res, "server reachable") != Fail {
 		t.Error("expected reachability to fail")
 	}
 	if statusOf(res, "state database") != Pass {
 		t.Error("the local state DB check should still pass — it is not network-bound")
+	}
+}
+
+// A client behind the server warns — invites an update — but never fails the
+// preflight, because a version skew does not stop a sync.
+func TestVersionSkew(t *testing.T) {
+	ts := fakeServer(t, "correct-password") // server reports 1.0.0
+	res := Run(context.Background(), cfgFor(t, ts.URL, "correct-password"), "pcsync-test", "0.9.0")
+	if statusOf(res, "client version") != Warn {
+		t.Errorf("expected a version-skew warning, got %v", statusOf(res, "client version"))
+	}
+	if !res.OK() {
+		t.Error("a version skew must not fail the preflight")
+	}
+}
+
+// A dev build cannot be compared to a release tag, so the check passes softly
+// rather than warning about a difference that means nothing.
+func TestVersionDevBuildSkipped(t *testing.T) {
+	ts := fakeServer(t, "correct-password")
+	res := Run(context.Background(), cfgFor(t, ts.URL, "correct-password"), "pcsync-test", "dev")
+	if statusOf(res, "client version") != Pass {
+		t.Errorf("a dev build should pass the version check, got %v", statusOf(res, "client version"))
 	}
 }
