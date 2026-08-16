@@ -34,6 +34,16 @@ These were listed as "still to build" in an earlier summary; they are done now:
   (accounted bytes, ZFS pool state + scrub, offsite-backup freshness, job
   counts, honest `tiering:false`) and per-user session revocation
   (`/admin/storage`, `/admin/users/{id}/sessions`).
+- **Linux packages (.deb/.rpm)** — `build-release.sh` repackages the Linux
+  binaries into installable `.deb`/`.rpm` for amd64+arm64 via nfpm (unsigned by
+  design — a local install needs no repo signature); verified building and
+  inspected the package layout. `client/nfpm.yaml`, `deploy/pcsync-packaged.service`.
+- **Client update signal** — `pcsync doctor` now carries a version check that
+  warns (never fails) when the client lags the server, so a needed update is
+  surfaced in the preflight rather than only on an explicit `pcsync version`.
+- **Web test suite** — the web app gained a vitest harness with tests for the
+  API/error layer and offline-pin index/cache invariants (`npm test`), closing
+  the "client has tests, web has none" gap.
 
 ---
 
@@ -42,7 +52,7 @@ These were listed as "still to build" in an earlier summary; they are done now:
 | Item | State | What it needs |
 |---|---|---|
 | **Native tray icon (Win/Mac)** | The platform-free tray *brain* (`client/internal/tray`) and `pcsync watch` are done and tested. | The icon+menu shell needs a CGO system-tray lib and a display — a dev machine with a GUI, which this headless CI cannot compile or exercise. |
-| **Desktop installers + auto-update** | Cross-built binaries + checksums exist (above). | A `.msi`/`.pkg`/Homebrew-Scoop manifest and an in-place updater — per-OS packaging and **code-signing keys** that live outside this repo. |
+| **Signed installers + auto-update** | Cross-built binaries + checksums exist, and **Linux `.deb`/`.rpm` now build** (unsigned, above); `doctor`/`version` flag a stale client. | A *signed* apt/dnf repo, a Homebrew/Scoop manifest, the `.msi`/`.pkg`, and an in-place updater — all needing **code-signing keys** and per-OS tooling outside this repo. |
 | **Object-storage cold tier** | API honestly reports `tiering.enabled:false` rather than faking it. | A storage backend + tiering policy — **backend work** (the other track), not front-of-API. |
 | **DR automation** | Phase-0 restore runbooks + a restore-test script exist. | Scheduled, automated failover drills — **ops/infra** work. |
 | **Push delivery** | The store-a-subscription endpoint exists; devices show their push state in Settings. | The PWA can't *subscribe* until the server publishes a VAPID public key (`PushManager.subscribe` needs it), and nothing delivers until there's a sender (web-push/APNs/FCM) — both **backend**. |
