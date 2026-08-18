@@ -1,0 +1,329 @@
+name: CI
+
+# What this is for.
+#
+# For nine phases this repository's claims about itself were checked by reading
+# it. That works until it does not: a design document said Phase 5 was finished
+# while its endpoints answered 404, and the only reason anybody noticed was an
+# audit. The contract test fixed that particular gap; this file is the same idea
+# applied to everything else — the build, the tests, the alert rules, the
+# dashboards, the ingress config, and the restore path.
+#
+# The restore-drill job is the one that earns its keep. Every other job checks
+# code; that one builds a ZFS pool on loopback files, takes snapshots, runs a
+# restic backup and restores it, and fails if the bytes do not come back. The
+# operator still has to run scripts/restore-drill.sh against their own pool —
+# nothing here can do that for them — but "does the restore path work at all"
+# stops being a question answered by a person remembering to check.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  schedule:
+    # Weekly, so a dependency or base-image change that breaks the restore path
+    # is found by the schedule rather than by the next emergency.
+    - cron: "0 5 * * 1"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  GO_VERSION: "1.26"
+  NODE_VERSION: "24"
+
+jobs:
+  server:
+    name: server (go)
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:17.5-alpine
+        env:
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: postgres
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 5s --health-timeout 5s --health-retries 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: ${{ env.GO_VERSION }}
+          cache-dependency-path: server/go.sum
+
+      - name: Build
+        working-directory: server
+        run: go build ./...
+
+      - name: Vet
+        working-directory: server
+        run: go vet ./...
+
+      - name: Check formatting
+        working-directory: server
+        run: |
+          unformatted="$(gofmt -l .)"
+          if [ -n "$unformatted" ]; then
+            echo "These files are not gofmt'd:"; echo "$unformatted"; exit 1
+          fi
+
+      # No -p 1. Each package creates and drops its own database through
+      # internal/testdb, so packages no longer contend for one — which is what
+      # made the suite need a fresh container between runs.
+      - name: Test
+        working-directory: server
+        env:
+          PC_TEST_DATABASE_URL: postgres://postgres:postgres@localhost:5432/postgres?sslmode=disable
+        run: go test ./... -count=1
+
+      # Run it a second time against the same server. This is the regression
+      # test for the isolation itself: before internal/testdb, the second run
+      # met the first run's rows and failed in three different places.
+      - name: Test again (proves the suite is re-runnable)
+        working-directory: server
+        env:
+          PC_TEST_DATABASE_URL: postgres://postgres:postgres@localhost:5432/postgres?sslmode=disable
+        run: go test ./... -count=1
+
+      - name: Race detector
+        working-directory: server
+        env:
+          PC_TEST_DATABASE_URL: postgres://postgres:postgres@localhost:5432/postgres?sslmode=disable
+        run: go test ./... -count=1 -race
+
+      - name: Vulnerability scan
+        working-directory: server
+        run: |
+          go install golang.org/x/vuln/cmd/govulncheck@latest
+          govulncheck ./...
+
+  client:
+    name: client (pcsync)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: ${{ env.GO_VERSION }}
+          cache-dependency-path: client/go.sum
+
+      - name: Build, vet, test
+        working-directory: client
+        run: |
+          go build ./...
+          go vet ./...
+          go test ./... -count=1
+
+      # The client ships to laptops, so "it builds here" is not the claim that
+      # matters. CGO stays off: a client that needs a C toolchain is a client
+      # that cannot be cross-built, which is the whole reason it is a separate
+      # pure-Go module.
+      - name: Cross-compile every target
+        working-directory: client
+        env:
+          CGO_ENABLED: "0"
+        run: |
+          for target in linux/amd64 linux/arm64 darwin/amd64 darwin/arm64 windows/amd64; do
+            GOOS="${target%/*}" GOARCH="${target#*/}" go build -o /dev/null ./cmd/pcsync
+            echo "  ok  $target"
+          done
+
+  web:
+    name: web
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+      - working-directory: web
+        run: npm ci
+      - name: Typecheck and build
+        working-directory: web
+        run: npm run build
+      - name: Test
+        working-directory: web
+        run: npm test
+
+  contract:
+    name: api contract
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:17.5-alpine
+        env:
+          POSTGRES_PASSWORD: postgres
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 5s --health-timeout 5s --health-retries 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: ${{ env.GO_VERSION }}
+          cache-dependency-path: server/go.sum
+
+      # The seam between the two tracks, checked in both directions: no client
+      # may call a route that does not exist, and no route may sit unconsumed
+      # without a declared reason. openapi.yaml is regenerated and diffed, so it
+      # cannot drift from the mux.
+      - name: Contract tests
+        working-directory: server
+        env:
+          PC_TEST_DATABASE_URL: postgres://postgres:postgres@localhost:5432/postgres?sslmode=disable
+        run: go test ./internal/httpapi -run 'TestOpenAPI|TestWebClient|TestEveryRoute' -count=1 -v
+
+  monitoring:
+    name: monitoring & deploy config
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install promtool
+        run: |
+          version="$(curl -fsSL https://api.github.com/repos/prometheus/prometheus/releases/latest | jq -r .tag_name)"
+          version="${version#v}"
+          curl -fsSL "https://github.com/prometheus/prometheus/releases/download/v${version}/prometheus-${version}.linux-amd64.tar.gz" \
+            | tar xz --strip-components=1 -C /usr/local/bin "prometheus-${version}.linux-amd64/promtool"
+          promtool --version
+
+      - name: Alert rules parse
+        run: promtool check rules deploy/monitoring/alerts.yml
+
+      # The rules have unit tests. An alert nobody has ever seen fire is a
+      # hypothesis, and these are the assertions that make the thresholds real.
+      - name: Alert rule unit tests
+        run: |
+          promtool test rules deploy/monitoring/alerts_test.yml
+          promtool test rules deploy/monitoring/alerts_restore_drill_test.yml
+
+      # Every dashboard query is real PromQL. A typo here is an empty panel
+      # discovered months later, during the incident it was meant to explain.
+      - name: Dashboard queries parse
+        run: python3 scripts/ci/check-dashboards.py "$(command -v promtool)" deploy/monitoring/grafana/dashboards
+
+      - name: Install Caddy
+        run: |
+          curl -fsSL "https://github.com/caddyserver/caddy/releases/latest/download/caddy_$(curl -fsSL https://api.github.com/repos/caddyserver/caddy/releases/latest | jq -r .tag_name | tr -d v)_linux_amd64.tar.gz" \
+            | tar xz -C /usr/local/bin caddy
+          caddy version
+
+      # Both TLS states, because switching between them is a file swap and a
+      # swap that does not parse is an ingress that does not start.
+      - name: Caddyfile validates with the internal CA and with real certificates
+        run: |
+          work="$(mktemp -d)"
+          sed 's|/etc/caddy/tls.conf|tls.conf|' deploy/caddy/Caddyfile > "$work/Caddyfile"
+          cp deploy/caddy/tls.conf "$work/tls.conf"
+          ( cd "$work" && TS_HOSTNAME=cloud SHARE_HOSTNAME=share.example.com caddy validate --config Caddyfile )
+          openssl req -x509 -newkey rsa:2048 -nodes -days 1 -subj "/CN=cloud.example.ts.net" \
+            -keyout "$work/key.pem" -out "$work/cert.pem" 2>/dev/null
+          printf 'tls cert.pem key.pem\n' > "$work/tls.conf"
+          ( cd "$work" && TS_HOSTNAME=cloud SHARE_HOSTNAME=share.example.com caddy validate --config Caddyfile )
+
+      - name: Compose file is valid and every image is pinned to a digest
+        run: |
+          cp deploy/secrets/.env.example deploy/compose/.env
+          sed -i 's|^TAILSCALE_IP=.*|TAILSCALE_IP=127.0.0.1|' deploy/compose/.env
+          docker compose -f deploy/compose/docker-compose.yml --env-file deploy/compose/.env config >/dev/null
+          # A tag is a moving pointer. Anything not pinned to a digest makes a
+          # rebuild non-reproducible, so an unpinned third-party image fails here
+          # rather than being noticed a year later.
+          unpinned="$(grep -E '^\s+image: ' deploy/compose/docker-compose.yml \
+            | grep -v '@sha256:' | grep -v 'privatecloud-' || true)"
+          if [ -n "$unpinned" ]; then
+            echo "These images are not pinned to a digest:"; echo "$unpinned"; exit 1
+          fi
+
+  shell:
+    name: shell scripts
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: shellcheck
+        run: |
+          sudo apt-get update -qq && sudo apt-get install -y shellcheck >/dev/null
+          shellcheck --severity=warning scripts/*.sh deploy/host/nut/privatecloud-ups-notify
+      - name: Scripts are executable and use LF endings
+        run: |
+          fail=0
+          for f in scripts/*.sh; do
+            if file "$f" | grep -q CRLF; then echo "CRLF line endings: $f"; fail=1; fi
+          done
+          exit $fail
+
+  restore-drill:
+    name: restore drill (real ZFS, real restic)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install ZFS and restic
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y zfsutils-linux restic >/dev/null
+          sudo modprobe zfs
+          zfs version
+
+      # A pool on two loopback files. Not the production topology, but it is a
+      # real ZFS pool with real snapshots, and the restore path does not know
+      # the difference between a loopback vdev and a disk.
+      - name: Build a mirrored pool on loopback files
+        run: |
+          sudo mkdir -p /srv/vdev
+          sudo truncate -s 2G /srv/vdev/a.img /srv/vdev/b.img
+          sudo zpool create -f tank mirror /srv/vdev/a.img /srv/vdev/b.img
+          sudo zfs create tank/configs
+          sudo zfs create tank/postgres
+          sudo zfs create tank/blobs
+          sudo zpool status tank
+
+      - name: Seed content and a restic repository
+        run: |
+          sudo mkdir -p /etc/private-cloud /srv/restic
+          openssl rand -base64 32 | sudo tee /etc/private-cloud/restic-password >/dev/null
+          sudo chmod 600 /etc/private-cloud/restic-password
+          printf 'RESTIC_REPOSITORY=/srv/restic\nRESTIC_PASSWORD_FILE=/etc/private-cloud/restic-password\nPOOL=tank\nNTFY_URL=http://127.0.0.1:1\n' \
+            | sudo tee /etc/private-cloud/backup.env >/dev/null
+          sudo chmod 600 /etc/private-cloud/backup.env
+          # Content that must come back byte for byte.
+          sudo dd if=/dev/urandom of=/tank/blobs/sample.bin bs=1M count=8 status=none
+          sudo sh -c 'echo "a file somebody would miss" > /tank/configs/notes.txt'
+          sudo BACKUP_ENV=/etc/private-cloud/backup.env ./scripts/restic-backup.sh init
+          sudo BACKUP_ENV=/etc/private-cloud/backup.env ./scripts/restic-backup.sh backup
+
+      # The actual gate. If this fails, the backups are not backups.
+      - name: Restore drill
+        run: |
+          sudo mkdir -p /var/lib/node_exporter/textfile
+          sudo REPO_DIR="$PWD" TEXTFILE_DIR=/var/lib/node_exporter/textfile \
+               BACKUP_ENV=/etc/private-cloud/backup.env \
+               ./scripts/restore-drill.sh
+
+      - name: The drill reported a metric Prometheus can alert on
+        run: |
+          cat /var/lib/node_exporter/textfile/privatecloud_restore_drill.prom
+          grep -q '^privatecloud_restore_drill_last_run_success 1$' \
+            /var/lib/node_exporter/textfile/privatecloud_restore_drill.prom
+          sudo ./scripts/restore-drill.sh --status
+
+      - name: The pool-health collector reports the pool it can see
+        run: |
+          sudo TEXTFILE_DIR=/var/lib/node_exporter/textfile ./scripts/zpool-metrics.sh
+          cat /var/lib/node_exporter/textfile/privatecloud_zpool.prom
+          grep -q 'privatecloud_zpool_health{.*state="ONLINE".*} 1' \
+            /var/lib/node_exporter/textfile/privatecloud_zpool.prom
+
+      - name: Tear down
+        if: always()
+        run: sudo zpool destroy tank || true
