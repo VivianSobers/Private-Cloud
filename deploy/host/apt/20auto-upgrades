@@ -1,0 +1,15 @@
+// Unattended upgrades — /etc/apt/apt.conf.d/20auto-upgrades
+//
+// The lists are refreshed daily and security updates are applied daily. This is
+// the half people forget: installing unattended-upgrades does nothing unless
+// something also turns it on, and the package ships disabled on Ubuntu server
+// often enough that "I installed it" and "it is running" are different facts.
+//
+// Verify with: sudo unattended-upgrade --dry-run --debug
+
+APT::Periodic::Update-Package-Lists "1";
+APT::Periodic::Unattended-Upgrade "1";
+APT::Periodic::Download-Upgradeable-Packages "1";
+// Clean the archive weekly so /var does not fill on a box whose whole job is
+// having free space.
+APT::Periodic::AutocleanInterval "7";

@@ -1,0 +1,51 @@
+// Unattended upgrades policy — /etc/apt/apt.conf.d/50unattended-upgrades
+//
+// Security updates only, automatically. Feature updates are not applied
+// unattended: this machine holds the only copy of things, and an unattended
+// change that reboots into a kernel without the ZFS module is a machine that
+// comes back with an inaccessible pool and no obvious reason why.
+
+Unattended-Upgrade::Allowed-Origins {
+    "${distro_id}:${distro_codename}-security";
+    "${distro_id}ESMApps:${distro_codename}-apps-security";
+    "${distro_id}ESM:${distro_codename}-infra-security";
+};
+
+// Docker and Tailscale publish their own repositories and their own release
+// cadence. Both are pinned deliberately: Docker because an unattended engine
+// upgrade restarts every container mid-write, Tailscale because losing the
+// tailnet is losing the only route to this machine.
+Unattended-Upgrade::Package-Blacklist {
+    "docker-ce";
+    "docker-ce-cli";
+    "containerd.io";
+    "tailscale";
+    // The ZFS packages are the sharpest edge on the list. A kernel and a
+    // zfs-dkms that disagree produce a machine that boots without the pool,
+    // which is indistinguishable from having lost it until you look closely.
+    "zfs-dkms";
+    "zfsutils-linux";
+    "linux-image-generic";
+    "linux-headers-generic";
+};
+
+Unattended-Upgrade::AutoFixInterruptedDpkg "true";
+Unattended-Upgrade::MinimalSteps "true";
+Unattended-Upgrade::Remove-Unused-Kernel-Packages "true";
+Unattended-Upgrade::Remove-Unused-Dependencies "false";
+
+// Never reboot on our own. The pool is encrypted and does not auto-unlock
+// (deliberately - see deploy/systemd/privatecloud-zfs-unlock.service), so an
+// unattended reboot at 6am is an outage lasting until somebody types a
+// passphrase. Reboots are a decision, taken while watching.
+Unattended-Upgrade::Automatic-Reboot "false";
+
+// Mail is not configured on this box; notification goes through ntfy like
+// everything else. The hook writes the same topic the alerts use.
+Unattended-Upgrade::Sender "";
+Unattended-Upgrade::MailReport "on-change";
+
+// A conservative timeout: a package script that hangs must not hold the apt
+// lock all day and block the next security update.
+Acquire::http::Dl-Limit "0";
+Unattended-Upgrade::OnlyOnACPower "false";
