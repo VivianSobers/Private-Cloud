@@ -1,0 +1,34 @@
+# Postgres with pgBackRest, for point-in-time recovery.
+#
+# The nightly pg_dumpall the backup script takes is version-portable and
+# restorable onto a bare machine, which is exactly what you want after a total
+# loss. What it cannot do is give you back the state at 14:32 — its RPO is 24
+# hours, so "someone ran the wrong UPDATE at lunchtime" costs a day of metadata.
+#
+# pgBackRest closes that by archiving WAL continuously. The dumps stay: they are
+# the belt to this pair of braces, and they survive a pgBackRest repository
+# being the thing that broke.
+#
+# Why a derived image rather than a sidecar: archive_command runs *inside* the
+# Postgres container, as the postgres user, on every WAL segment. It has to be a
+# binary that container can execute. A sidecar cannot supply it.
+#
+# The digest below is the same one docker-compose.yml pins for plain Postgres,
+# so this image and that one are the same Postgres.
+FROM postgres:17.5-alpine@sha256:6567bca8d7bc8c82c5922425a0baee57be8402df92bae5eacad5f01ae9544daa
+
+# pgbackrest comes from the Alpine community repository. Pinned to the
+# distribution's version rather than built from source: this is a backup tool,
+# and a self-built one is a second thing that can be subtly wrong at the moment
+# you need the first thing to be right.
+RUN apk add --no-cache pgbackrest \
+ && pgbackrest version
+
+# The repository and the spool live on the ZFS dataset, mounted at runtime.
+# Created here so the directories exist with the right owner even on a first
+# start where the volumes are empty.
+RUN mkdir -p /var/lib/pgbackrest /var/log/pgbackrest /var/spool/pgbackrest \
+ && chown -R postgres:postgres /var/lib/pgbackrest /var/log/pgbackrest /var/spool/pgbackrest \
+ && chmod 0750 /var/lib/pgbackrest
+
+USER postgres

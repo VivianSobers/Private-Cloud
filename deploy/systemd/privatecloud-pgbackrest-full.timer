@@ -1,0 +1,12 @@
+[Unit]
+Description=Weekly pgBackRest full backup
+
+[Timer]
+# Sunday, well before the nightly restic run at 03:20 — a full backup finishing
+# inside the restic window would have restic copying a repository mid-write.
+OnCalendar=Sun 01:30
+RandomizedDelaySec=20m
+Persistent=true
+
+[Install]
+WantedBy=timers.target

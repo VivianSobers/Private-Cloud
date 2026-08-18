@@ -1,0 +1,15 @@
+[Unit]
+Description=pgBackRest full backup of the metadata database
+Documentation=file:///opt/private-cloud/docs/runbook-restore.md
+After=docker.service
+Requires=docker.service
+
+[Service]
+Type=oneshot
+ExecStart=/opt/private-cloud/scripts/pgbackrest.sh full
+Nice=15
+IOSchedulingClass=idle
+TimeoutStartSec=3h
+
+[Install]
+WantedBy=multi-user.target

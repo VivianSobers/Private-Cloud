@@ -362,6 +362,50 @@ groups:
           description: "Inspect: SELECT kind, last_error, count(*) FROM jobs WHERE state='failed' GROUP BY 1,2;"
 
   # ==========================================================================
+  # Point-in-time recovery
+  # ==========================================================================
+  # WAL archiving is the difference between "we can get back to last midnight"
+  # and "we can get back to 14:31". It is also the quietest thing on the server
+  # when it breaks: archive_command failures appear once per WAL segment in the
+  # Postgres log and nowhere else, and the database keeps serving perfectly.
+  - name: pgbackrest
+    rules:
+      - record: privatecloud_pgbackrest_full_age_seconds
+        expr: time() - privatecloud_pgbackrest_last_success_timestamp{kind="full"}
+
+      # A full runs weekly. Ten days allows one missed Sunday plus the retry the
+      # timer's Persistent=true gives on the next boot.
+      - alert: PgBackRestFullTooOld
+        expr: privatecloud_pgbackrest_full_age_seconds > 864000
+        for: 1h
+        labels:
+          severity: warning
+        annotations:
+          summary: "No pgBackRest full backup in over 10 days"
+          description: "Point-in-time recovery is degrading: differentials chain from a full that is {{ $value | humanizeDuration }} old. Check: sudo ./scripts/pgbackrest.sh info"
+
+      - alert: PgBackRestBackupFailed
+        expr: privatecloud_pgbackrest_last_run_success == 0
+        for: 30m
+        labels:
+          severity: warning
+        annotations:
+          summary: "The last pgBackRest {{ $labels.kind }} backup failed"
+          description: "Check: sudo ./scripts/pgbackrest.sh check; docker logs privatecloud-postgres --tail 50"
+
+      # Never configured. Distinguished from "failing" because the fix is
+      # completely different — one is a broken repository, the other is a stanza
+      # that was never created, and the second looks like silence.
+      - alert: PgBackRestNotConfigured
+        expr: absent(privatecloud_pgbackrest_last_run_success)
+        for: 24h
+        labels:
+          severity: warning
+        annotations:
+          summary: "pgBackRest has never reported a backup"
+          description: "Point-in-time recovery is not running; the only recovery point is the nightly dump, with a 24h RPO. Set up: sudo ./scripts/pgbackrest.sh setup"
+
+  # ==========================================================================
   # Restore drills
   # ==========================================================================
   # A backup nobody has restored is a hypothesis. scripts/restore-drill.sh runs

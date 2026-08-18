@@ -55,13 +55,20 @@ volumes:
   caddy_data:
   caddy_config:
   web_dist:          # built SPA, produced by the `web` service
+  pgbackrest_log:    # pgBackRest's own log; the repository itself is on the pool
 
 services:
   # ==========================================================================
   # Postgres — metadata store for every later phase.
   # ==========================================================================
   postgres:
-    image: postgres:17.5-alpine@sha256:6567bca8d7bc8c82c5922425a0baee57be8402df92bae5eacad5f01ae9544daa
+    # Built from the pinned upstream image plus pgbackrest, because
+    # archive_command runs inside THIS container and has to be a binary it can
+    # execute — a sidecar cannot supply one. See Dockerfile.postgres.
+    build:
+      context: .
+      dockerfile: Dockerfile.postgres
+    image: privatecloud-postgres:${API_VERSION:-dev}
     container_name: privatecloud-postgres
     <<: *default-restart
     logging: *default-logging
@@ -72,6 +79,13 @@ services:
     # a lost+found-alike or the .zfs control dir in the way.
     volumes:
       - /tank/postgres/data:/var/lib/postgresql/data
+      # Point-in-time recovery. The repository sits on the pool so restic
+      # already carries it offsite; a backup repository that exists only on the
+      # machine it protects is a copy, not a backup.
+      - ./pgbackrest.conf:/etc/pgbackrest/pgbackrest.conf:ro
+      - /tank/postgres/backups:/var/lib/pgbackrest
+      - /tank/postgres/wal-spool:/var/spool/pgbackrest
+      - pgbackrest_log:/var/log/pgbackrest
     environment:
       POSTGRES_USER: ${POSTGRES_USER:?set POSTGRES_USER in .env}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}
@@ -119,6 +133,24 @@ services:
       - shared_preload_libraries=pg_stat_statements
       - -c
       - track_io_timing=on
+      # ---- point-in-time recovery ----------------------------------------
+      # Without WAL archiving the only recovery point is the nightly dump, so
+      # a mistake at lunchtime costs a day of metadata. With it, recovery is to
+      # any second inside the retention window.
+      - -c
+      - archive_mode=on
+      # async archiving, so a slow or briefly unavailable repository never
+      # blocks a commit. pgBackRest spools locally and catches up.
+      - -c
+      - archive_command=pgbackrest --stanza=privatecloud archive-push %p
+      # A generous timeout: an idle server still closes a segment every five
+      # minutes, which bounds how much can be lost to a sudden failure.
+      - -c
+      - archive_timeout=300
+      - -c
+      - wal_level=replica
+      - -c
+      - max_wal_senders=3
 
   # ==========================================================================
   # API — the private cloud application (Phase 1).

@@ -1,10 +1,21 @@
 # Runbook — Restore
 
-**Status: ✅ written and reviewed; 🟠 rehearsal is the operator's.** Every
-procedure here is manual by design — see [deferred-work.md](deferred-work.md) on why
-❌ DR automation is not built: automating a restore means automating something whose
-failure mode is overwriting good data with old data. The rehearsal is worth more
-than the automation until the rehearsal is boring.
+**Status: ✅ written, reviewed, and now rehearsed automatically.**
+
+The recovery *procedures* here stay manual by design, and that has not changed:
+automating a restore means automating something whose failure mode is overwriting
+good data with old data, under time pressure, with no second chance.
+
+What is automated is the **drill**. `scripts/restore-drill.sh` runs
+`restore-test.sh` monthly, writes `privatecloud_restore_drill_*` into the same
+textfile collector the alerts scrape, and pushes the result to ntfy;
+`RestoreDrillTooOld` fires when no drill has passed in 92 days. CI runs the same
+drill against a real ZFS pool on loopback files on every push. The line this
+document used to carry — "re-run this quarterly, put it in the calendar" — was a
+person promising to remember, and its failure mode was silent.
+
+✅ **Point-in-time recovery** landed too: §4c restores the metadata database to a
+specific second rather than to a snapshot boundary.
 
 **Read this when something is lost.** Procedures are ordered from least to most
 destructive. Work down the list; stop as soon as you have your data back.
@@ -143,11 +154,89 @@ docker compose logs -f postgres      # expect "database system is ready"
 
 If it doesn't come up, fall back to 4a.
 
-> **Gap worth naming:** neither path gives point-in-time recovery. Restoring to
-> "10 minutes before the bad `DELETE`" needs continuous WAL archiving
-> (pgBackRest). Phase 0's RPO for Postgres is **24 hours** from the dump, or
-> **15 minutes** from ZFS snapshots. Add pgBackRest in Phase 1, before there is
-> data you'd miss.
+> **That gap is now closed — see 4c.** This note used to end "add pgBackRest in
+> Phase 1, before there is data you'd miss", and for nine phases it did not
+> happen. Both paths above still have the RPO they always had (24 hours from the
+> dump, 15 minutes from snapshots); 4c is the one that gets you to a specific
+> second.
+
+### 4c. Point-in-time recovery with pgBackRest — restore to a *moment*
+
+This is the path for "someone ran the wrong `UPDATE` at 14:31 and we noticed at
+16:00". The other two give you a snapshot boundary; this gives you 14:30:59.
+
+**First, find out what you can actually recover to.** Do this before destroying
+anything — the answer bounds every decision that follows.
+
+```bash
+sudo ./scripts/pgbackrest.sh info
+# backup/archive listing: oldest full, newest WAL. You can recover to any moment
+# between the start of the oldest retained full backup and the newest archived
+# segment.
+```
+
+**Stop the API before the database.** An API that reconnects mid-restore writes
+into a half-recovered tree, and the tree is the thing being recovered.
+
+```bash
+cd deploy/compose
+docker compose stop api pcworker
+docker compose stop postgres
+```
+
+**Take a snapshot of the current state first.** Point-in-time recovery is
+destructive to the data directory, and "we restored to the wrong second" is a
+mistake you want to be able to undo.
+
+```bash
+sudo zfs snapshot tank/postgres@pre-pitr-$(date +%Y%m%d%H%M)
+```
+
+**Restore.** The target is a timestamp with a timezone; `--type=time` stops
+replay there rather than at the end of the WAL.
+
+```bash
+docker compose run --rm --user postgres postgres   pgbackrest --stanza=privatecloud              --type=time --target="2026-08-18 14:30:59+00"              --delta restore
+```
+
+`--delta` compares what is on disk against the repository and moves only what
+differs, which on a large database is the difference between minutes and hours.
+
+**Start it and watch the replay.** Postgres comes up in recovery, replays to the
+target, and then pauses.
+
+```bash
+docker compose up -d postgres
+docker compose logs -f postgres     # expect "recovery stopping before ... "
+```
+
+**Verify before promoting.** The database is read-only at this point, which is
+exactly the moment to check you picked the right second:
+
+```bash
+docker compose exec postgres psql -U "$POSTGRES_USER" -d "$POSTGRES_DB"   -c "select id, name, path, updated_at from nodes order by updated_at desc limit 20;"
+```
+
+If the target was wrong, roll back to the snapshot above and try another
+timestamp. If it is right, promote and restart the rest:
+
+```bash
+docker compose exec postgres psql -U "$POSTGRES_USER" -c "select pg_wal_replay_resume();"
+docker compose up -d
+sudo ./scripts/pgbackrest.sh check
+```
+
+> **The blob store is not rolled back with the database, and must not be.**
+> Content is addressed by hash and never mutated, so an older `nodes` table
+> pointing at newer blobs is consistent — the extra blobs are simply
+> unreferenced, and GC reclaims them. Rolling `tank/blobs` back to match would
+> destroy content uploaded after the target, which is real data loss in service
+> of undoing a metadata mistake. Run `cloudctl fsck` afterwards to confirm every
+> row the restored database names still has its bytes.
+
+> **Take a fresh full backup after any PITR.** The restored cluster has a new
+> timeline, and differentials chained from the old one are no longer a path back
+> to now: `sudo ./scripts/pgbackrest.sh full`.
 
 ---
 

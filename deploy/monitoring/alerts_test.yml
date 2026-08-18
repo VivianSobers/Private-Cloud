@@ -222,3 +222,39 @@ tests:
             exp_annotations:
               summary: "No restore drill has ever reported"
               description: "Either the drill has never run or the textfile collector is not wired up. Install: sudo ./scripts/host-setup.sh --timers"
+
+  # ---- point-in-time recovery ---------------------------------------------
+  - name: PgBackRestBackupFailed fires for the kind that failed
+    interval: 1m
+    input_series:
+      - series: 'privatecloud_pgbackrest_last_run_success{kind="diff"}'
+        values: '1x30 0x60'
+      - series: 'privatecloud_pgbackrest_last_run_success{kind="full"}'
+        values: '1x120'              # the weekly full is fine throughout
+    alert_rule_test:
+      - alertname: PgBackRestBackupFailed
+        eval_time: 20m
+        exp_alerts: []
+      # Only the differential alerts. The label is what tells the operator which
+      # of the two schedules to look at, and they fail for different reasons.
+      - alertname: PgBackRestBackupFailed
+        eval_time: 70m
+        exp_alerts:
+          - exp_labels: { severity: warning, kind: diff }
+            exp_annotations:
+              summary: "The last pgBackRest diff backup failed"
+              description: "Check: sudo ./scripts/pgbackrest.sh check; docker logs privatecloud-postgres --tail 50"
+
+  - name: PgBackRestNotConfigured fires when nothing has ever reported
+    interval: 1m
+    input_series:
+      - series: 'up{job="node"}'
+        values: '1x2000'
+    alert_rule_test:
+      - alertname: PgBackRestNotConfigured
+        eval_time: 25h
+        exp_alerts:
+          - exp_labels: { severity: warning }
+            exp_annotations:
+              summary: "pgBackRest has never reported a backup"
+              description: "Point-in-time recovery is not running; the only recovery point is the nightly dump, with a 24h RPO. Set up: sudo ./scripts/pgbackrest.sh setup"

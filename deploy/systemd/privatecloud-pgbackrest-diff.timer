@@ -1,0 +1,12 @@
+[Unit]
+Description=Daily pgBackRest differential backup
+
+[Timer]
+# Every night except Sunday, when the full runs instead. A differential on top
+# of a full taken an hour earlier would be an empty backup and a wasted spin-up.
+OnCalendar=Mon..Sat 01:30
+RandomizedDelaySec=20m
+Persistent=true
+
+[Install]
+WantedBy=timers.target
