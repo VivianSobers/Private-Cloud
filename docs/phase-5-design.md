@@ -1,12 +1,16 @@
 # Phase 5 — Photos & Media Design
 
-**Status: 🟠 server complete (8/8 slices); two front-of-API slices open.** The
-exit criterion below is met and the phase is usable end to end. What is still ❌ is
-a **map view** over the EXIF GPS the node already serves, and what is 🟠 is
-**reordering an album by pointer drag** — adding to an album and replacing the
-whole order in one call both work, but a person reorders with move-up/move-down
-buttons. ❌ Video metadata beyond "this is a video" needs a demuxer. Marks: ✅ done
-· 🟠 partial · ❌ not built; the ledger is [status.md](status.md).
+**Status: 🟠 server complete (8/8 slices); one front-of-API slice open.** The exit
+criterion below is met and the phase is usable end to end — and the photo viewer has
+since grown Phase 8's face overlay and find-similar, and Phase 6's offline pinning,
+on top of it.
+
+Still ❌: a **map view** over the EXIF GPS the node already serves, and video metadata
+beyond "this is a video", which needs a demuxer. Still 🟠: **reordering an album by
+pointer drag** — adding to an album and replacing the whole order in one call both
+work, but a person reorders with move-up/move-down buttons.
+
+Marks: ✅ done · 🟠 partial · ❌ not built; the ledger is [status.md](status.md).
 
 Written after the code rather than before it — which is
 itself part of the record: every other phase in this project got a design
@@ -168,7 +172,7 @@ formats in-process, so the bounds are explicit:
 | **6** | `?variant=thumb\|preview` on the content route | ✅ `404 variant_unavailable` when not yet rendered; immutable caching |
 | **7** | `GET /media/timeline` | ✅ sorted by capture time, metadata batched per page |
 | **8** | `/albums` CRUD + items + reorder | ✅ ownership enforced on every node id the caller supplies |
-| **9** | Gallery, timeline, lightbox, album views in `web/` | ✅ built against the contract; they light up unchanged now the endpoints answer |
+| **9** | Gallery, timeline, lightbox, album views in `web/` | ✅ built against the contract; they lit up unchanged when the endpoints started answering, and the lightbox is now where face correction, find-similar and offline pinning live too |
 | 10 | Reorder and "add to album" wiring in `web/` | 🟠 **shipped, but not as a drag.** Selection mode → "Add to album…" ✅ (`POST /albums/{id}/items`, one call for the whole selection); reordering ✅ via move-up/move-down buttons in a "Manage" mode, persisted with the wholesale `PATCH /albums/{id}/items`. ❌ No pointer drag and no drag-select. The endpoint contract — replace the order wholesale, never N per-item updates — was written for a drag and the buttons already satisfy it, so the remaining work is entirely in the browser |
 | 11 | Map view from EXIF GPS | ❌ **not built.** `gps` is served on the node, unrounded, and typed in the web client (`api.ts`) — nothing renders it. No map library is a dependency, which is the decision to make first: an offline-capable PWA and a tile provider that phones home are in tension |
 

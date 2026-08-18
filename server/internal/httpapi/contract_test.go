@@ -219,19 +219,15 @@ func normalisePath(p string) string {
 // unconsumed route, and a declaration for a route that is now called or no longer
 // exists. Deleting a line from here is part of shipping the client for it.
 var awaitingClient = map[string]string{
-	"/api/v1/devices":                  "Phase 6 device management; no UI yet",
-	"/api/v1/devices/*":                "Phase 6 device management; no UI yet",
-	"/api/v1/devices/*/push":           "Phase 6 Web Push; the PWA does not subscribe yet",
-	"/api/v1/people":                   "Phase 8 people browser; no UI yet",
-	"/api/v1/people/*":                 "Phase 8 people browser; no UI yet",
-	"/api/v1/people/*/merge":           "Phase 8 cluster correction; no UI yet",
-	"/api/v1/nodes/*/faces":            "Phase 8 face overlay; no UI yet",
-	"/api/v1/nodes/*/faces/*/reassign": "Phase 8 face correction; no UI yet",
-	"/api/v1/nodes/*/similar":          "Phase 8 more-like-this; no UI yet",
-	"/api/v1/chat":                     "Phase 8 ask; the Ask view still calls /search?semantic=true",
-	"/api/v1/admin/storage":            "Phase 9 storage health; no admin UI yet",
-	"/api/v1/admin/users/*/sessions":   "Phase 7 admin console; sign-out-everywhere is not wired up",
-	"/api/v1/admin/users/*/sessions/*": "Phase 7 admin console; see above",
+	// The list was thirteen shapes when this test was written: five device routes,
+	// the whole people browser, /similar, /chat, /admin/storage and the admin
+	// session routes. All twelve of those now have a client, and each was deleted
+	// from here as its UI landed — which is the shape a healthy declaration list
+	// has. One remains.
+	"/api/v1/devices/*/push": "Phase 6 Web Push. The PWA cannot subscribe yet: " +
+		"PushManager.subscribe needs a VAPID public key this server does not " +
+		"publish, and nothing would deliver the notification if it did. Both " +
+		"halves are behind the API, so this is not waiting on a UI.",
 }
 
 // invisiblyConsumed are routes a client DOES call, in a way this test cannot
@@ -275,6 +271,10 @@ var operationalRoutes = map[string]bool{
 // to have written down which, and fails when a route is neither consumed nor
 // declared. It also fails on a stale declaration, so the list shrinks as clients
 // ship rather than becoming a graveyard nobody prunes.
+//
+// That mechanism has now been exercised: of the thirteen shapes first declared,
+// twelve have shipped a client and been deleted from the list, and the deletions
+// were forced by this test rather than remembered by anybody.
 func TestEveryRouteIsConsumedOrDeclaredPending(t *testing.T) {
 	consumed := map[string]bool{}
 	for _, src := range []struct{ path, desc string }{

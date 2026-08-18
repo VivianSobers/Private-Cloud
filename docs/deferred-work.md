@@ -140,34 +140,58 @@ decided.
 
 ## ❌ Not built in front of the API
 
-The behind-the-API track ran ahead. These are the consumers that do not exist yet;
-the endpoints they would call are all live and are declared in `awaitingClient`.
+This section is much shorter than it was. Twelve of the thirteen route shapes once
+declared in `awaitingClient` have shipped a client — the chat answer view, the
+people browser, face correction, find-similar, device management, the admin Storage
+tab and per-user session revocation — and each deletion from that map was forced by
+the contract test rather than remembered. What remains:
 
 | Missing client | Endpoint it would call | Phase |
 |---|---|---|
-| Device management: name a device, revoke a lost laptop | `GET/PATCH/DELETE /devices` | 6 |
-| Web Push subscription from the PWA | `POST/DELETE /devices/{id}/push` | 6 |
-| Platform tray icon + menu adapter (no `desktop/` directory) | the local control socket, which is built | 6 |
-| Desktop installers and auto-update | — | 6 |
-| Mobile offline pinning, share target | — | 6 |
 | Browsing into a granted folder | `?include_shared=true` on children/search/tags | 7 |
-| Per-user session management in the admin console | `GET/DELETE /admin/users/{id}/sessions` | 7 |
-| A written-answer view | `POST /chat` | 8 |
-| People browser, name-a-face, merge, reassign | `/people`, `/nodes/{id}/faces` | 8 |
-| "More like this" affordance | `GET /nodes/{id}/similar` | 8 |
-| Storage-health panel | `GET /admin/storage` | 9 |
-| Map view over photo GPS | `gps` on the node — already served | 5 |
+| Map view over photo GPS | `gps` on the node — already served, unrounded | 5 |
+| Platform tray icon + menu adapter (no `desktop/` directory) | the local control socket, which is built | 6 |
+| PWA share target | — | 6 |
 
-**Why not:** nothing more interesting than sequencing. The split by layer means
-the two tracks land at different times, and a route arriving before its UI is the
-recoverable direction. What is *not* acceptable is a route sitting unconsumed with
-nobody able to say whether that is a plan, which is why the list is mechanical.
+**Why not:** the first two are sequencing and nothing more — small, unclaimed, and
+with the server side already live. The map view has one real decision in it: an
+offline-capable PWA and a tile provider that phones home for every tile are in
+tension, and picking a provider is picking what leaks.
 
-🟠 **Pointer-drag album reordering** is the one half-built item here rather than a
-missing one: adding to an album and replacing the whole order in one `PATCH` both
-work, but a person reorders with move-up/move-down buttons in a "Manage" mode. The
-endpoint contract — replace the order wholesale, never N per-item updates — was
-written for a drag and is already satisfied by the buttons.
+The tray icon is different: it is blocked on an **environment**, not a decision. It
+needs a CGO system-tray library and a machine with a display to compile and exercise
+against, which a headless checkout is not. Everything it would render and every
+action it would fire is built and unit-tested in `client/internal/tray`.
+
+🟠 **Pointer-drag album reordering** is half-built rather than missing: adding to an
+album and replacing the whole order in one `PATCH` both work, but a person reorders
+with move-up/move-down buttons in a "Manage" mode. The endpoint contract — replace
+the order wholesale, never N per-item updates — was written for a drag and is already
+satisfied by the buttons.
+
+### ❌ Push delivery, and why it is not a client gap
+
+`POST`/`DELETE /devices/{id}/push` stores a subscription and is the **one** route in
+this repository that no client calls. That looks like a missing UI and is not: a PWA
+cannot call `PushManager.subscribe` without a **VAPID public key**, which this server
+does not publish, and nothing would deliver the notification if it could. Both halves
+are behind the API.
+
+**Why not:** this server does not talk to APNs or FCM and should not learn to. It
+stores what a client registered so something else can deliver. A client that
+registers nothing polls `GET /changes`, which is the existing working path — so push
+is a latency optimisation and never a correctness requirement.
+
+### 🟠 Signed installers and auto-update
+
+Cross-platform binaries with `SHA256SUMS` build, and Linux `.deb`/`.rpm` for amd64
+and arm64 build via nfpm — **unsigned on purpose**, because a locally installed
+package needs no signature; only a *repository* does.
+
+**Why not the rest:** a signed apt/dnf repo, a Homebrew or Scoop manifest, the
+`.msi`/`.pkg` and an in-place updater all need **code-signing keys** and per-OS
+tooling that live outside this repository. `pcsync doctor` and `pcsync version` flag
+a client lagging the server in the meantime, so a needed update is never silent.
 
 ## ❌ Ops follow-ups from Phase 0
 

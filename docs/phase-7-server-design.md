@@ -1,17 +1,19 @@
 # Phase 7 — Multi-user & sharing (behind the API) design
 
-**Status: ✅ complete — 4/4 slices behind the API.** Two things remain: ❌ per-user
-API rate limiting (slice 5, deferred since Phase 4) and 🟠 the last-admin guard,
-whose *refusal* path has no integration test for a reason recorded in §4. In front
-of the API two consumers are still ❌ missing — see
-[phase-7-design.md](phase-7-design.md). Marks: ✅ done · 🟠 partial · ❌ not built;
-the ledger is [status.md](status.md).
+**Status: ✅ complete — 4/4 slices behind the API, and now consumed.** Two things
+remain: ❌ per-user API rate limiting (slice 5, deferred since Phase 4) and 🟠 the
+last-admin guard, whose *refusal* path has no integration test for a reason recorded
+in §4. In front of the API one consumer is still ❌ missing — the shared-folder
+browser; see [phase-7-design.md](phase-7-design.md).
 
-The server half of the phase whose client half is described
-in [phase-7-design.md](phase-7-design.md). Those three UIs — share-with-people,
-shared-with-me, the admin console — were built against the contract months
-before any of this existed and degraded to "not available on this server yet".
-They now light up unchanged, which was the point of the seam.
+Marks: ✅ done · 🟠 partial · ❌ not built; the ledger is [status.md](status.md).
+
+The server half of the phase whose client half is described in
+[phase-7-design.md](phase-7-design.md). Those UIs — share-with-people,
+shared-with-me, the admin console — were built against the contract months before
+any of this existed and degraded to "not available on this server yet". They lit up
+unchanged when it landed, which was the point of the seam, and the console has since
+grown session revocation and a storage tab on top of the same surface.
 
 **Exit criterion:** two accounts on one server can share a folder in either
 direction, each seeing exactly what they were given and nothing else; an
@@ -198,12 +200,16 @@ log was busy is a broken feature.
 | **4** | Editor writes: owner-charged quota, move and delete semantics | ✅ 7 tests |
 | 5 | Per-user API rate limiting | ❌ still deferred — see [phase-4-hardening.md](phase-4-hardening.md) §5. Now more relevant than it was: a second user is no longer hypothetical, and Phase 8 gave one request a GPU box to spend |
 
-**Consumed by a client?** Slices 1–4 are ✅ served and mostly ✅ consumed. Two
-route groups are served with no client and declared in `awaitingClient`:
-`GET`/`DELETE /admin/users/{id}/sessions` (no session management in the console),
-and the `?include_shared=true` widening on children/search/tags, which nothing in
-`web/` sends — so the ACL work is reachable through `/shared` but not by browsing
-into a granted folder.
+**Consumed by a client?** Slices 1–4 are ✅ served and ✅ consumed — including
+`GET`/`DELETE /admin/users/{id}/sessions`, which shipped with the admin console's
+session view and was deleted from `awaitingClient` as a result.
+
+One thing remains unconsumed, and it is a query parameter rather than a route, so no
+test guards it: **`?include_shared=true`** on children, search and tags. Nothing in
+`web/` sends it. The ACL work is therefore reachable through `/shared` and through
+`POST /chat` (which does pass `include_shared`), but a grantee cannot browse *into* a
+shared folder. The design's central compatibility decision — opt-in widening — is
+implemented and, for listings, still unexercised.
 
 ## 7. Risks
 

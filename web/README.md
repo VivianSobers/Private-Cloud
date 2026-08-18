@@ -2,30 +2,27 @@
 
 React 19 + TypeScript, built with Vite.
 
-**Status: 🟠 the front-of-API track trails the server.** Shipped ✅: the file
+**Status: 🟠 wired to every shipped endpoint but three.** Shipped ✅: the file
 browser, trash, versions, share links and share management, tags and tag browsing,
-search (keyword and semantic), the photo timeline / lightbox / albums, ask-your-
-library retrieval, share-with-people, shared-with-me, a storage audit that runs
-`fsck`, the admin console (users · quotas · audit log) and an installable PWA
-shell.
+search (keyword and semantic), the photo timeline / lightbox / albums, Ask with
+generated answers and mandatory citations, the People face browser, face correction
+in the lightbox, find-similar, offline file pinning, share-with-people,
+shared-with-me, a storage audit that runs `fsck`, device management, the admin
+console (users · quotas · storage · audit log · per-user sessions) and an installable
+PWA shell.
 
-Not built ❌, though the server routes for all of it are live:
+Still ❌ open, with the server side of each already live:
 
-| Missing view | Endpoint it would call |
-|---|---|
-| Written answers with citations | `POST /chat` — `Ask` still calls `/search?semantic=true` |
-| People / faces browser, name-a-face, merge | `/people`, `/nodes/{id}/faces` |
-| "More like this" | `GET /nodes/{id}/similar` |
-| Device management (name, revoke a lost laptop) | `/devices` — Settings lists *sessions* instead |
-| Web Push subscription | `POST /devices/{id}/push` |
-| Storage-health panel | `GET /admin/storage` |
-| Per-user session management in the console | `/admin/users/{id}/sessions` |
-| Browsing into a granted folder | `?include_shared=true` on children/search/tags |
-| Map view over photo GPS | the `gps` field, already typed in `api.ts` |
+| Missing | Endpoint it would call | Note |
+|---|---|---|
+| Browsing into a granted folder | `?include_shared=true` on children/search/tags | shared content is reachable through the Shared view and through `/chat`, but a shared *folder* cannot be opened inline |
+| Map view over photo GPS | the `gps` field, already typed in `api.ts` | needs a map library, and an offline-capable PWA is in tension with a tile provider that phones home |
+| Web Push subscription | `POST /devices/{id}/push` | blocked behind the API, not here: the server publishes no VAPID public key, without which `PushManager.subscribe` cannot be called |
+| PWA share target | — | |
 
 🟠 Album reordering ships as move-up/move-down buttons in a "Manage" mode, not a
 pointer drag; drag-select is not built. The endpoint contract (replace the whole
-order in one call) is already satisfied.
+order in one call) is already satisfied by the buttons.
 
 The ledger for all of this is [../docs/status.md](../docs/status.md); the
 mechanically-enforced version is `awaitingClient` in
@@ -41,10 +38,17 @@ different host could not use the passkeys this server issues.
 npm install
 npm run dev      # http://localhost:5173, proxying /api to localhost:8080
 npm run build    # tsc --noEmit, then vite build -> dist/
+npm test         # vitest run — the API/error layer and the offline-pin invariants
 ```
 
 `npm run build` typechecks before bundling, so a type error fails the build
 rather than shipping a bundle that misuses the API.
+
+✅ **There is a test suite now** — 20 cases across [src/api.test.ts](src/api.test.ts)
+and [src/pin.test.ts](src/pin.test.ts), covering the error-shape parsing every view
+depends on and the pin index/cache invariants that decide whether an offline file is
+still there. It closes the "the client has tests, the web app has none" gap; it is
+not broad coverage of the components.
 
 No Node installed? The whole thing builds in a container. Keep `node_modules`
 in a named volume — installing thousands of small files into a Windows bind
@@ -78,7 +82,10 @@ src/SharePage.tsx  the public /s/{token} view, on the share plane
 src/Tags.tsx       per-node tag editing (Phase 4)
 src/TagBrowser.tsx browse by tag, with counts (Phase 4)
 src/Photos.tsx     photo timeline + albums (Phase 5 media surface)
-src/Ask.tsx        ask-your-library semantic retrieval (Phase 8; runs on Phase 4 search)
+src/Ask.tsx        ask-your-library: /chat answer + citations (Phase 8)
+src/People.tsx     face clusters — view + name (Phase 8)
+src/Offline.tsx    files pinned for offline access (Phase 6)
+src/pin.ts         offline-pin store (Cache API + index)
 src/PeopleShare.tsx  grant/revoke user access on a node (Phase 7)
 src/SharedWithMe.tsx roots others shared with me (Phase 7)
 src/Admin.tsx      admin console: users + audit log (Phase 7, admin-only)
@@ -86,9 +93,9 @@ src/Settings.tsx   passkeys, sessions, recovery codes, app passwords, fsck audit
 src/styles.css     hand-rolled, no framework
 ```
 
-Six top-level views (Files · Photos · Ask · Shared · Admin · Settings), the last
-gated on `is_admin` — client-side for convenience only; every admin route is `403`
-server-side, which is the actual boundary.
+Eight top-level views (Files · Photos · People · Ask · Shared · Offline · Admin ·
+Settings), the Admin one gated on `is_admin` — client-side for convenience only;
+every admin route is `403` server-side, which is the actual boundary.
 
 ## Decisions worth knowing
 
@@ -97,10 +104,11 @@ and this is a single-purpose app whose layout will never need a grid system.
 Both colour schemes are declared, because a file browser is something people
 open at night.
 
-**No router.** Six views switched by state, and the SPA fallback in Caddy means
-deep links would need server cooperation anyway. This is the decision most likely
-to need revisiting: it was comfortable at two views, and it is the reason there are
-no shareable in-app URLs — a photo, an album or a search cannot be linked to.
+**No router.** Eight views switched by state, and the SPA fallback in Caddy means
+deep links would need server cooperation anyway. This is the decision most likely to
+need revisiting: it was comfortable at two views, and it is the reason there are no
+shareable in-app URLs — a photo, an album, a person or a search cannot be linked
+to.
 
 **Uploads switch strategy at 8 MiB.** Below that, a plain `POST` — one request,
 no session row, no staging file. Above it, tus, because a large transfer over a

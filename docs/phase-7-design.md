@@ -1,7 +1,7 @@
 # Phase 7 — Multi-user & sharing (Vivian's front-of-API) design
 
-**Status: 🟠 three of five client pieces shipped, and the server behind them is now
-✅ complete.**
+**Status: 🟠 four of five client pieces shipped, and the server behind them is ✅
+complete.**
 
 When this document was first written the server handlers did not exist, so every
 panel degraded to a clear "not available on this server yet" state. That is no
@@ -15,8 +15,8 @@ updating.
 | Share with people (grant, change role, revoke) | ✅ |
 | Shared with me (the roots others granted) | ✅ |
 | Admin console: users, quotas, audit log | ✅ |
-| Browsing **into** a granted folder (`?include_shared=true`) | ❌ |
-| Per-user session management in the console | ❌ |
+| Per-user session management in the console | ✅ |
+| Browsing **into** a granted folder (`?include_shared=true`) | ❌ the last one |
 
 Marks: ✅ done · 🟠 partial · ❌ not built; the ledger is [status.md](status.md).
 
@@ -54,17 +54,17 @@ When the handlers shipped, **no UI change was needed** — the prediction this
 section made is now a fact, and it is the strongest evidence in the repository that
 the layer split was the right call.
 
-## ❌ Not yet
+## What is left, and what has since landed
 
-- ❌ **The shared-folder browser** — navigating into a granted folder with
+- ❌ **The shared-folder browser** — the last piece, and the only one left in this
+  phase. Navigating into a granted folder with
   `?include_shared=true`. The server has supported it since slice 2, and
   `include_shared` appears nowhere in `web/src`, so shared content is reachable
   only through the dedicated "Shared with me" view. A grantee cannot open a shared
   *folder* inline.
-- ❌ **Per-user session management** in the admin console
-  (`GET`/`DELETE /admin/users/{id}/sessions`). Both routes are served and are
-  declared in `awaitingClient`; sign-out-everywhere is a `cloudctl` or SQL job
-  today.
+- ✅ **Per-user session management** has since shipped: the users table expands to
+  another account's live sessions and can revoke one, so sign-out-everywhere is no
+  longer a `cloudctl` or SQL job.
 - 🟠 **The Phase 5 gallery wiring** is no longer open in the way this line
   originally meant: "add to album" and reordering both shipped, but reordering is
   move-up/move-down buttons rather than a pointer drag, and drag-select was never

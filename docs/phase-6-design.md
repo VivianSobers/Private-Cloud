@@ -1,22 +1,30 @@
 # Phase 6 — Native clients design
 
-**Status: 🟠 server side ✅ complete; three client slices ❌ open, and the server's
-own five routes have no consumer.**
+**Status: 🟠 server side ✅ complete and consumed; the client is production-shaped
+with two packaging items left, both blocked on tooling rather than a decision.**
 
 | | Status |
 |---|---|
-| Behind the API — `device_name` column, five `/devices` routes, the escalation fix | ✅ built · ❌ **no client calls any of them** |
+| Behind the API — `device_name` column, five `/devices` routes, the escalation fix | ✅ built; list/rename/revoke ✅ consumed by Settings |
+| The push-subscription hook (`POST`/`DELETE /devices/{id}/push`) | ✅ served · ❌ **the one route in this repo nothing calls** — see §6 |
 | Slice 1 — local control socket (`status`/`conflicts`/`sync`/`pause`/`resume`) | ✅ |
 | Slice 2 — selective sync | ✅ |
 | Slice 3 — platform-free tray presenter + `pcsync watch` | ✅ |
-| Slice 3b — the platform **icon + menu adapter** | ❌ no `desktop/` directory exists |
-| Slice 4 — conflict list/dismiss, transfer tallies, `.pcsyncignore`, `pcsync doctor` | ✅ shipped, and not in the original plan |
+| Slice 3b — the platform **icon + menu adapter** | ❌ needs a CGO tray library and a display |
+| Slice 4 — conflict list/dismiss, transfer tallies, `.pcsyncignore`, `doctor`, `version`, cross-builds | ✅ shipped, and not in the original plan |
 | Slice 5 — installable PWA: manifest, icon, offline app shell | ✅ |
-| Slice 6 — desktop installers + auto-update | ❌ |
-| Slice 7 — mobile polish: offline pinning, share target, push **delivery** | ❌ |
-| Device management UI (name a device, revoke a lost laptop) | ❌ Settings lists *sessions*, not `/devices` |
+| Slice 6 — offline file pinning | 🟠 built and unit-tested; runtime SW behaviour wants on-device verification |
+| Slice 7 — device management UI in Settings | ✅ |
+| Slice 8 — Linux `.deb`/`.rpm` via nfpm | ✅ unsigned **by design** |
+| Slice 9 — signed installers, apt/dnf repo, Homebrew/Scoop, `.msi`/`.pkg`, auto-update | ❌ needs code-signing keys |
+| Slice 10 — PWA share target · push **delivery** | ❌ |
 
 Marks: ✅ done · 🟠 partial · ❌ not built; the ledger is [status.md](status.md).
+
+**The exit criterion below is met except for the words "from the system tray".**
+Everything a person needs — status, pause, force-sync, the conflict list, selective
+sync — is reachable, from `pcsync watch` and from the web app, rather than from an
+icon. That is a real gap for a desktop user and a small one for anyone else.
 
 The bulk of
 this phase is the front-of-API track from [roadmap-split.md](roadmap-split.md):
@@ -151,18 +159,49 @@ them, which is how finished work becomes invisible:
   pattern, the complement to selective sync's *server* prefixes. A path ignored
   after it was already synced is left alone on the server, never trashed.
 - **`pcsync doctor`** — preflight checks, so a misconfigured client says why
-  instead of failing at the first request.
+  instead of failing at the first request, plus a version check that warns (never
+  fails) when the client lags the server.
+- **Cross-platform release builds** — `client/build-release.sh` produces static,
+  CGO-free binaries and `SHA256SUMS` for linux/macOS/Windows, and repackages the
+  Linux ones as `.deb`/`.rpm` via nfpm when it is installed.
+
+## 5c. Slice 6 — Offline file pinning ✅
+
+Mobile polish landed: a file can be **pinned for offline access**. Its bytes are
+stored in a dedicated Cache Storage bucket (`pc-pinned`, [web/src/pin.ts](../web/src/pin.ts))
+and the service worker serves that bucket when the network is gone —
+network-first for freshness and to revalidate auth, cache on failure. A small
+localStorage index remembers *which* files are pinned so the **Offline** view can
+list them, since Cache Storage keys on URLs alone. Pin/unpin lives in the photo
+viewer; the shell-cache version bump deliberately preserves the pin bucket so an
+app update never evicts a user's offline files. (🟠 Runtime service-worker
+behaviour wants on-device verification; the logic is conservative and only ever
+touches the bare content URL a pin created.)
+
+## 5d. The device UI landed too ✅
+
+Settings now lists the machines running the sync client — name, platform, last
+seen, push state — and can rename or revoke one, against the five `/devices`
+routes in §7. A revoked device stops syncing on its next request. So "I lost my
+laptop" is a button, which it was not when §6 below was first written.
 
 ## 6. Later slices ❌ (not yet)
 
-- ❌ The platform tray icon adapter + desktop installers / auto-update. Everything
-  it would display and every action it would fire is built and unit-tested in
-  `internal/tray` and the control client; what is missing is the platform shell.
-- ❌ Mobile polish: offline pinning of chosen files, share-target, push **delivery**
-  (the subscription is stored server-side; something still has to send).
-- ❌ A device-management UI. The five routes in §7 are served and, per
-  `awaitingClient`, nothing in this repository calls them — so "I lost my laptop"
-  is today a `curl` or a `cloudctl` session, not a button.
+- 🟠 **The platform tray icon adapter.** Everything it would display and every
+  action it would fire is built and unit-tested in `internal/tray` and the control
+  client; what is missing is the platform shell, which needs a CGO system-tray
+  library and a machine with a display.
+- 🟠 **Signed installers + auto-update.** Cross-built binaries, checksums and
+  unsigned Linux `.deb`/`.rpm` now build; ❌ a signed apt/dnf repo, a Homebrew or
+  Scoop manifest, the `.msi`/`.pkg` and an in-place updater all need code-signing
+  keys and per-OS tooling from outside this repo. `doctor` and `version` flag a
+  stale client in the meantime, so an update is never silent.
+- ❌ **Push delivery.** Two halves are missing and both are behind the API: the
+  server publishes no VAPID public key, without which `PushManager.subscribe`
+  cannot be called at all, and nothing sends. `POST /devices/{id}/push` stores a
+  subscription that no client can yet create — the one route in this phase still
+  waiting on a consumer.
+- ❌ **A share target** for the PWA.
 
 ---
 
@@ -189,15 +228,16 @@ is not. Android is checked before Linux, since Android agents contain both.
 
 | Route | Purpose | Built | Consumed |
 |---|---|---|---|
-| `GET /devices` | list, with `current` marking the caller's own | ✅ | ❌ |
-| `PATCH /devices/{id}` | rename "unknown device" to "the laptop" | ✅ | ❌ |
-| `DELETE /devices/{id}` | revoke the token; effective on the next request | ✅ | ❌ |
+| `GET /devices` | list, with `current` marking the caller's own | ✅ | ✅ |
+| `PATCH /devices/{id}` | rename "unknown device" to "the laptop" | ✅ | ✅ |
+| `DELETE /devices/{id}` | revoke the token; effective on the next request | ✅ | ✅ |
 | `POST`/`DELETE /devices/{id}/push` | register / unregister a Web Push endpoint | ✅ | ❌ |
 
-All five are declared in `awaitingClient` in
-[contract_test.go](../server/internal/httpapi/contract_test.go) with a reason, and
-that test fails if the declaration ever goes stale — so this table cannot quietly
-drift from the truth.
+Four of the five were declared in `awaitingClient` in
+[contract_test.go](../server/internal/httpapi/contract_test.go) and were deleted from
+it when Settings shipped the device list — that test fails on a stale declaration, so
+this table cannot quietly drift from the truth. The push pair remains, for the reason
+in §6: a PWA cannot subscribe without a VAPID key the server does not publish.
 
 ### The sharp edge: this plane is credential management
 

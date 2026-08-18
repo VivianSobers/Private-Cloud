@@ -94,6 +94,55 @@ export interface Access {
   shared: boolean;
 }
 
+/** A cluster of faces the server believes are the same person. Unnamed until a
+ *  user names it; `name` is absent (never "") when nobody has. */
+export interface Person {
+  id: string;
+  face_count: number;
+  created_at: string;
+  name?: string;
+  cover_node_id?: string;
+  /** Where the cover face sits in its photo, as [x, y, w, h] fractions (0–1) —
+   *  fractions not pixels, so a client crops from whichever variant it has. */
+  cover_box?: [number, number, number, number];
+}
+
+/** One detected face inside a photo. `box` is [x, y, w, h] in fractions of the
+ *  image (0–1). `person_id` is absent when the face belongs to no cluster —
+ *  either never assigned, or detached by a user saying "this isn't a face". */
+export interface Face {
+  id: string;
+  box: [number, number, number, number];
+  seq: number;
+  person_id?: string;
+}
+
+/** One document a chat answer drew on. Citations are mandatory — an answer over
+ *  your files that can't say which file is unverifiable. */
+export interface Citation {
+  node_id: string;
+  path: string;
+  name: string;
+  chunk_seq: number;
+  score: number;
+}
+
+/** The answer to a question over the library. `answer` is present only when a
+ *  generator produced one; otherwise `answer_unavailable` says why, and the
+ *  citations are the trustworthy retrieval-only result. */
+export interface ChatResponse {
+  question: string;
+  citations: Citation[];
+  answer?: string;
+  model?: string;
+  answer_unavailable?: "no_matching_documents" | "generation_disabled" | "generation_unavailable";
+}
+
+/** A file the server judges similar to another, with its similarity score. */
+export interface SimilarHit extends Node {
+  score?: number;
+}
+
 /** A user account, as seen by an admin. */
 export interface AdminUser {
   id: string;
@@ -120,6 +169,39 @@ export interface AuditEntry {
   target: string;
   request_id?: string;
   detail?: Record<string, unknown>;
+}
+
+/** A session belonging to another user, as an admin sees it. Same rows as the
+ *  self-service session list minus `current` — an admin is never one of them. */
+export interface AdminSession {
+  id: string;
+  kind: string;
+  user_agent: string;
+  created_at: string;
+  last_seen_at: string;
+  expires_at: string;
+}
+
+/** Platform + storage health for the admin console. Fields the collectors didn't
+ *  report are absent rather than zero, so a stale or never-run source reads as
+ *  unknown instead of as a confident wrong number. */
+export interface AdminStorage {
+  /** What the database accounts for across every owner — deliberately NOT pool
+   *  capacity; the app knows what it stored, the disks know what they hold. */
+  accounted: { stored_bytes: number; trash_bytes: number; file_count: number };
+  pools: Array<{
+    name: string;
+    state: string;
+    last_scrub_age_seconds?: number;
+    /** Absent when never scrubbed — distinct from false (scrubbed, found errors). */
+    last_scrub_clean?: boolean;
+    collected_at?: string;
+  }>;
+  backup: { last_success_at?: string; last_failure_at?: string; age_seconds?: number };
+  /** Counts keyed by job state (queued/running/done/failed). */
+  jobs: Record<string, number>;
+  tiering: { enabled: boolean; note?: string };
+  collector: { path: string; available: boolean };
 }
 
 /** A user-ordered collection of nodes. NOT a folder: a node can be in many
@@ -251,6 +333,23 @@ export interface Session {
   current: boolean;
 }
 
+/** A synced machine, as opposed to a session. A device is "one of my machines
+ *  that is syncing"; it carries a name the user chose and self-reported platform
+ *  details. `platform`/`app_version` are absent (never "") when the agent said
+ *  nothing. `current` marks the caller's own device so the UI can avoid offering
+ *  it "revoke" on the very token making the call. */
+export interface Device {
+  id: string;
+  name: string;
+  last_seen_at: string;
+  created_at: string;
+  expires_at: string;
+  has_push: boolean;
+  current: boolean;
+  platform?: string;
+  app_version?: string;
+}
+
 async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
   const res = await fetch(path, {
     ...init,
@@ -340,6 +439,22 @@ export const api = {
 
   revokeSession: (id: string) =>
     request<{ status: string }>(`/api/v1/auth/sessions/${id}`, { method: "DELETE" }),
+
+  // --- devices (Phase 6) ----------------------------------------------------
+  // Which of my machines is syncing, as opposed to which sessions are signed in.
+
+  devices: () => request<{ devices: Device[] }>("/api/v1/devices"),
+
+  renameDevice: (id: string, name: string) =>
+    request<{ status: string }>(`/api/v1/devices/${id}`, {
+      method: "PATCH",
+      body: JSON.stringify({ name }),
+    }),
+
+  // Revoke a device token — a lost laptop stops syncing on its next request, not
+  // whenever the token would have expired.
+  revokeDevice: (id: string) =>
+    request<{ status: string }>(`/api/v1/devices/${id}`, { method: "DELETE" }),
 
   // --- files ----------------------------------------------------------------
 
@@ -548,6 +663,20 @@ export const api = {
   deleteUser: (id: string) =>
     request<{ status: string }>(`/api/v1/admin/users/${id}`, { method: "DELETE" }),
 
+  // A user's sessions, seen by an admin — like the self-service list but for
+  // another account, with no "current" (the admin is never one of these rows).
+  adminUserSessions: (id: string) =>
+    request<{ sessions: AdminSession[] }>(`/api/v1/admin/users/${id}/sessions`),
+
+  adminRevokeUserSession: (userId: string, sessionId: string) =>
+    request<{ status: string }>(`/api/v1/admin/users/${userId}/sessions/${sessionId}`, {
+      method: "DELETE",
+    }),
+
+  // Platform + storage health for the console. Reads the same collector files and
+  // jobs table the alerts use, so the console and Grafana never disagree.
+  adminStorage: () => request<AdminStorage>("/api/v1/admin/storage"),
+
   adminAudit: (opts: { actor?: string; action?: string; limit?: number; offset?: number } = {}) => {
     const p = new URLSearchParams();
     if (opts.actor) p.set("actor", opts.actor);
@@ -557,6 +686,57 @@ export const api = {
     const q = p.toString();
     return request<{ entries: AuditEntry[]; has_more?: boolean }>(`/api/v1/admin/audit${q ? `?${q}` : ""}`);
   },
+
+  // --- people, similar, chat (Phase 8) --------------------------------------
+
+  people: () => request<{ people: Person[] }>("/api/v1/people"),
+
+  person: (id: string) => request<{ person: Person; items: Node[] }>(`/api/v1/people/${id}`),
+
+  namePerson: (id: string, name: string) =>
+    request<{ person: Person }>(`/api/v1/people/${id}`, {
+      method: "PATCH",
+      body: JSON.stringify({ name }),
+    }),
+
+  mergePerson: (id: string, into: string) =>
+    request<{ status: string; into: string }>(`/api/v1/people/${id}/merge`, {
+      method: "POST",
+      body: JSON.stringify({ into }),
+    }),
+
+  deletePerson: (id: string) =>
+    request<{ status: string }>(`/api/v1/people/${id}`, { method: "DELETE" }),
+
+  similar: (id: string) =>
+    request<{ results: SimilarHit[]; count: number }>(`/api/v1/nodes/${id}/similar`),
+
+  // Who is in this picture. Faces carry a box so the UI can draw them over the
+  // photo; an unassigned face is an honest "a face, nobody named" rather than a
+  // guess about a real person.
+  nodeFaces: (id: string) =>
+    request<{ faces: Face[] }>(`/api/v1/nodes/${id}/faces`),
+
+  // Fix one wrong detection: point a face at the right person, or pass null to
+  // detach it ("this isn't a face") without deleting the detection.
+  reassignFace: (nodeId: string, faceId: string, personId: string | null) =>
+    request<{ status: string }>(`/api/v1/nodes/${nodeId}/faces/${faceId}/reassign`, {
+      method: "POST",
+      body: JSON.stringify({ person_id: personId }),
+    }),
+
+  // Ask a question over the library. Retrieval always returns citations; a written
+  // answer comes back only when a generator is configured (else answer_unavailable).
+  chat: (question: string, opts: { under?: string; includeShared?: boolean; limit?: number } = {}) =>
+    request<ChatResponse>("/api/v1/chat", {
+      method: "POST",
+      body: JSON.stringify({
+        question,
+        scope: { under: opts.under ?? "" },
+        include_shared: opts.includeShared ?? false,
+        limit: opts.limit,
+      }),
+    }),
 
   // --- versions -------------------------------------------------------------
 

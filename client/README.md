@@ -1,11 +1,16 @@
 # pcsync — Private Cloud sync client
 
-**Status: ✅ the daemon is complete and steerable; ❌ there is no GUI.** Phase 3
-built the sync engine and Phase 6 gave it a control socket, selective sync, a
-conflict list, `.pcsyncignore`, `pcsync doctor` and a platform-free tray presenter
-rendered live by `pcsync watch`. What does not exist is the **platform tray icon
-and menu adapter** — there is no `desktop/` directory — and no installers or
-auto-update. Every decision such a shell would make is already made and unit-tested
+**Status: ✅ the daemon is complete, steerable and packaged; ❌ there is no GUI.**
+Phase 3 built the sync engine and Phase 6 gave it a control socket, selective sync,
+a conflict list, `.pcsyncignore`, `pcsync doctor`, `pcsync version`, cross-platform
+release builds and unsigned Linux `.deb`/`.rpm` packages, plus a platform-free tray
+presenter rendered live by `pcsync watch`.
+
+Two things are ❌ open, and both are blocked on tooling rather than on a decision:
+the **platform tray icon and menu adapter** (needs a CGO system-tray library and a
+machine with a display — there is no `desktop/` directory) and **signed** installers
+with an in-place updater (needs code-signing keys and per-OS tooling from outside
+this repo). Every decision a tray shell would make is already made and unit-tested
 in `internal/tray` and the control client, so it is genuinely a thin adapter.
 Ledger: [../docs/status.md](../docs/status.md).
 
@@ -89,7 +94,12 @@ pcsync doctor -config ./config.json
 ✓ state database   /home/vivian/PrivateCloud/.pcsync/state.db
 ✓ server reachable https://cloud.example.ts.net (HTTP 200)
 ✓ sign in          credential accepted; tree root reachable
+✓ client version   pcsync 1.0.0 matches the server
 ```
+
+The version line is advisory: a client behind the server is a `!` warning, never a
+`✗` — a version skew invites an update but does not stop a sync, so the preflight
+still passes. A `dev` build is not compared to a release tag at all.
 
 It separates "server unreachable" from "credential rejected" so you fix the right
 thing — a `✗ sign in` with a `✓ server reachable` means the username or app
@@ -99,6 +109,50 @@ The app password is exchanged for a short-lived **device token** on first
 contact; the password itself never touches the file endpoints. A device token
 can read and write your files but cannot manage account credentials — it cannot
 mint another app password, the same limit the app password itself has.
+
+## Building for other machines
+
+The client is **pure Go — no CGO** — so it cross-compiles to every desktop from
+one machine with no per-OS toolchain. That is the whole reason shipping a desktop
+client is tractable here:
+
+```bash
+./build-release.sh            # linux, macOS and Windows binaries into dist/
+VERSION=1.2.0 ./build-release.sh
+```
+
+Each build is static and stamped with its version; `dist/SHA256SUMS` lets a
+download be verified — the client that checks every synced chunk should not ask
+you to trust an unverified copy of itself. Check which version you're running,
+and whether it matches the server:
+
+```bash
+pcsync version                        # the client build
+pcsync version -config ./config.json  # ...and the server's, flagging a mismatch
+```
+
+### Linux packages (.deb / .rpm)
+
+If [`nfpm`](https://nfpm.goreleaser.com) is installed, `build-release.sh` also
+repackages the Linux binaries into `.deb` and `.rpm` for amd64 and arm64 — a pure
+repackage of an already-built binary, so it needs no Go toolchain and is skipped
+cleanly when nfpm is absent (the binaries are the deliverable; packages are an
+extra). The package installs `pcsync` to `/usr/bin`, ships a systemd **user**
+unit to `/usr/lib/systemd/user/`, and drops the config template under
+`/usr/share/doc/pcsync/`:
+
+```bash
+sudo apt install ./dist/pcsync_1.2.0_amd64.deb    # Debian/Ubuntu
+sudo dnf install ./dist/pcsync-1.2.0-1.x86_64.rpm # Fedora/RHEL
+```
+
+These packages are **unsigned on purpose**: a locally installed `.deb`/`.rpm`
+needs no signature — only a *repository* does. Publishing a signed apt/dnf repo,
+a Homebrew/Scoop manifest, and the signed `.msi`/`.pkg` are the remaining native-
+packaging work, and they need signing keys and per-OS tooling that live outside
+this repo. An in-place **auto-updater** is the other remaining native-client
+piece; for now `pcsync doctor` and `pcsync version` flag a client lagging the
+server so an update is at least never silent.
 
 ## Run as a service (systemd)
 

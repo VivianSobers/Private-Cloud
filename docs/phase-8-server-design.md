@@ -1,11 +1,17 @@
 # Phase 8 — Advanced intelligence (behind the API) design
 
-**Status: 🟠 3/5 slices ✅ complete; slices 4 and 5 ❌ not started; and none of the
-three shipped surfaces has a client yet.** `/chat`, `/similar`, `/people` and both
-face routes are declared in `awaitingClient` — built, tested, unreached. Two of the
-three sidecars this phase depends on also have ❌ no reference implementation in
-`deploy/`: only the embedder does. Marks: ✅ done · 🟠 partial · ❌ not built; the
-ledger is [status.md](status.md).
+**Status: 🟠 3/5 slices ✅ complete and now consumed; slices 4 and 5 ❌ not
+started.** `/chat`, `/similar`, `/people` and both face routes were declared in
+`awaitingClient` — built, tested, unreached — and every one of those declarations has
+since been deleted, because the UIs landed: Ask calls `/chat`, a People view names
+clusters, and the lightbox draws detected faces and runs find-similar.
+
+What keeps the phase at 🟠 is ❌ streaming answers, ❌ image-embedding similarity, and
+the fact that two of the three sidecars this phase depends on have ❌ no reference
+implementation in `deploy/` — only the embedder does. So the surfaces work and, on a
+stock deployment, answer with citations and no prose and find no faces.
+
+Marks: ✅ done · 🟠 partial · ❌ not built; the ledger is [status.md](status.md).
 
 The server half of the phase whose client half is
 [phase-8-design.md](phase-8-design.md) — where "Ask your library" already shipped
@@ -172,9 +178,9 @@ the dead-letter queue rather than do anything useful.
 
 | # | Slice | Status |
 |---|---|---|
-| **1** | Similar files + the shared retrieval layer | ✅ 8 tests — ❌ no client |
-| **2** | `POST /chat`, generation sidecar client, degraded modes | ✅ 7 tests — ❌ no client, and ❌ no generation sidecar image |
-| **3** | Face schema, detector client, `faces` job, clustering, `/people` | ✅ 8 tests — ❌ no client, and ❌ no detection sidecar image |
+| **1** | Similar files + the shared retrieval layer | ✅ 8 tests, ✅ consumed from the photo viewer |
+| **2** | `POST /chat`, generation sidecar client, degraded modes | ✅ 7 tests, ✅ consumed by Ask — ❌ no generation sidecar image |
+| **3** | Face schema, detector client, `faces` job, clustering, `/people` | ✅ 8 tests, ✅ consumed by the People view and the lightbox overlay — ❌ no detection sidecar image |
 | 4 | Streaming answers (`stream: true`, SSE) | ❌ the contract specifies it; non-streaming ships first because a written answer that arrives whole is strictly simpler to render and to test |
 | 5 | Image-embedding similarity for photos | ❌ `/similar` covers documents; photos need an image embedder, a fourth model |
 

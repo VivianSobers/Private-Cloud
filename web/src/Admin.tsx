@@ -1,13 +1,22 @@
 import { useCallback, useEffect, useState } from "react";
 
-import { api, ApiError, formatBytes, formatDate, type AdminUser, type AuditEntry } from "./api";
+import {
+  api,
+  ApiError,
+  formatBytes,
+  formatDate,
+  type AdminSession,
+  type AdminStorage,
+  type AdminUser,
+  type AuditEntry,
+} from "./api";
 
 // The admin console (Phase 7): manage user accounts and read the audit log. Only
 // rendered for admins; every endpoint is 403 for non-admins server-side too, so
 // this is convenience, not the security boundary. Degrades gracefully where the
 // server has not implemented the admin surface yet.
 
-type Tab = "users" | "audit";
+type Tab = "users" | "storage" | "audit";
 
 export function Admin() {
   const [tab, setTab] = useState<Tab>("users");
@@ -17,11 +26,14 @@ export function Admin() {
         <button className="link" aria-current={tab === "users"} onClick={() => setTab("users")}>
           Users
         </button>
+        <button className="link" aria-current={tab === "storage"} onClick={() => setTab("storage")}>
+          Storage
+        </button>
         <button className="link" aria-current={tab === "audit"} onClick={() => setTab("audit")}>
           Audit log
         </button>
       </nav>
-      {tab === "users" ? <Users /> : <Audit />}
+      {tab === "users" ? <Users /> : tab === "storage" ? <Storage /> : <Audit />}
     </section>
   );
 }
@@ -115,6 +127,7 @@ function UserRow({
   user: AdminUser;
   onPatch: (u: AdminUser, p: Parameters<typeof api.updateUser>[1]) => void;
 }) {
+  const [showSessions, setShowSessions] = useState(false);
   const gib = 1024 ** 3;
   // Empty, not "0", when there is no quota. A quota of zero bytes is a real and
   // very different thing from no quota at all, and the box has to be able to say
@@ -137,10 +150,20 @@ function UserRow({
     onPatch(user, { quota_bytes: Math.round(gigs * gib) });
   };
   return (
+    <>
     <tr className={user.disabled ? "row-disabled" : ""}>
       <td>
         <strong>{user.username}</strong>
         {user.display_name && <div className="muted small">{user.display_name}</div>}
+        <div>
+          <button
+            className="link small"
+            aria-expanded={showSessions}
+            onClick={() => setShowSessions((v) => !v)}
+          >
+            {showSessions ? "Hide sessions" : "Sessions"}
+          </button>
+        </div>
       </td>
       <td className="small">
         {user.used_bytes != null ? formatBytes(user.used_bytes) : "—"}
@@ -184,6 +207,75 @@ function UserRow({
         </span>
       </td>
     </tr>
+    {showSessions && (
+      <tr className="session-detail">
+        <td colSpan={5}>
+          <UserSessions userId={user.id} username={user.username} />
+        </td>
+      </tr>
+    )}
+    </>
+  );
+}
+
+/** UserSessions lists another account's sessions for an admin and lets them
+ *  revoke one — the answer to "sign this user out everywhere" after a lost
+ *  device or a compromised account, without resetting their credentials. */
+function UserSessions({ userId, username }: { userId: string; username: string }) {
+  const [sessions, setSessions] = useState<AdminSession[] | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const [busy, setBusy] = useState(false);
+
+  const load = useCallback(() => {
+    api
+      .adminUserSessions(userId)
+      .then((r) => setSessions(r.sessions))
+      .catch((e) => setError(describe(e)));
+  }, [userId]);
+  useEffect(load, [load]);
+
+  const revoke = async (id: string) => {
+    setBusy(true);
+    try {
+      await api.adminRevokeUserSession(userId, id);
+      load();
+    } catch (e) {
+      setError(describe(e));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  if (error) return <div className="banner error small">{error}</div>;
+  if (!sessions) return <p className="muted small">Loading sessions…</p>;
+  if (sessions.length === 0) return <p className="muted small">No active sessions.</p>;
+
+  return (
+    <table className="admin-table">
+      <thead>
+        <tr>
+          <th>Session for {username}</th>
+          <th>Last seen</th>
+          <th />
+        </tr>
+      </thead>
+      <tbody>
+        {sessions.map((s) => (
+          <tr key={s.id}>
+            <td className="small">
+              {s.user_agent || "unknown device"}
+              {s.kind !== "web" && <span className="muted"> · {s.kind}</span>}
+            </td>
+            <td className="small muted">{formatDate(s.last_seen_at)}</td>
+            <td>
+              <button className="link danger" disabled={busy} onClick={() => void revoke(s.id)}>
+                Revoke
+              </button>
+            </td>
+          </tr>
+        ))}
+      </tbody>
+    </table>
   );
 }
 
@@ -246,6 +338,137 @@ function Audit() {
       )}
     </div>
   );
+}
+
+function Storage() {
+  const [data, setData] = useState<AdminStorage | null>(null);
+  const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    api
+      .adminStorage()
+      .then(setData)
+      .catch((e) => setError(describe(e)));
+  }, []);
+
+  if (error && !data) return <Unavailable detail={error} />;
+  if (!data) return <p className="muted">Loading…</p>;
+
+  return (
+    <div className="stack">
+      <section className="card stack">
+        <h2 style={{ margin: 0, fontSize: "1rem" }}>Accounted storage</h2>
+        <p className="muted small" style={{ margin: 0 }}>
+          What the database accounts for across every owner — not pool capacity.
+          The application knows what it stored; the disks below know what they hold.
+        </p>
+        <div className="stat-row">
+          <Stat label="Stored" value={formatBytes(data.accounted.stored_bytes)} />
+          <Stat label="In trash" value={formatBytes(data.accounted.trash_bytes)} />
+          <Stat label="Files" value={String(data.accounted.file_count)} />
+        </div>
+      </section>
+
+      <section className="card stack">
+        <h2 style={{ margin: 0, fontSize: "1rem" }}>Pools</h2>
+        {data.pools.length === 0 ? (
+          <p className="muted small" style={{ margin: 0 }}>
+            No pool metrics.{" "}
+            {data.collector.available
+              ? `None reported under ${data.collector.path}.`
+              : `The collector directory (${data.collector.path}) isn't readable here.`}
+          </p>
+        ) : (
+          <div className="table-scroll">
+            <table className="admin-table">
+              <thead>
+                <tr>
+                  <th>Pool</th>
+                  <th>State</th>
+                  <th>Last scrub</th>
+                  <th>Reported</th>
+                </tr>
+              </thead>
+              <tbody>
+                {data.pools.map((p) => (
+                  <tr key={p.name}>
+                    <td>
+                      <strong>{p.name}</strong>
+                    </td>
+                    <td className={p.state === "ONLINE" ? "" : "danger"}>{p.state}</td>
+                    <td className="small">{scrubText(p.last_scrub_age_seconds, p.last_scrub_clean)}</td>
+                    <td className="small muted">
+                      {p.collected_at ? formatDate(p.collected_at) : "—"}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
+      </section>
+
+      <section className="card stack">
+        <h2 style={{ margin: 0, fontSize: "1rem" }}>Offsite backup</h2>
+        <div className="stat-row">
+          <Stat
+            label="Last success"
+            value={data.backup.last_success_at ? formatDate(data.backup.last_success_at) : "never"}
+          />
+          <Stat
+            label="Age"
+            value={data.backup.age_seconds != null ? relAge(data.backup.age_seconds) : "—"}
+          />
+          {data.backup.last_failure_at && (
+            <Stat label="Last failure" value={formatDate(data.backup.last_failure_at)} />
+          )}
+        </div>
+      </section>
+
+      <section className="card stack">
+        <h2 style={{ margin: 0, fontSize: "1rem" }}>Jobs</h2>
+        <div className="stat-row">
+          {["queued", "running", "done", "failed"].map((k) => (
+            <Stat key={k} label={k} value={String(data.jobs[k] ?? 0)} />
+          ))}
+        </div>
+        <p className="muted small" style={{ margin: 0 }}>
+          {data.tiering.enabled
+            ? "A cold tier is configured."
+            : (data.tiering.note ?? "No cold tier is configured; all content is on the local pool.")}
+        </p>
+      </section>
+    </div>
+  );
+}
+
+function Stat({ label, value }: { label: string; value: string }) {
+  return (
+    <div className="stat">
+      <div className="stat-value">{value}</div>
+      <div className="muted small">{label}</div>
+    </div>
+  );
+}
+
+/** scrubText turns a pool's scrub age + clean flag into one honest phrase.
+ *  Absent clean means never scrubbed — not the same as a scrub that found errors. */
+function scrubText(ageSeconds?: number, clean?: boolean): string {
+  if (ageSeconds == null && clean == null) return "never scrubbed";
+  const when = ageSeconds != null ? relAge(ageSeconds) + " ago" : "unknown";
+  if (clean === false) return `errors found · ${when}`;
+  if (clean === true) return `clean · ${when}`;
+  return when;
+}
+
+function relAge(seconds: number): string {
+  const s = Math.max(0, Math.round(seconds));
+  if (s < 90) return `${s}s`;
+  const m = Math.round(s / 60);
+  if (m < 90) return `${m}m`;
+  const h = Math.round(m / 60);
+  if (h < 48) return `${h}h`;
+  return `${Math.round(h / 24)}d`;
 }
 
 function Unavailable({ detail }: { detail: string }) {

@@ -49,6 +49,8 @@ func main() {
 			os.Exit(ctlMain(os.Args[1], os.Args[2:]))
 		case "doctor":
 			os.Exit(doctorMain(os.Args[2:]))
+		case "version":
+			os.Exit(versionMain(os.Args[2:]))
 		}
 	}
 
@@ -126,6 +128,38 @@ func run(log *slog.Logger, configPath string, once bool) error {
 	return nil
 }
 
+// versionMain prints the client version, and — given a config — the server's, so
+// a mismatch that warrants updating is visible. It is a report, not a self-updater:
+// the release binaries and their checksums come from build-release.sh.
+func versionMain(args []string) int {
+	fs := flag.NewFlagSet("pcsync version", flag.ExitOnError)
+	configPath := fs.String("config", "", "optional config, to also report the server version")
+	_ = fs.Parse(args)
+
+	fmt.Printf("pcsync %s\n", version)
+	if *configPath == "" {
+		return 0
+	}
+	cfg, err := config.Load(*configPath)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		return 1
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	client := api.New(cfg.ServerURL, cfg.Username, cfg.AppPassword, userAgent())
+	sv, err := client.Version(ctx)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "could not reach server: %v\n", err)
+		return 1
+	}
+	fmt.Printf("server %s (%s)\n", sv, cfg.ServerURL)
+	if version != "dev" && sv != version {
+		fmt.Println("note: client and server versions differ — consider updating pcsync")
+	}
+	return 0
+}
+
 // doctorMain runs the standalone preflight and returns a process exit code. It
 // does not touch the control socket — it is meant to work before the daemon runs
 // and when it won't start.
@@ -142,7 +176,7 @@ func doctorMain(args []string) int {
 
 	ctx, cancel := context.WithTimeout(context.Background(), doctor.Deadline)
 	defer cancel()
-	res := doctor.Run(ctx, cfg, userAgent())
+	res := doctor.Run(ctx, cfg, userAgent(), version)
 
 	for _, c := range res.Checks {
 		fmt.Printf("%s %-16s %s\n", c.Status.Glyph(), c.Name, c.Detail)

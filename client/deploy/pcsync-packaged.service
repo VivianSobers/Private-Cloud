@@ -1,0 +1,42 @@
+# systemd USER service for the Private Cloud sync daemon — packaged variant.
+#
+# This is the unit shipped inside the .deb/.rpm. It differs from
+# deploy/pcsync.service in one line: ExecStart points at /usr/bin/pcsync, where
+# the package installs the binary, instead of ~/.local/bin. It is a *user*
+# service for the same reason — pcsync syncs one person's folder with their own
+# credential — so after installing the package each user enables it for themselves:
+#
+#   mkdir -p ~/.config/pcsync
+#   cp /usr/share/doc/pcsync/config.example.json ~/.config/pcsync/config.json  # then edit
+#   systemctl --user enable --now pcsync
+#
+# Watch it:   journalctl --user -u pcsync -f
+# Keep it running after logout (headless box / sleeping desktop):
+#   sudo loginctl enable-linger "$USER"
+
+[Unit]
+Description=Private Cloud sync daemon
+Documentation=https://github.com/guru-bharadwaj20/private-cloud
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/pcsync -config %h/.config/pcsync/config.json
+Restart=on-failure
+RestartSec=10s
+KillSignal=SIGTERM
+TimeoutStopSec=30s
+
+# --- hardening ---
+# $HOME stays writable (the synced folder and state DB live there); ProtectSystem
+# locks down /usr, /boot and /etc without touching /home.
+NoNewPrivileges=true
+ProtectSystem=true
+PrivateTmp=true
+ProtectKernelTunables=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+
+[Install]
+WantedBy=default.target

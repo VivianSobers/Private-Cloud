@@ -1,10 +1,11 @@
 # Remaining roadmap — split for two developers
 
-**Status: the plan held; the two tracks did not finish level.** Every phase below
-is ✅ complete behind the API. In front of it, Phase 5 and 6 shipped most of their
-consumers, Phase 7 shipped three of five, Phase 8 shipped one of four, and Phase 9
-shipped none. Marks are per cell in §2. The slice-level ledger is
-[status.md](status.md).
+**Status: the plan held, and the two tracks have converged.** Every phase below is
+✅ complete behind the API, and the front-of-API track — which trailed by a full
+phase at one point — has now shipped a consumer for all but four things: a map view,
+browsing into a shared folder, the platform tray icon shell, and signed installers.
+Marks are per cell in §2. The slice-level ledger is [status.md](status.md); §5 is a
+retrospective on how the seam actually behaved.
 
 **Legend:** ✅ done · 🟠 partial · ❌ not built.
 
@@ -26,7 +27,9 @@ server already exposes under `/api/v1`:
 - **Behind the API** — the Go server (`server/`), the worker, the embedding
   sidecar and ML on the 4090s, storage, migrations, deploy and ops.
 - **In front of the API** — the web app (`web/`), the headless sync client
-  (`client/`), and the desktop / mobile clients that don't exist yet.
+  (`client/`), and the desktop / mobile clients that did not exist yet. They still
+  do not, as separate trees: mobile arrived as an installable PWA inside `web/`, and
+  the desktop client is `pcsync` plus a tray shell that is the last thing missing.
 
 These two halves touch **disjoint directories** and even different languages.
 The *only* thing they share is the contract. So:
@@ -77,7 +80,7 @@ The single biggest missing consumer-cloud feature.
 | 🟠 Thumbnail jobs ✅; **video transcode ❌** — a video is recorded as a video and nothing more | ✅ Photo **gallery / timeline** view in web |
 | ✅ EXIF extraction → searchable/sortable metadata | 🟠 Album create ✅, reorder ✅ (buttons, not drag), drag-select ❌ |
 | ✅ Album data model + `/api/v1/albums` endpoints | 🟠 lightbox viewer ✅; **map view from EXIF GPS ❌** though `gps` is served |
-| ✅ Media variants stored in CAS, served via existing blob path | ❌ Gallery in desktop/mobile — neither client exists |
+| ✅ Media variants stored in CAS, served via existing blob path | ✅ Gallery on mobile — through the installable PWA rather than a native app, which is how `mobile/**` came never to exist |
 
 ### Phase 6 — Native clients
 Consumes the *existing, stable* API — almost no new server work, so Vivian can
@@ -85,9 +88,9 @@ run nearly the whole phase solo while Guru is deep in Phase 7/8.
 
 | Guru (behind API) | Vivian (front of API) |
 |---|---|
-| ✅ Device list / rename / revoke + the push-subscription hook — served, and ❌ nothing calls them yet | 🟠 **Desktop tray**: control socket, selective sync, conflicts, `pcsync watch` and the platform-free presenter ✅; **the icon + menu adapter ❌** (no `desktop/`) |
-| ✅ (otherwise idle for this phase — spent on Phase 7) | 🟠 **Mobile / PWA**: installable, offline app shell ✅; browse and upload ✅ through the same web app; **offline pin ❌** |
-| — | ❌ Auto-update + installer packaging |
+| ✅ Device list / rename / revoke ✅ consumed by Settings; the push-subscription hook is ✅ served and ❌ uncalled — it needs a VAPID key and a sender, both behind the API | 🟠 **Desktop tray**: control socket, selective sync, conflicts, `pcsync watch`, `doctor`, cross-builds and the platform-free presenter ✅; **the icon + menu adapter ❌**, blocked on a CGO tray library and a display |
+| ✅ (otherwise idle for this phase — spent on Phase 7) | ✅ **Mobile / PWA**: installable, offline app shell, and **offline file pinning** — pinned bytes in a dedicated Cache Storage bucket the service worker serves when the network is gone |
+| — | 🟠 Installer packaging: unsigned Linux `.deb`/`.rpm` ✅; ❌ signed repos, `.msi`/`.pkg`, Homebrew/Scoop and an in-place updater need signing keys |
 
 ### Phase 7 — Multi-user, sharing & collaboration
 The current system is single-owner-centric; this makes it multi-tenant-safe.
@@ -95,23 +98,23 @@ The current system is single-owner-centric; this makes it multi-tenant-safe.
 | Guru (behind API) | Vivian (front of API) |
 |---|---|
 | ✅ User-to-user shares & shared folders | ✅ Collaboration UI: share-with-person, permissions dialog |
-| ✅ RBAC + per-folder ACLs, inherited from the materialised path | 🟠 "Shared with me" view ✅; **browsing into a granted folder ❌** (nothing sends `?include_shared=true`); activity feed ❌ |
-| ✅ Semantic search & tags scoped by ACL — node rows filtered, never the vectors | 🟠 Admin console: users ✅, quotas ✅, **sessions ❌** |
+| ✅ RBAC + per-folder ACLs, inherited from the materialised path | 🟠 "Shared with me" view ✅; **browsing into a granted folder ❌** (nothing sends `?include_shared=true`); activity feed ❌ — the audit log is admin-only |
+| ✅ Semantic search & tags scoped by ACL — node rows filtered, never the vectors | ✅ Admin console: users, quotas, sessions, storage and the audit log |
 | ✅ Audit log; admin/user endpoints; quotas | ✅ Quota / usage indicators |
 
 ### Phase 8 — Advanced intelligence (the 4090s earn their keep)
 | Guru (behind API) | Vivian (front of API) |
 |---|---|
-| ✅ Face detection + clustering ("people") jobs — ❌ needs a detector sidecar nobody has stood up | ❌ **"People"** faces browser; name-a-face UI |
-| 🟠 Similar **documents** ✅ through the text-embedding space; **similar images ❌** (needs a fourth model) | ❌ "Similar files" surfacing in the browser |
-| ✅ **RAG chat**: retrieval ✅ and `POST /chat` with mandatory citations ✅; ❌ the generation sidecar itself is a client and a config var | 🟠 **Ask** ships the *retrieval* half ✅; the answer view on `/chat` ❌ |
+| ✅ Face detection + clustering ("people") jobs — ❌ needs a detector sidecar this repo does not ship | ✅ **"People"** faces browser and name-a-face; ✅ face overlay + reassign in the lightbox |
+| 🟠 Similar **documents** ✅ through the text-embedding space; **similar images ❌** (needs a fourth model) | ✅ "Find similar" from the photo viewer |
+| ✅ **RAG chat**: retrieval and `POST /chat` with mandatory citations; ❌ the generation sidecar itself is a client and a config var | ✅ **Ask** calls `/chat` — an answer when a generator is configured, citations always |
 | ❌ Optional fine-tuning pipeline for the tagger/embedder — out of scope since Phase 4 | ❌ Feedback controls that feed labels back |
 
 ### Phase 9 — Scale & resilience (ops-weighted, mostly Guru)
 | Guru (behind API) | Vivian (front of API) |
 |---|---|
-| ❌ Object-storage cold tier for blobs; tiering policy — **not started**, deliberately | ❌ Storage/health surfacing in the admin console (`GET /admin/storage` is served) |
-| ❌ DR automation, restore drills as code — runbooks and `restore-test.sh` are manual | ❌ Backup-status panel (backup freshness is in the same endpoint) |
+| ❌ Object-storage cold tier for blobs; tiering policy — **not started**, deliberately | ✅ Storage tab in the admin console: accounted bytes, pool state + scrub, honest `tiering: false` |
+| ❌ DR automation, restore drills as code — runbooks and `restore-test.sh` are manual | ✅ Backup freshness is on the same Storage tab |
 | 🟠 Per-user quota enforcement ✅, proven end to end; **billing hooks ❌** | ❌ Quota screens exist for usage; billing screens have nothing to bill |
 
 ---
@@ -176,10 +179,21 @@ now generated from the real route table, and two tests close the loop in both
 directions: no client may call a route that does not exist, and no route may sit
 unconsumed without a declared reason. See [phase-5-design.md](phase-5-design.md) §0.
 
-**The asymmetry the split did not anticipate.** By Phase 8 the behind-the-API
-track was a full phase ahead, and thirteen route shapes are now served with no
-consumer. The seam did its job — none of that is *broken*, it is just unreachable
-— but "both tracks move independently" turned out to mean one of them can finish a
-phase alone and the phase still is not done. Which is the rule the README states,
-and the reason [status.md](status.md) marks a phase 🟠 when only one side of it
-exists.
+**The asymmetry the split did not anticipate, and how it closed.** By Phase 8 the
+behind-the-API track was a full phase ahead and thirteen route shapes were served
+with no consumer. None of it was *broken* — just unreachable — but "both tracks move
+independently" turned out to mean one of them can finish a phase alone and the phase
+still is not done.
+
+That gap has since closed: twelve of the thirteen shapes now have a client, and each
+line was deleted from `awaitingClient` as its UI landed, because the test refuses to
+let a stale declaration sit there. The one remaining shape is the push-subscription
+hook, and it is waiting on *server* work — a VAPID key and a sender — not on a UI.
+So the asymmetry reversed before it was closed, which is worth knowing: the two
+tracks do not converge on their own, they converge when somebody reads the list.
+
+**The lesson the split's own retrospective earns.** Layer ownership kept the merge
+cost near zero — the two halves of five phases met at contract shapes with no drift
+— but it made *sequencing* invisible, and sequencing was the actual risk. The fix was
+not a process change; it was a test that fails when a route has no consumer and
+nobody has said why.

@@ -61,13 +61,15 @@ func (r Result) OK() bool {
 }
 
 // Run performs the checks against a loaded config. The context bounds the network
-// checks; the caller sets a sensible timeout.
-func Run(ctx context.Context, cfg *config.Config, userAgent string) Result {
+// checks; the caller sets a sensible timeout. clientVersion is the running
+// build's version (main.version), used to flag a client lagging the server.
+func Run(ctx context.Context, cfg *config.Config, userAgent, clientVersion string) Result {
 	return Result{Checks: []Check{
 		configCheck(cfg),
 		stateDBCheck(cfg),
 		reachableCheck(ctx, cfg),
 		signInCheck(ctx, cfg, userAgent),
+		versionCheck(ctx, cfg, userAgent, clientVersion),
 	}}
 }
 
@@ -128,6 +130,32 @@ func signInCheck(ctx context.Context, cfg *config.Config, userAgent string) Chec
 		return Check{"sign in", Fail, err.Error()}
 	}
 	return Check{"sign in", Pass, "credential accepted; tree root reachable"}
+}
+
+// versionCheck compares the running client build against the server's version.
+// It never fails the preflight — a version skew does not stop a sync, it only
+// invites one — so a mismatch is a Warn and an unreadable server version, or a
+// dev build that cannot be compared, is a soft, informational pass.
+//
+// The comparison is deliberately just equality: pcsync versions are opaque
+// release tags (or git-describe strings), so "different" is all that can be said
+// honestly, which is also the only thing a user needs to hear — update and match.
+func versionCheck(ctx context.Context, cfg *config.Config, userAgent, clientVersion string) Check {
+	if clientVersion == "" || clientVersion == "dev" {
+		return Check{"client version", Pass, "dev build — version comparison skipped"}
+	}
+	client := api.New(cfg.ServerURL, cfg.Username, cfg.AppPassword, userAgent)
+	serverVersion, err := client.Version(ctx)
+	if err != nil {
+		// Connectivity is already diagnosed above; here an error only means we
+		// could not read the version, which is not itself a sync blocker.
+		return Check{"client version", Warn, "could not read server version: " + err.Error()}
+	}
+	if serverVersion == clientVersion {
+		return Check{"client version", Pass, fmt.Sprintf("pcsync %s matches the server", clientVersion)}
+	}
+	return Check{"client version", Warn, fmt.Sprintf(
+		"client %s, server %s — a newer pcsync build may be available", clientVersion, serverVersion)}
 }
 
 // Deadline is the default overall timeout for a run's network checks.

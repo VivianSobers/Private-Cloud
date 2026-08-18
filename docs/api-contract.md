@@ -26,7 +26,7 @@ So the two files split the job:
 |---|---|
 | *Does this endpoint exist, and does it need auth?* | [`openapi.yaml`](openapi.yaml) — **generated** from the server's route table |
 | *What does this endpoint mean — bodies, semantics, why?* | this file |
-| *Does anything actually **call** it?* | `awaitingClient` in [contract_test.go](../server/internal/httpapi/contract_test.go) — thirteen route shapes are served with no client |
+| *Does anything actually **call** it?* | `awaitingClient` in [contract_test.go](../server/internal/httpapi/contract_test.go) — **one** route shape is served with no client, down from thirteen |
 | *Is the feature this belongs to done?* | [status.md](status.md) — ✅ / 🟠 / ❌ per phase and slice |
 
 **Marks used below:** ✅ shipped and served · 🟠 shipped with a stated limit ·
@@ -227,7 +227,8 @@ Each new phase from the split adds its endpoints below **before** implementation
 >   than an absent one
 > - the `tiers` array on `GET /admin/storage` (Phase 9) — there is no cold tier,
 >   so it reports `tiering: {enabled: false}` instead
-> - push **delivery** (Phase 6) — the subscription is stored; nothing sends
+> - push **delivery** (Phase 6) — the subscription is stored; nothing sends, and no
+>   VAPID public key is published, so nothing can even subscribe
 >
 > The sections stay here rather than moving up to the shipped list because the
 > shapes were specified here first and these descriptions are still the reference
@@ -321,11 +322,11 @@ GET /media/timeline?from=&to=&limit=&offset=
   → {items: [node], has_more: bool}
 ```
 
-### Phase 6 — Native clients ✅ shipped · ❌ no client
+### Phase 6 — Native clients ✅ shipped · 🟠 one route unconsumed
 
-*All five routes below are served and none is called by anything in this
-repository — see `awaitingClient`. There is no device-management UI and the PWA
-does not subscribe to push.*
+*The device list, rename and revoke routes are served and consumed by Settings. The
+push pair is served and called by nothing: a PWA cannot `subscribe` without a VAPID
+public key this server does not publish, and nothing would deliver.*
 
 Almost no new server surface — the point of this phase is that the clients
 consume the API that already exists. Two additions:
@@ -374,11 +375,12 @@ A client that does not register one simply polls `GET /changes`, which is the
 existing, working path — push is a latency optimisation, never a correctness
 requirement. Any client must work with it switched off.
 
-### Phase 7 — Multi-user & sharing ✅ shipped · 🟠 partly consumed
+### Phase 7 — Multi-user & sharing ✅ shipped · 🟠 one parameter unconsumed
 
-*Grants, `/shared` and the admin users/audit routes are consumed. Not consumed:
-`?include_shared=true` on children/search/tags, and
-`GET`/`DELETE /admin/users/{id}/sessions`.*
+*Grants, `/shared`, the admin users/audit routes and per-user session revocation are
+all consumed. Not consumed: `?include_shared=true` on children/search/tags — so the
+opt-in widening, the phase's central compatibility decision, is implemented and, for
+listings, still unexercised.*
 
 > **Note added on implementation.** Two reads are deliberately **not** gated on
 > `?include_shared=true`: `GET /nodes/{id}` and `GET /nodes/{id}/content`. The
@@ -480,11 +482,13 @@ logins, admin actions, share creation — not every read. A log that records
 everything is one nobody reads, and on this hardware it would outgrow the files
 it describes. `request_id` ties an entry back to the API access log.
 
-### Phase 8 — Advanced intelligence 🟠 shipped except streaming · ❌ no client
+### Phase 8 — Advanced intelligence 🟠 shipped except streaming · ✅ consumed
 
-*`/chat`, `/similar`, `/people` and both face routes are served and nothing calls
-them; `Ask` still uses `/search?semantic=true`. `stream: true` is ❌ unimplemented,
-and the generation and detection sidecars have ❌ no reference image in `deploy/`.*
+*`/chat`, `/similar`, `/people` and both face routes are served and all are consumed:
+Ask calls `/chat`, a People view names clusters, and the lightbox draws faces and
+runs find-similar. `stream: true` is ❌ unimplemented, and the generation and
+detection sidecars have ❌ no reference image in `deploy/` — so on a stock install
+`/chat` answers with citations and no prose.*
 
 > **Notes added on implementation.** `POST /chat` is **non-streaming only** —
 > `stream: true` is not implemented, and `scope.node_ids` / `scope.tags` are
@@ -569,10 +573,11 @@ event, then `done`.
 - Retrieval only ever reaches content the caller could already open, so chat
   never becomes a way to read around a permission.
 
-### Phase 9 — Scale & resilience 🟠 partly shipped · ❌ no client
+### Phase 9 — Scale & resilience 🟠 partly shipped · ✅ consumed
 
-*`GET /admin/storage` is served and nothing calls it. The cold tier it would
-report on is ❌ not built, deliberately.*
+*`GET /admin/storage` is served and read by the admin console's Storage tab. The cold
+tier it would report on is ❌ not built, deliberately, and the endpoint says
+`tiering: {enabled: false}` rather than pretending otherwise.*
 
 > **Note added on implementation.** `GET /admin/storage` exists and reports pool
 > health, backup freshness, accounted bytes and queue depth — read from the same

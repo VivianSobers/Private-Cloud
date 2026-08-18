@@ -2,7 +2,8 @@
 
 Go backend for the private cloud. **✅ Phases 1–9 are complete behind the API** —
 every phase's server half is built, served and tested. What is 🟠 or ❌ is either a
-consumer that does not exist yet (thirteen route shapes below have no client) or
+consumer that does not exist yet (one route shape below has no client, down from
+thirteen) or
 one of three deliberate omissions: the ❌ object-storage cold tier, ❌ streaming
 chat answers, and ❌ image-embedding similarity for photos. See
 [../docs/status.md](../docs/status.md) for the slice-by-slice ledger and
@@ -163,28 +164,24 @@ between the network and the auth code in slice 2.
 `{id}` accepts the literal `root`, so a client can start browsing without a
 prior lookup.
 
-### ❌ Served, and called by nothing
+### 🟠 Served, and called by nothing
 
-Thirteen of the route shapes above have no consumer in this repository. That is
-recorded mechanically, not by hand: `awaitingClient` in
-[internal/httpapi/contract_test.go](internal/httpapi/contract_test.go) declares
-each one with a reason, and `TestEveryRouteIsConsumedOrDeclaredPending` fails both
-on an undeclared unconsumed route *and* on a declaration that has gone stale — so
-deleting a line from that map is part of shipping the client for it.
+**One route shape**, down from thirteen. That is tracked mechanically rather than
+by hand: `awaitingClient` in
+[internal/httpapi/contract_test.go](internal/httpapi/contract_test.go) declares each
+unconsumed route with a reason, and `TestEveryRouteIsConsumedOrDeclaredPending`
+fails both on an undeclared unconsumed route *and* on a declaration that has gone
+stale — so the twelve that shipped a client had to be deleted from that map as their
+UIs landed, rather than remembered by somebody.
 
 | Route | Waiting on |
 |---|---|
-| `/devices`, `/devices/{id}`, `/devices/{id}/push` | a device-management UI; the PWA does not subscribe to push |
-| `/people`, `/people/{id}`, `/people/{id}/merge` | the people browser |
-| `/nodes/{id}/faces`, `/nodes/{id}/faces/{faceId}/reassign` | the face overlay and its correction affordance |
-| `/nodes/{id}/similar` | a "more like this" affordance |
-| `/chat` | an answer view — `Ask` still calls `/search?semantic=true` |
-| `/admin/storage` | a storage-health panel in the admin console |
-| `/admin/users/{id}/sessions[/{sid}]` | sign-out-everywhere in the admin console |
+| `POST`/`DELETE /devices/{id}/push` | a **VAPID public key this server does not publish** — without one `PushManager.subscribe` cannot be called at all — and a sender that does not exist. Both halves are behind the API, so this is not waiting on a UI |
 
-`?include_shared=true` is in the same position: supported on children, search and
-tags, and sent by nothing, so shared content is reachable through `/shared` but not
-by browsing into a granted folder.
+`?include_shared=true` is in a similar position and is *not* covered by that test,
+because it is a query parameter rather than a route: supported on children, search
+and tags, and sent by nothing, so shared content is reachable through `/shared` but
+not by browsing into a granted folder.
 
 `/healthz` and `/readyz` are split on purpose. Docker restarts a container whose
 healthcheck fails; if liveness depended on Postgres, a brief database blip would
