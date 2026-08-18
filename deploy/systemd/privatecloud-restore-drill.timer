@@ -1,0 +1,16 @@
+[Unit]
+Description=Monthly restore drill
+Documentation=file:///opt/private-cloud/docs/runbook-restore.md
+
+[Timer]
+# Monthly, though the alert only complains after a quarter. The gap is
+# deliberate: three chances to succeed before anything goes red means a single
+# transient failure — the offsite target rebooting, the network dropping — does
+# not page anybody, while a genuinely broken restore path still does.
+OnCalendar=*-*-01 03:40
+RandomizedDelaySec=1h
+# A server that was off on the 1st should still drill when it comes back.
+Persistent=true
+
+[Install]
+WantedBy=timers.target

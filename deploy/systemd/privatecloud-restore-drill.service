@@ -1,0 +1,20 @@
+[Unit]
+Description=Restore drill — prove the backups still restore
+Documentation=file:///opt/private-cloud/docs/runbook-restore.md
+After=network-online.target docker.service
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=/opt/private-cloud/scripts/restore-drill.sh
+# The drill reads the whole restic repository and writes a scratch dataset. It
+# is deliberately the lowest-priority thing on the box: a verification that
+# competes with serving files is one somebody eventually disables.
+Nice=15
+IOSchedulingClass=idle
+# Restoring a large repository over a slow link legitimately takes hours; what
+# it must not do is run forever and overlap the next drill.
+TimeoutStartSec=6h
+
+[Install]
+WantedBy=multi-user.target

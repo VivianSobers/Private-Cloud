@@ -362,6 +362,61 @@ groups:
           description: "Inspect: SELECT kind, last_error, count(*) FROM jobs WHERE state='failed' GROUP BY 1,2;"
 
   # ==========================================================================
+  # Restore drills
+  # ==========================================================================
+  # A backup nobody has restored is a hypothesis. scripts/restore-drill.sh runs
+  # restore-test.sh monthly and writes the outcome here, which turns "we test
+  # our backups" from a claim into a series.
+  #
+  # The important alert of the three is RestoreDrillTooOld, and the reason is
+  # worth stating: it fires when the drill has not PASSED recently, which covers
+  # the drill failing AND the drill silently not running at all. The second is
+  # the likelier failure and the one a pass/fail alert alone would miss
+  # entirely.
+  - name: restore-drill
+    rules:
+      # Derived in this group, not the 'derived' one, for the same reason
+      # privatecloud_backup_age_seconds is: an alert must read an age computed
+      # this instant rather than one left behind by a previous evaluation of
+      # another group.
+      - record: privatecloud_restore_drill_age_seconds
+        expr: time() - privatecloud_restore_drill_last_success_timestamp
+
+      # A quarter, while the timer runs monthly. Three chances to succeed before
+      # anything goes red, so the offsite target rebooting during one drill does
+      # not page anybody, while a genuinely broken restore path still does.
+      - alert: RestoreDrillTooOld
+        expr: privatecloud_restore_drill_age_seconds > 7948800
+        for: 1h
+        labels:
+          severity: critical
+        annotations:
+          summary: "No successful restore drill in over 92 days"
+          description: "Last successful restore was {{ $value | humanizeDuration }} ago — the backups are unverified. Run: sudo ./scripts/restore-drill.sh; check: journalctl -u privatecloud-restore-drill.service"
+
+      - alert: RestoreDrillFailed
+        expr: privatecloud_restore_drill_last_run_success == 0
+        for: 15m
+        labels:
+          severity: critical
+        annotations:
+          summary: "The last restore drill failed"
+          description: "The backups did not restore. This is the alert that matters most on this server. See /var/log/private-cloud/restore-drill-*.log and docs/runbook-restore.md"
+
+      # Never run at all. Without absent() a server where the drill was never
+      # installed looks identical to one where it passes — no series, no alert,
+      # no signal. Six weeks, so a freshly built server is not nagged during
+      # setup but an abandoned one is.
+      - alert: RestoreDrillMetricsMissing
+        expr: absent(privatecloud_restore_drill_last_success_timestamp)
+        for: 6h
+        labels:
+          severity: warning
+        annotations:
+          summary: "No restore drill has ever reported"
+          description: "Either the drill has never run or the textfile collector is not wired up. Install: sudo ./scripts/host-setup.sh --timers"
+
+  # ==========================================================================
   # Recording rules that nothing in this file alerts on live beside the
   # dashboards that read them. A derived series consumed by an alert belongs in
   # the alert's own group instead — see privatecloud_backup_age_seconds in the

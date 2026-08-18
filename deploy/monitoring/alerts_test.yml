@@ -183,3 +183,42 @@ tests:
             exp_annotations:
               summary: "3 background jobs have failed permanently"
               description: "Inspect: SELECT kind, last_error, count(*) FROM jobs WHERE state='failed' GROUP BY 1,2;"
+
+  # ---- restore drills -----------------------------------------------------
+  # The drill is what turns "we have backups" into "we have restores". Two of
+  # its three failure modes are pinned here; the third needs a 93-day horizon
+  # and lives in alerts_restore_drill_test.yml, which evaluates hourly so the
+  # test finishes in seconds rather than simulating 134,000 minutes.
+  - name: RestoreDrillFailed fires when the last drill did not pass
+    interval: 1m
+    input_series:
+      - series: 'privatecloud_restore_drill_last_run_success'
+        values: '1x30 0x60'          # passing, then failing
+    alert_rule_test:
+      - alertname: RestoreDrillFailed
+        eval_time: 20m               # still passing
+        exp_alerts: []
+      - alertname: RestoreDrillFailed
+        eval_time: 50m               # failed at 30m, held past `for: 15m`
+        exp_alerts:
+          - exp_labels: { severity: critical }
+            exp_annotations:
+              summary: "The last restore drill failed"
+              description: "The backups did not restore. This is the alert that matters most on this server. See /var/log/private-cloud/restore-drill-*.log and docs/runbook-restore.md"
+
+  # The blind spot a pass/fail alert cannot cover: a server where the drill was
+  # never installed has no series at all, so nothing fires and nothing looks
+  # wrong on any dashboard.
+  - name: RestoreDrillMetricsMissing fires when no drill has ever reported
+    interval: 1m
+    input_series:
+      - series: 'up{job="node"}'     # unrelated series so the database is not empty
+        values: '1x600'
+    alert_rule_test:
+      - alertname: RestoreDrillMetricsMissing
+        eval_time: 7h
+        exp_alerts:
+          - exp_labels: { severity: warning }
+            exp_annotations:
+              summary: "No restore drill has ever reported"
+              description: "Either the drill has never run or the textfile collector is not wired up. Install: sudo ./scripts/host-setup.sh --timers"

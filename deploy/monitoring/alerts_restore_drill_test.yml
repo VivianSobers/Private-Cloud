@@ -1,0 +1,43 @@
+# Unit test for the 92-day restore-drill alert — run with:
+#   promtool test rules deploy/monitoring/alerts_restore_drill_test.yml
+#
+# This is a separate file purely for the evaluation interval. RestoreDrillTooOld
+# has a 92-day threshold, and alerts_test.yml evaluates every minute, which would
+# mean simulating 134,000 evaluations of every rule in alerts.yml to reach the
+# horizon — minutes of CPU to test one comparison. An hourly interval reaches
+# 93 days in 2,232 evaluations and asserts exactly the same thing.
+#
+# The two short-horizon drill tests stay in alerts_test.yml, where a one-minute
+# interval is what makes `for: 15m` meaningful.
+
+rule_files:
+  - alerts.yml
+
+evaluation_interval: 1h
+
+tests:
+  - name: restore drill age derives and RestoreDrillTooOld fires past 92 days
+    interval: 1h
+    input_series:
+      # A success stuck at t=0; the age grows with wall-clock time.
+      - series: 'privatecloud_restore_drill_last_success_timestamp'
+        values: '0+0x2400'           # 0 for 2400 hours (100 days)
+    promql_expr_test:
+      - expr: privatecloud_restore_drill_age_seconds
+        eval_time: 93d
+        exp_samples:
+          - labels: 'privatecloud_restore_drill_age_seconds'
+            value: 8035200           # 93d in seconds
+    alert_rule_test:
+      # 91 days: three monthly drills have had their chance, but the quarter is
+      # not up and a transient failure must not page anybody.
+      - alertname: RestoreDrillTooOld
+        eval_time: 91d
+        exp_alerts: []
+      - alertname: RestoreDrillTooOld
+        eval_time: 93d
+        exp_alerts:
+          - exp_labels: { severity: critical }
+            exp_annotations:
+              summary: "No successful restore drill in over 92 days"
+              description: "Last successful restore was 93d 0h 0m 0s ago — the backups are unverified. Run: sudo ./scripts/restore-drill.sh; check: journalctl -u privatecloud-restore-drill.service"
