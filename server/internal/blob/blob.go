@@ -115,11 +115,48 @@ func NewFSStore(root string) (*FSStore, error) {
 
 func (s *FSStore) Root() string { return s.root }
 
+// validKey reports whether key is a canonical, relative, slash-separated store
+// key: one or more non-empty segments, no traversal, no host-path syntax.
+//
+// The check is deliberately **platform-independent**, and that is the point. A
+// blob key is a database and wire format — always slash-separated, whatever the
+// host filesystem spells things like. The obvious guard, filepath.IsAbs, asks a
+// question about the *host* instead: it calls "/etc/passwd" relative on Windows,
+// so a POSIX-absolute key passed the guard there and was quietly resolved under
+// the root. Nothing exploitable followed, because this server runs on Linux and
+// keys are server-generated — but a boundary check that means different things
+// on different platforms is not a boundary check, and this is the one place a
+// traversal would land if keys ever stopped being server-generated.
+func validKey(key string) bool {
+	if key == "" || len(key) > 512 {
+		return false
+	}
+	// Backslash is a separator and colon introduces a drive or an NTFS
+	// alternate data stream; neither belongs in a key on any host.
+	if strings.ContainsAny(key, `\:`) {
+		return false
+	}
+	if strings.HasPrefix(key, "/") {
+		return false
+	}
+	for _, seg := range strings.Split(key, "/") {
+		if seg == "" || seg == "." || seg == ".." {
+			return false
+		}
+	}
+	for _, r := range key {
+		if r < 0x20 || r == 0x7f {
+			return false
+		}
+	}
+	return true
+}
+
 // pathFor maps a key to its on-disk location, rejecting anything that could
 // escape the root. Keys are server-generated, but this is the boundary where a
 // path traversal would land if that ever stopped being true.
 func (s *FSStore) pathFor(key string) (string, error) {
-	if key == "" || strings.Contains(key, "..") || strings.ContainsAny(key, `\:`) || filepath.IsAbs(key) {
+	if !validKey(key) {
 		return "", fmt.Errorf("invalid blob key %q", key)
 	}
 	full := filepath.Join(s.root, filepath.FromSlash(key))
