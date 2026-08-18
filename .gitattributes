@@ -16,3 +16,11 @@ Caddyfile text eol=lf
 *.png binary
 *.jpg binary
 *.gz  binary
+
+# Extensionless executables and Dockerfiles are covered by the catch-all above,
+# but named explicitly because a CRLF here is the "bad interpreter" error that
+# reads as nonsense.
+deploy/host/nut/privatecloud-ups-notify text eol=lf
+Dockerfile*    text eol=lf
+*.json         text eol=lf
+*.py           text eol=lf
