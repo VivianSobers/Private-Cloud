@@ -47,3 +47,10 @@ desktop.ini
 .idea/
 *.swp
 *~
+
+# TLS certificates and keys issued by scripts/tailscale-cert.sh. A private key
+# in git is a private key everywhere git has ever been, including every clone
+# and every mirror; the .gitkeep is allowed through so the bind mount has a
+# directory to point at.
+deploy/caddy/certs/*
+!deploy/caddy/certs/.gitkeep

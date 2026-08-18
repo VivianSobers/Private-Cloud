@@ -29,11 +29,12 @@
 # On a tailnet with MagicDNS + HTTPS enabled the real name is
 # cloud.<your-tailnet>.ts.net — set TS_TAILNET in .env and use that here.
 :443 {
-	# TLS: `internal` makes Caddy issue a cert from its own local CA. Browsers
-	# will warn until you trust that CA (docs/tailscale-setup.md explains how,
-	# and how to swap this for a real Let's Encrypt cert via `tailscale cert`
-	# once MagicDNS HTTPS is enabled — the better long-term answer).
-	tls internal
+	# TLS lives in its own file so switching from Caddy's internal CA to a real
+	# Tailscale-issued certificate is a file swap and a reload, not an edit to
+	# this Caddyfile — which is mounted read-only and shared with the public
+	# plane below. scripts/tailscale-cert.sh does the swap; tls.conf explains
+	# both halves. Default is `tls internal`.
+	import /etc/caddy/tls.conf
 
 	encode zstd gzip
 

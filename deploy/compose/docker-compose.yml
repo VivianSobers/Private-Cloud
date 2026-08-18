@@ -345,6 +345,12 @@ services:
       - "${TAILSCALE_IP}:443:443"
     volumes:
       - ../caddy/Caddyfile:/etc/caddy/Caddyfile:ro
+      # TLS is imported from its own file so switching between Caddy's internal
+      # CA and a real Tailscale certificate is a file swap plus a reload, with
+      # the Caddyfile itself untouched. scripts/tailscale-cert.sh rewrites this
+      # file and drops the certificate into ../caddy/certs.
+      - ../caddy/tls.conf:/etc/caddy/tls.conf:ro
+      - ../caddy/certs:/etc/caddy/certs:ro
       - caddy_data:/data          # holds issued certs — persist or you re-issue
       - caddy_config:/config
       # The built SPA. Produced by the `web` service below, which is a

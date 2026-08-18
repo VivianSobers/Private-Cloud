@@ -1,0 +1,19 @@
+[Unit]
+Description=Weekly renewal check for the Tailscale TLS certificate
+Documentation=file:///opt/private-cloud/docs/tailscale-setup.md
+
+[Timer]
+# Weekly, not daily: the script renews only inside the last 30 days of a 90-day
+# certificate, so weekly gives four attempts in that window. Daily would add
+# nothing except log noise.
+OnCalendar=Mon 04:40
+# Certificates do not care what time it is, and this shares a disk with
+# everything else. Spread it out.
+RandomizedDelaySec=30m
+# A machine that was off on Monday should still renew when it comes back, rather
+# than waiting a week — which is exactly how a certificate expires on a home
+# server that gets switched off.
+Persistent=true
+
+[Install]
+WantedBy=timers.target

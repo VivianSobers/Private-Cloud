@@ -1,0 +1,28 @@
+[Unit]
+Description=Renew the Tailscale TLS certificate for the private-cloud tailnet plane
+Documentation=file:///opt/private-cloud/docs/tailscale-setup.md
+# Tailscale must be up to answer the DNS-01 challenge, and Docker must be up for
+# the reload at the end. Neither is a hard requirement — the script degrades to
+# "installed, not yet live" — but ordering avoids a guaranteed first failure.
+After=network-online.target tailscaled.service docker.service
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=/opt/private-cloud/scripts/tailscale-cert.sh
+# The script is a no-op when more than RENEW_BEFORE_DAYS remain, so running it
+# weekly costs one openssl invocation and gives three attempts inside the
+# renewal window. A certificate nobody renews is a scheduled outage.
+Nice=10
+IOSchedulingClass=idle
+
+# It writes into deploy/caddy/ and talks to the Docker socket, so it cannot be
+# fully sandboxed — but it has no reason to touch anything else.
+ProtectSystem=full
+ReadWritePaths=/opt/private-cloud/deploy/caddy
+ProtectHome=yes
+NoNewPrivileges=yes
+PrivateTmp=yes
+
+[Install]
+WantedBy=multi-user.target

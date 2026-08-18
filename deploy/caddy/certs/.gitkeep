@@ -1,0 +1,7 @@
+Certificates issued by scripts/tailscale-cert.sh land here and are mounted
+read-only into the Caddy container at /etc/caddy/certs.
+
+Nothing in this directory is committed: a private key in git is a private key
+everywhere git has ever been. .gitignore enforces that; this file only keeps the
+directory itself present, because compose bind-mounts it and a missing bind
+source becomes a root-owned directory rather than an error.
