@@ -1,6 +1,12 @@
 # Phase 4 — Hardening Pass
 
-**Status: done (slice 5).** Not a feature — a deliberate second walk of a surface
+**Status: ✅ done (slice 5).** Every item in §3 landed; §5 lists what was
+consciously accepted, and one of those — ❌ **per-user API rate limiting** — has
+since gone from low-risk to the most overdue item in the project, because Phase 7
+made a second account real and Phase 8 made one request able to spend GPU time.
+Marks: ✅ done · 🟠 partial · ❌ not built; the ledger is [status.md](status.md).
+
+Not a feature — a deliberate second walk of a surface
 that has grown a great deal since Phase 1, done once, on purpose, while the whole
 system is fresh in mind. This document is the record of that walk: what was
 reviewed, what was fixed, and what was consciously left as acceptable.
@@ -71,11 +77,21 @@ The failure modes a 7 GiB machine hits first, and where each is bounded:
 
 ## 5. Consciously accepted / deferred
 
-- **Per-user API rate limiting** (beyond the per-IP auth limiter and the enqueue
+- ❌ **Per-user API rate limiting** (beyond the per-IP auth limiter and the enqueue
   cap) is not yet in place. An authenticated user could still issue many semantic
   queries, each an RPC to the sidecar. On a single-user tailnet this is low risk;
   a per-user token bucket on the expensive endpoints is the right next step if the
   deployment grows past one trusted user.
-- **The uncalled dependency advisory** in §1 is tracked, not patched, because no
-  code path reaches it.
-- **pgvector** is deferred until a corpus outgrows the exact scan, by design.
+
+  **Update, as of Phase 9.** The deployment did grow past one trusted user: Phase 7
+  shipped multi-user sharing, and Phase 8 shipped chat and similarity, which means
+  one authenticated request now costs a GPU box real work against content the
+  caller may not own. The premise that made this acceptable no longer holds. It was
+  re-deferred as Phase 7 slice 5 and again in Phase 9's risk list, and it is now the
+  single most overdue item in the project.
+- 🟠 **The uncalled dependency advisory** in §1 is tracked, not patched, because no
+  code path reaches it. It was expected to clear on the next routine `go get -u`;
+  whether it has is not verifiable from a checkout without the toolchain.
+- ❌ **pgvector** is deferred until a corpus outgrows the exact scan, by design. The
+  query layer is written to adopt it with no schema change, and Phase 8's face
+  clustering now wants the same upgrade for the same reason.

@@ -26,6 +26,13 @@ So the two files split the job:
 |---|---|
 | *Does this endpoint exist, and does it need auth?* | [`openapi.yaml`](openapi.yaml) — **generated** from the server's route table |
 | *What does this endpoint mean — bodies, semantics, why?* | this file |
+| *Does anything actually **call** it?* | `awaitingClient` in [contract_test.go](../server/internal/httpapi/contract_test.go) — thirteen route shapes are served with no client |
+| *Is the feature this belongs to done?* | [status.md](status.md) — ✅ / 🟠 / ❌ per phase and slice |
+
+**Marks used below:** ✅ shipped and served · 🟠 shipped with a stated limit ·
+❌ specified here and **not** implemented. A section marked ✅ shipped may still
+have no consumer; that is a different axis, and the third row above is where it is
+recorded.
 
 `openapi.yaml` is regenerated and diffed by a contract test
 (`server/internal/httpapi/contract_test.go`), so it cannot claim a route the mux
@@ -79,7 +86,7 @@ all JSON responses.
 > parse. Recorded rather than quietly edited because the whole point of this file
 > is that the other track can trust it without reading the handlers.
 
-## Shipped surface (Phases 1–4) — do not break
+## ✅ Shipped surface (Phases 1–4) — do not break
 
 Enumerated from the registered routes in `httpapi.Server.Handler`. Every route
 below exists today. Unless marked otherwise a route requires authentication and
@@ -210,13 +217,32 @@ scheme (Basic, using an app password).
 
 Each new phase from the split adds its endpoints below **before** implementation.
 
+> **Read this heading with a caveat: "proposed" is now wrong for almost all of
+> it.** Everything below has since been implemented except the four items listed
+> here, which remain ❌ **specified and not built**:
+>
+> - `stream: true` on `POST /chat` (Phase 8) — SSE streaming
+> - `scope.node_ids` and `scope.tags` on `POST /chat` — deliberately **not
+>   accepted**, because a scope that parses and silently does nothing is worse
+>   than an absent one
+> - the `tiers` array on `GET /admin/storage` (Phase 9) — there is no cold tier,
+>   so it reports `tiering: {enabled: false}` instead
+> - push **delivery** (Phase 6) — the subscription is stored; nothing sends
+>
+> The sections stay here rather than moving up to the shipped list because the
+> shapes were specified here first and these descriptions are still the reference
+> for what the fields *mean*.
+
 > **Phase 5 has shipped.** Everything in the "Photos & media" section below is
 > implemented and served; it stays here, rather than moving up to the shipped
 > list, because the shapes were specified here first and the descriptions are
 > still the reference for what the fields *mean*. Confirm any of it against
 > [`openapi.yaml`](openapi.yaml), which is generated from the routes.
 
-### Phase 5 — Photos & media ✅ shipped
+### Phase 5 — Photos & media ✅ shipped · 🟠 partly consumed
+
+*Consumed by the gallery, timeline, lightbox and albums in `web/`. Not consumed:
+the `gps` field (no map view).*
 
 **Media metadata.** Extracted by a new `media` job kind, alongside the existing
 `extract`. Content-addressed like `doc_text`, so identical images are read once.
@@ -295,7 +321,11 @@ GET /media/timeline?from=&to=&limit=&offset=
   → {items: [node], has_more: bool}
 ```
 
-### Phase 6 — Native clients ✅ shipped
+### Phase 6 — Native clients ✅ shipped · ❌ no client
+
+*All five routes below are served and none is called by anything in this
+repository — see `awaitingClient`. There is no device-management UI and the PWA
+does not subscribe to push.*
 
 Almost no new server surface — the point of this phase is that the clients
 consume the API that already exists. Two additions:
@@ -344,7 +374,11 @@ A client that does not register one simply polls `GET /changes`, which is the
 existing, working path — push is a latency optimisation, never a correctness
 requirement. Any client must work with it switched off.
 
-### Phase 7 — Multi-user & sharing ✅ shipped
+### Phase 7 — Multi-user & sharing ✅ shipped · 🟠 partly consumed
+
+*Grants, `/shared` and the admin users/audit routes are consumed. Not consumed:
+`?include_shared=true` on children/search/tags, and
+`GET`/`DELETE /admin/users/{id}/sessions`.*
 
 > **Note added on implementation.** Two reads are deliberately **not** gated on
 > `?include_shared=true`: `GET /nodes/{id}` and `GET /nodes/{id}/content`. The
@@ -446,7 +480,11 @@ logins, admin actions, share creation — not every read. A log that records
 everything is one nobody reads, and on this hardware it would outgrow the files
 it describes. `request_id` ties an entry back to the API access log.
 
-### Phase 8 — Advanced intelligence ✅ shipped
+### Phase 8 — Advanced intelligence 🟠 shipped except streaming · ❌ no client
+
+*`/chat`, `/similar`, `/people` and both face routes are served and nothing calls
+them; `Ask` still uses `/search?semantic=true`. `stream: true` is ❌ unimplemented,
+and the generation and detection sidecars have ❌ no reference image in `deploy/`.*
 
 > **Notes added on implementation.** `POST /chat` is **non-streaming only** —
 > `stream: true` is not implemented, and `scope.node_ids` / `scope.tags` are
@@ -531,7 +569,10 @@ event, then `done`.
 - Retrieval only ever reaches content the caller could already open, so chat
   never becomes a way to read around a permission.
 
-### Phase 9 — Scale & resilience 🟡 partly shipped
+### Phase 9 — Scale & resilience 🟠 partly shipped · ❌ no client
+
+*`GET /admin/storage` is served and nothing calls it. The cold tier it would
+report on is ❌ not built, deliberately.*
 
 > **Note added on implementation.** `GET /admin/storage` exists and reports pool
 > health, backup freshness, accounted bytes and queue depth — read from the same

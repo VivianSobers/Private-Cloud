@@ -1,6 +1,11 @@
 # Phase 1 — MVP Design
 
-**Status: built.** All seven slices are implemented and committed; see the
+**Status: ✅ complete — 7/7 slices, both sides of the API.** The only unticked
+items in this document are the three `sudo` gates in §0, which are the operator's
+and cannot be verified from a checkout. Marks: ✅ done · 🟠 partial · ❌ not built;
+the whole-project ledger is [status.md](status.md).
+
+All seven slices are implemented and committed; see the
 slice table in §7. This document was written before any code so the expensive
 decisions got made deliberately, and it is kept as the record of *why* the
 shipped design looks the way it does. Where the code diverged from the plan the
@@ -19,9 +24,9 @@ the two:
 
 **Must close before Phase 1 writes real data:**
 
-- [ ] `sudo ./scripts/restore-test.sh` passes — the exit gate
-- [ ] Snapshot ladder confirmed filling in (`zfs list -t snapshot | wc -l` grows)
-- [ ] One restic backup completed and restored successfully
+- ❌ [ ] `sudo ./scripts/restore-test.sh` passes — the exit gate
+- ❌ [ ] Snapshot ladder confirmed filling in (`zfs list -t snapshot | wc -l` grows)
+- ❌ [ ] One restic backup completed and restored successfully
 
 **Can run in parallel with Phase 1:** Grafana dashboards, ntfy alert chain,
 image digest pinning, textfile collectors, production hardware.

@@ -1,5 +1,11 @@
 # Runbook — Disaster Recovery
 
+**Status: ✅ written; 🟠 never executed end to end on this deployment.** The
+placeholders in "What you need before you start" are the operator's to fill in, and
+until `scripts/restore-test.sh` has passed against the real pool this document is a
+plan rather than a rehearsed procedure. ❌ Automating any of it is deliberately not
+built — [deferred-work.md](deferred-work.md).
+
 **The server is gone.** Fire, theft, flood, dead motherboard, or a mistake you
 can't undo. This document rebuilds the whole thing from a git repo and a backup
 repository.

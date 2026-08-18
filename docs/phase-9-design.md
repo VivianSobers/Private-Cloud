@@ -1,15 +1,20 @@
 # Phase 9 — Scale & resilience design
 
-**Status: partial, and deliberately so.** The observability and quota halves are
-built. **The object-storage cold tier is not**, and this document says why rather
-than leaving a roadmap row implying otherwise.
+**Status: 🟠 partial, and deliberately so — 2/5 slices.** The observability and
+quota halves are ✅ built. ❌ **The object-storage cold tier is not**, and this
+document says why rather than leaving a roadmap row implying otherwise; ❌ DR
+automation and ❌ billing hooks are likewise unstarted. In front of the API,
+❌ nothing reads `GET /admin/storage` yet, so the numbers this phase computes are
+visible only to `curl` and to Grafana. Marks: ✅ done · 🟠 partial · ❌ not built;
+the ledger is [status.md](status.md).
 
 ---
 
-## 0. What shipped
+## 0. ✅ What shipped
 
 **`GET /admin/storage`** — pool health, backup freshness, accounted bytes and
-queue depth, admin only.
+queue depth, admin only. ❌ No client calls it; it is declared in `awaitingClient`
+as "Phase 9 storage health; no admin UI yet".
 
 The contract's rule for it is the whole design, and it is followed literally:
 read from the **same sources the alerts already use** — the zpool textfile
@@ -54,7 +59,7 @@ are still on the disk; purging frees them; clearing a quota restores unlimited;
 and — the Phase 7 interaction — an **editor writing into a shared folder spends
 the owner's quota**, not their own.
 
-## 1. What did not ship, and why it is not a stub
+## 1. ❌ What did not ship, and why it is not a stub
 
 **The object-storage cold tier is not implemented.** Neither is a tiering policy.
 
@@ -87,11 +92,11 @@ That last point is the reason not to rush it.
 
 | # | Slice | Status |
 |---|---|---|
-| **1** | `GET /admin/storage` from the existing collectors | ✅ 5 parser tests |
-| **2** | Quota enforcement end to end, including owner-charged editor writes | ✅ 6 tests |
-| 3 | Object-storage cold tier + tiering policy | ⬜ **not started** — see §1 |
-| 4 | DR automation / restore drills as code | ⬜ the runbooks and `scripts/restore-test.sh` exist and are manual; automating them is not started |
-| 5 | Billing hooks | ⬜ not started, and arguably out of scope for a self-hosted single-tenant server |
+| **1** | `GET /admin/storage` from the existing collectors | ✅ 5 parser tests — ❌ no admin UI reads it |
+| **2** | Quota enforcement end to end, including owner-charged editor writes | ✅ 6 tests, and ✅ the usage indicator in `web/` consumes `GET /usage` |
+| 3 | Object-storage cold tier + tiering policy | ❌ **not started** — see §1 |
+| 4 | DR automation / restore drills as code | ❌ the runbooks and `scripts/restore-test.sh` exist and are manual; automating them is not started |
+| 5 | Billing hooks | ❌ not started, and arguably out of scope for a self-hosted single-tenant server |
 
 ## 3. Risks
 

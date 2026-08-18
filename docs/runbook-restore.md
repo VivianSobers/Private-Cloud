@@ -1,5 +1,11 @@
 # Runbook — Restore
 
+**Status: ✅ written and reviewed; 🟠 rehearsal is the operator's.** Every
+procedure here is manual by design — see [deferred-work.md](deferred-work.md) on why
+❌ DR automation is not built: automating a restore means automating something whose
+failure mode is overwriting good data with old data. The rehearsal is worth more
+than the automation until the rehearsal is boring.
+
 **Read this when something is lost.** Procedures are ordered from least to most
 destructive. Work down the list; stop as soon as you have your data back.
 

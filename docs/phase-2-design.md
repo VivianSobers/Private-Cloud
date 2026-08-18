@@ -1,6 +1,11 @@
 # Phase 2 — Storage Engine Design
 
-**Status: complete — all four slices.** Written before any code, so the
+**Status: ✅ complete — 4/4 slices, both sides of the API.** Nothing in this phase
+is partial or outstanding; the two §0 gates below are Phase 0 operator gates.
+Marks: ✅ done · 🟠 partial · ❌ not built; the whole-project ledger is
+[status.md](status.md).
+
+Written before any code, so the
 expensive decisions get made deliberately — the same discipline that made
 Phase 1's schema survive first contact. See §7 for what is actually built.
 
@@ -16,9 +21,9 @@ the storage engine actually earns its complexity.
 Phase 1 is complete and verified. Two things must be true before Phase 2 writes
 data in the new format:
 
-- [ ] `sudo ./scripts/restore-test.sh` passes against a pool containing real
+- ❌ [ ] `sudo ./scripts/restore-test.sh` passes against a pool containing real
       Phase 1 blobs — the Phase 0 exit gate, now with something to lose
-- [ ] `scripts/restic-backup.sh` includes `tank/blobs`. It was deliberately
+- ✅ [x] `scripts/restic-backup.sh` includes `tank/blobs`. It was deliberately
       excluded in Phase 0 while the dataset was empty; it is not empty now, and
       Phase 2 is about to rewrite everything in it
 

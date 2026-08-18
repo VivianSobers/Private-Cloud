@@ -1,12 +1,26 @@
 # Phase 7 — Multi-user & sharing (Vivian's front-of-API) design
 
-**Status: front-of-API in progress.** The web client for the collaboration and
-admin surface, built against the Phase 7 contract Guru authored in
-[api-contract.md](api-contract.md). The server handlers are not implemented yet,
-so every panel here degrades to a clear "not available on this server yet" state
-and lights up unchanged when the endpoints land at those exact shapes.
+**Status: 🟠 three of five client pieces shipped, and the server behind them is now
+✅ complete.**
 
-## What shipped (client)
+When this document was first written the server handlers did not exist, so every
+panel degraded to a clear "not available on this server yet" state. That is no
+longer the situation: [phase-7-server-design.md](phase-7-server-design.md) shipped
+all four server slices, and these views light up unchanged — which was the entire
+point of the seam, and is worth recording as a success rather than quietly
+updating.
+
+| Client piece | Status |
+|---|---|
+| Share with people (grant, change role, revoke) | ✅ |
+| Shared with me (the roots others granted) | ✅ |
+| Admin console: users, quotas, audit log | ✅ |
+| Browsing **into** a granted folder (`?include_shared=true`) | ❌ |
+| Per-user session management in the console | ❌ |
+
+Marks: ✅ done · 🟠 partial · ❌ not built; the ledger is [status.md](status.md).
+
+## ✅ What shipped (client)
 
 **Share with people** ([web/src/PeopleShare.tsx](../web/src/PeopleShare.tsx)) —
 inside the existing share dialog, alongside the public link: grant another
@@ -31,17 +45,27 @@ this is convenience, not the boundary). A users table (`GET/POST/PATCH/DELETE
 /admin/users`) to toggle admin/enabled, set a quota, and create accounts; and an
 audit-log reader (`GET /admin/audit`) with actor/action filters.
 
-## Why the split held again
+## ✅ Why the split held again
 
 All of this is `web/` only — typed client additions plus four components — so it
 landed with zero contact with Guru's server work. The one shared file was the
 contract, which Guru had already specified; the client codes against it exactly.
-When the handlers ship, no UI change is needed.
+When the handlers shipped, **no UI change was needed** — the prediction this
+section made is now a fact, and it is the strongest evidence in the repository that
+the layer split was the right call.
 
-## Not yet
+## ❌ Not yet
 
-- The shared-folder browser (navigating into a granted folder with
-  `?include_shared=true`).
-- Per-user session management in the admin console
-  (`GET/DELETE /admin/users/{id}/sessions`).
-- Drag-reorder and "add to album" wiring for the Phase 5 gallery remain open too.
+- ❌ **The shared-folder browser** — navigating into a granted folder with
+  `?include_shared=true`. The server has supported it since slice 2, and
+  `include_shared` appears nowhere in `web/src`, so shared content is reachable
+  only through the dedicated "Shared with me" view. A grantee cannot open a shared
+  *folder* inline.
+- ❌ **Per-user session management** in the admin console
+  (`GET`/`DELETE /admin/users/{id}/sessions`). Both routes are served and are
+  declared in `awaitingClient`; sign-out-everywhere is a `cloudctl` or SQL job
+  today.
+- 🟠 **The Phase 5 gallery wiring** is no longer open in the way this line
+  originally meant: "add to album" and reordering both shipped, but reordering is
+  move-up/move-down buttons rather than a pointer drag, and drag-select was never
+  built. See [phase-5-design.md](phase-5-design.md) §7 slice 10.

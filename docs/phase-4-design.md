@@ -1,6 +1,13 @@
 # Phase 4 — Intelligence, Identity, Hardening Design
 
-**Status: complete — all slices (1, 2, 3, 3b, 4, 5).** Written before any code, the
+**Status: ✅ complete — 6/6 slices (1, 2, 3, 3b, 4, 5), both sides of the API.**
+Two things this phase named are still ❌: **per-user API rate limiting**, deferred
+in slice 5 and now the most overdue item in the project, and **pgvector**, deferred
+by design while the exact cosine scan is correct at this corpus size. Both are in
+[deferred-work.md](deferred-work.md). Marks: ✅ done · 🟠 partial · ❌ not built;
+the whole-project ledger is [status.md](status.md).
+
+Written before any code, the
 discipline that carried Phases 1–3: make the expensive decisions deliberately, and
 keep the document as the record of *why*. Where the code later diverged, the
 section says so inline.

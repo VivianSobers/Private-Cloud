@@ -1,6 +1,12 @@
 # private-cloud API
 
-Go backend for the private cloud. **Phases 1–4 complete; Phase 5 in progress.**
+Go backend for the private cloud. **✅ Phases 1–9 are complete behind the API** —
+every phase's server half is built, served and tested. What is 🟠 or ❌ is either a
+consumer that does not exist yet (thirteen route shapes below have no client) or
+one of three deliberate omissions: the ❌ object-storage cold tier, ❌ streaming
+chat answers, and ❌ image-embedding similarity for photos. See
+[../docs/status.md](../docs/status.md) for the slice-by-slice ledger and
+[../docs/deferred-work.md](../docs/deferred-work.md) for the reasons.
 
 Configuration, database pool, embedded migrations, health probes, Prometheus
 metrics, structured logging, graceful shutdown, passkey auth, the file tree
@@ -13,11 +19,22 @@ delta protocol and lineage-based conflict resolution for the sync client
 semantic search, auto-tagging, plus OIDC single sign-on and a hardening pass
 (Phase 4).
 
-**Phase 5 (photos & media) is complete.** A `media` job kind reads EXIF and
-renders thumbnails and previews into a content-addressed store; `?variant=` on
-the content route serves them; `/media/timeline` orders a gallery by capture
-time; and `/albums` provides hand-ordered collections that never move a file.
-See [../docs/phase-5-design.md](../docs/phase-5-design.md).
+✅ **Phase 5 (photos & media).** A `media` job kind reads EXIF and renders
+thumbnails and previews into a content-addressed store; `?variant=` on the content
+route serves them; `/media/timeline` orders a gallery by capture time; and
+`/albums` provides hand-ordered collections that never move a file. See
+[../docs/phase-5-design.md](../docs/phase-5-design.md).
+
+✅ **Phase 6 (devices)** adds a device name and five `/devices` routes, where a
+device *is* a device-kind session so revoking one is revoking the token. ✅ **Phase
+7 (multi-user)** adds grants that inherit down a folder from the materialised path,
+`?include_shared=true` opt-in widening, owner-charged editor writes, an admin
+console surface and an audit log. 🟠 **Phase 8 (advanced intelligence)** adds
+`POST /chat` with mandatory citations, `/nodes/{id}/similar` and face clustering
+behind `/people` — ❌ minus streaming answers and image similarity, and note that
+only the *embedding* sidecar has a reference image in `deploy/`. 🟠 **Phase 9**
+adds `GET /admin/storage`, read from the same textfile collectors the alerts
+scrape, and proves quota end to end — ❌ minus the cold tier.
 
 The endpoint table below lists what this server actually serves today;
 [../docs/openapi.yaml](../docs/openapi.yaml) is the machine-readable form of the
@@ -43,8 +60,8 @@ internal/files/       the tree: nodes, versions, trash, quota, GC, fsck, delta, 
 internal/shares/      public share links and their token plane
 internal/jobs/        the queue: SKIP LOCKED claim, retry/backoff, reaper
 internal/extract/     text decode, PDF text layer, tesseract OCR, auto-tagging
-internal/embed/       vector math, chunking, inference-sidecar client
-internal/media/       EXIF, thumbnail/preview rendering (Phase 5, not yet served)
+internal/embed/       vector math, chunking, embedding + generation sidecar clients
+internal/media/       EXIF, thumbnail/preview rendering, face-detector client
 internal/webdavfs/    webdav.FileSystem over the node store
 internal/httpapi/     routing, middleware, handlers
 internal/metrics/     Prometheus registry
@@ -68,8 +85,8 @@ between the network and the auth code in slice 2.
 | `POST /api/v1/auth/recovery/redeem` | — | Redeem a recovery code |
 | `POST /api/v1/auth/logout` | — | Revoke current session |
 | `GET /api/v1/auth/me` | session | Current user |
-| `GET|DELETE /api/v1/auth/credentials[/{id}]` | session | Manage passkeys |
-| `GET|DELETE /api/v1/auth/sessions[/{id}]` | session | Manage devices |
+| `GET\|DELETE /api/v1/auth/credentials[/{id}]` | session | Manage passkeys |
+| `GET\|DELETE /api/v1/auth/sessions[/{id}]` | session | Manage devices |
 | `POST /api/v1/auth/recovery/regenerate` | session | New recovery codes |
 | `GET /api/v1/nodes/root` | session | The user's root folder |
 | `GET /api/v1/nodes/resolve?path=/a/b` | session | Resolve an absolute path |
@@ -79,7 +96,7 @@ between the network and the auth code in slice 2.
 | `DELETE /api/v1/nodes/{id}` | session | Move to trash |
 | `POST /api/v1/folders` | session | Create a folder |
 | `POST /api/v1/upload?parent_id=&name=` | session | Upload (raw body or multipart) |
-| `GET|HEAD /api/v1/nodes/{id}/content` | session | Download; Range + ETag |
+| `GET\|HEAD /api/v1/nodes/{id}/content` | session | Download; Range + ETag |
 | `GET /api/v1/trash` | session | What's in the trash |
 | `POST /api/v1/trash/{id}/restore` | session | Undelete |
 | `DELETE /api/v1/trash/{id}` | session | Purge permanently |
@@ -117,7 +134,7 @@ between the network and the auth code in slice 2.
 | `GET\|POST /api/v1/albums` | session | List / create albums |
 | `GET\|PATCH\|DELETE /api/v1/albums/{id}` | session | Read (with items), rename/recover, delete |
 | `POST /api/v1/albums/{id}/items` | session | Add nodes; re-adding is a no-op |
-| `PATCH /api/v1/albums/{id}/items` | session | Replace the whole order (drag-reorder) |
+| `PATCH /api/v1/albums/{id}/items` | session | Replace the whole order in one call, never N per-item updates |
 | `DELETE /api/v1/albums/{id}/items/{nodeId}` | session | Remove from the album; the file stays |
 | `GET /api/v1/nodes/{id}/similar` | session | Files like this one, by meaning |
 | `POST /api/v1/chat` | session | Ask your library; answers cite their sources |
@@ -145,6 +162,29 @@ between the network and the auth code in slice 2.
 
 `{id}` accepts the literal `root`, so a client can start browsing without a
 prior lookup.
+
+### ❌ Served, and called by nothing
+
+Thirteen of the route shapes above have no consumer in this repository. That is
+recorded mechanically, not by hand: `awaitingClient` in
+[internal/httpapi/contract_test.go](internal/httpapi/contract_test.go) declares
+each one with a reason, and `TestEveryRouteIsConsumedOrDeclaredPending` fails both
+on an undeclared unconsumed route *and* on a declaration that has gone stale — so
+deleting a line from that map is part of shipping the client for it.
+
+| Route | Waiting on |
+|---|---|
+| `/devices`, `/devices/{id}`, `/devices/{id}/push` | a device-management UI; the PWA does not subscribe to push |
+| `/people`, `/people/{id}`, `/people/{id}/merge` | the people browser |
+| `/nodes/{id}/faces`, `/nodes/{id}/faces/{faceId}/reassign` | the face overlay and its correction affordance |
+| `/nodes/{id}/similar` | a "more like this" affordance |
+| `/chat` | an answer view — `Ask` still calls `/search?semantic=true` |
+| `/admin/storage` | a storage-health panel in the admin console |
+| `/admin/users/{id}/sessions[/{sid}]` | sign-out-everywhere in the admin console |
+
+`?include_shared=true` is in the same position: supported on children, search and
+tags, and sent by nothing, so shared content is reachable through `/shared` but not
+by browsing into a granted folder.
 
 `/healthz` and `/readyz` are split on purpose. Docker restarts a container whose
 healthcheck fails; if liveness depended on Postgres, a brief database blip would

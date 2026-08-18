@@ -1,5 +1,14 @@
 # pcsync — Private Cloud sync client
 
+**Status: ✅ the daemon is complete and steerable; ❌ there is no GUI.** Phase 3
+built the sync engine and Phase 6 gave it a control socket, selective sync, a
+conflict list, `.pcsyncignore`, `pcsync doctor` and a platform-free tray presenter
+rendered live by `pcsync watch`. What does not exist is the **platform tray icon
+and menu adapter** — there is no `desktop/` directory — and no installers or
+auto-update. Every decision such a shell would make is already made and unit-tested
+in `internal/tray` and the control client, so it is genuinely a thin adapter.
+Ledger: [../docs/status.md](../docs/status.md).
+
 A headless daemon that keeps one local folder in step with your Private Cloud
 server, in both directions, over the block-level delta protocol. Edit a file on
 your laptop and it appears on your desktop within seconds; a 4 GB file that

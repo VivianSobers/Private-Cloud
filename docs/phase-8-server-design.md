@@ -1,6 +1,13 @@
 # Phase 8 — Advanced intelligence (behind the API) design
 
-**Status: complete.** The server half of the phase whose client half is
+**Status: 🟠 3/5 slices ✅ complete; slices 4 and 5 ❌ not started; and none of the
+three shipped surfaces has a client yet.** `/chat`, `/similar`, `/people` and both
+face routes are declared in `awaitingClient` — built, tested, unreached. Two of the
+three sidecars this phase depends on also have ❌ no reference implementation in
+`deploy/`: only the embedder does. Marks: ✅ done · 🟠 partial · ❌ not built; the
+ledger is [status.md](status.md).
+
+The server half of the phase whose client half is
 [phase-8-design.md](phase-8-design.md) — where "Ask your library" already shipped
 as the *retrieval* view, because retrieval was the one piece that ran on what
 Phase 4 had built. This adds the generation, similarity and faces behind it.
@@ -20,11 +27,18 @@ reason none of this lives in the API process.
 
 ## 0. Three sidecars, not one
 
-| Sidecar | Env | Used by |
-|---|---|---|
-| Embedding | `PC_EMBED_URL` | semantic search, similarity, chat retrieval |
-| Generation | `PC_GENERATE_URL`, `PC_GENERATE_MODEL` | `POST /chat` written answers |
-| Detection | `PC_DETECT_URL`, `PC_DETECT_MODEL`, `PC_DETECT_DIM` | the `faces` job |
+| Sidecar | Env | Used by | Client in Go | Reference image in `deploy/` |
+|---|---|---|---|---|
+| Embedding | `PC_EMBED_URL` | semantic search, similarity, chat retrieval | ✅ | ✅ `deploy/embed-sidecar` |
+| Generation | `PC_GENERATE_URL`, `PC_GENERATE_MODEL` | `POST /chat` written answers | ✅ | ❌ nothing serves `POST /generate` |
+| Detection | `PC_DETECT_URL`, `PC_DETECT_MODEL`, `PC_DETECT_DIM` | the `faces` job | ✅ | ❌ nothing serves `POST /detect` |
+
+The two ❌s are deliberate and are recorded in [deferred-work.md](deferred-work.md):
+an embedder is small and interchangeable, so shipping one reference image was worth
+it; a generator is a multi-gigabyte decision about quality, latency and VRAM, and a
+face detector is a decision about which biometric model an operator is willing to
+run. The consequence to know is that on a stock deployment `POST /chat` answers
+with citations and no prose, and the `faces` job does nothing at all.
 
 Separate because they have very different resource profiles and a deployment may
 reasonably want one and not the others. An embedder is a single forward pass and
@@ -158,11 +172,11 @@ the dead-letter queue rather than do anything useful.
 
 | # | Slice | Status |
 |---|---|---|
-| **1** | Similar files + the shared retrieval layer | ✅ 8 tests |
-| **2** | `POST /chat`, generation sidecar client, degraded modes | ✅ 7 tests |
-| **3** | Face schema, detector client, `faces` job, clustering, `/people` | ✅ 8 tests |
-| 4 | Streaming answers (`stream: true`, SSE) | ⬜ the contract specifies it; non-streaming ships first because a written answer that arrives whole is strictly simpler to render and to test |
-| 5 | Image-embedding similarity for photos | ⬜ `/similar` covers documents; photos need an image embedder, a fourth model |
+| **1** | Similar files + the shared retrieval layer | ✅ 8 tests — ❌ no client |
+| **2** | `POST /chat`, generation sidecar client, degraded modes | ✅ 7 tests — ❌ no client, and ❌ no generation sidecar image |
+| **3** | Face schema, detector client, `faces` job, clustering, `/people` | ✅ 8 tests — ❌ no client, and ❌ no detection sidecar image |
+| 4 | Streaming answers (`stream: true`, SSE) | ❌ the contract specifies it; non-streaming ships first because a written answer that arrives whole is strictly simpler to render and to test |
+| 5 | Image-embedding similarity for photos | ❌ `/similar` covers documents; photos need an image embedder, a fourth model |
 
 ## 5. Risks
 

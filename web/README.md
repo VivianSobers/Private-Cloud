@@ -1,6 +1,35 @@
 # private-cloud web
 
-React 19 + TypeScript, built with Vite. **Phase 1, slice 5.**
+React 19 + TypeScript, built with Vite.
+
+**Status: 🟠 the front-of-API track trails the server.** Shipped ✅: the file
+browser, trash, versions, share links and share management, tags and tag browsing,
+search (keyword and semantic), the photo timeline / lightbox / albums, ask-your-
+library retrieval, share-with-people, shared-with-me, a storage audit that runs
+`fsck`, the admin console (users · quotas · audit log) and an installable PWA
+shell.
+
+Not built ❌, though the server routes for all of it are live:
+
+| Missing view | Endpoint it would call |
+|---|---|
+| Written answers with citations | `POST /chat` — `Ask` still calls `/search?semantic=true` |
+| People / faces browser, name-a-face, merge | `/people`, `/nodes/{id}/faces` |
+| "More like this" | `GET /nodes/{id}/similar` |
+| Device management (name, revoke a lost laptop) | `/devices` — Settings lists *sessions* instead |
+| Web Push subscription | `POST /devices/{id}/push` |
+| Storage-health panel | `GET /admin/storage` |
+| Per-user session management in the console | `/admin/users/{id}/sessions` |
+| Browsing into a granted folder | `?include_shared=true` on children/search/tags |
+| Map view over photo GPS | the `gps` field, already typed in `api.ts` |
+
+🟠 Album reordering ships as move-up/move-down buttons in a "Manage" mode, not a
+pointer drag; drag-select is not built. The endpoint contract (replace the whole
+order in one call) is already satisfied.
+
+The ledger for all of this is [../docs/status.md](../docs/status.md); the
+mechanically-enforced version is `awaitingClient` in
+[../server/internal/httpapi/contract_test.go](../server/internal/httpapi/contract_test.go).
 
 Served by Caddy as static files from the **same origin as the API**. That is
 not a convenience: WebAuthn binds credentials to an origin, so a UI on a
@@ -36,18 +65,30 @@ serve pre-built assets would add attack surface for no benefit.
 src/api.ts         typed API client; one place that handles the error shape
 src/webauthn.ts    ceremony plumbing — base64url <-> ArrayBuffer, error text
 src/upload.ts      upload strategy: plain POST vs tus
+src/main.tsx       entry point; registers the service worker in production only
 src/App.tsx        shell, session state, view switching
 src/SignIn.tsx     bootstrap, sign-in, recovery redemption
+src/RecoveryCodes.tsx  show-once codes, gated behind "I have saved these"
 src/Browser.tsx    the file browser
+src/Versions.tsx   version history modal (Phase 2)
+src/Trash.tsx      restore and purge
+src/ShareDialog.tsx  create a public link; hosts the people panel too
+src/Shares.tsx     manage existing links (Phase 2)
+src/SharePage.tsx  the public /s/{token} view, on the share plane
+src/Tags.tsx       per-node tag editing (Phase 4)
+src/TagBrowser.tsx browse by tag, with counts (Phase 4)
 src/Photos.tsx     photo timeline + albums (Phase 5 media surface)
 src/Ask.tsx        ask-your-library semantic retrieval (Phase 8; runs on Phase 4 search)
 src/PeopleShare.tsx  grant/revoke user access on a node (Phase 7)
 src/SharedWithMe.tsx roots others shared with me (Phase 7)
 src/Admin.tsx      admin console: users + audit log (Phase 7, admin-only)
-src/Trash.tsx      restore and purge
-src/Settings.tsx   passkeys, sessions, recovery codes, app passwords, audit
+src/Settings.tsx   passkeys, sessions, recovery codes, app passwords, fsck audit
 src/styles.css     hand-rolled, no framework
 ```
+
+Six top-level views (Files · Photos · Ask · Shared · Admin · Settings), the last
+gated on `is_admin` — client-side for convenience only; every admin route is `403`
+server-side, which is the actual boundary.
 
 ## Decisions worth knowing
 
@@ -56,8 +97,10 @@ and this is a single-purpose app whose layout will never need a grid system.
 Both colour schemes are declared, because a file browser is something people
 open at night.
 
-**No router.** Two views and a modal do not need one, and the SPA fallback in
-Caddy means deep links would need server cooperation anyway.
+**No router.** Six views switched by state, and the SPA fallback in Caddy means
+deep links would need server cooperation anyway. This is the decision most likely
+to need revisiting: it was comfortable at two views, and it is the reason there are
+no shareable in-app URLs — a photo, an album or a search cannot be linked to.
 
 **Uploads switch strategy at 8 MiB.** Below that, a plain `POST` — one request,
 no session row, no staging file. Above it, tus, because a large transfer over a

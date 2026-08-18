@@ -1,6 +1,24 @@
 # Phase 6 — Native clients design
 
-**Status: server side complete; client side has two slices open.** The bulk of
+**Status: 🟠 server side ✅ complete; three client slices ❌ open, and the server's
+own five routes have no consumer.**
+
+| | Status |
+|---|---|
+| Behind the API — `device_name` column, five `/devices` routes, the escalation fix | ✅ built · ❌ **no client calls any of them** |
+| Slice 1 — local control socket (`status`/`conflicts`/`sync`/`pause`/`resume`) | ✅ |
+| Slice 2 — selective sync | ✅ |
+| Slice 3 — platform-free tray presenter + `pcsync watch` | ✅ |
+| Slice 3b — the platform **icon + menu adapter** | ❌ no `desktop/` directory exists |
+| Slice 4 — conflict list/dismiss, transfer tallies, `.pcsyncignore`, `pcsync doctor` | ✅ shipped, and not in the original plan |
+| Slice 5 — installable PWA: manifest, icon, offline app shell | ✅ |
+| Slice 6 — desktop installers + auto-update | ❌ |
+| Slice 7 — mobile polish: offline pinning, share target, push **delivery** | ❌ |
+| Device management UI (name a device, revoke a lost laptop) | ❌ Settings lists *sessions*, not `/devices` |
+
+Marks: ✅ done · 🟠 partial · ❌ not built; the ledger is [status.md](status.md).
+
+The bulk of
 this phase is the front-of-API track from [roadmap-split.md](roadmap-split.md):
 the desktop and mobile clients a person actually touches, which consume the
 **existing** `/api/v1` surface. The split promised "almost no new server work",
@@ -89,7 +107,7 @@ never touching the server); persistence in the state db so a live change outlive
 a restart, with the config's `excludes` as first-run seed only; `GET`/`PUT
 /v1/excludes` on the control socket; and `pcsync exclude list|add|remove`.
 
-## 4. Slice 3 — Tray presentation + live monitor ✅ (icon shell pending)
+## 4. Slice 3 — Tray presentation + live monitor 🟠 (presenter ✅, icon shell ❌)
 
 The substance of the tray — turning daemon status into what a person sees — is a
 platform-free package (`internal/tray`): a `State` (offline/error/paused/
@@ -120,11 +138,31 @@ This is the mobile client's foundation reached with no native toolchain: the sam
 `/api/v1` surface, installed as an app. Native-feeling polish (offline file
 pinning, push) is a later slice.
 
-## 6. Later slices (not yet)
+## 5b. Slice 4 — the daemon slices that were not in the plan ✅
 
-- The platform tray icon adapter + desktop installers / auto-update.
-- Mobile polish: offline pinning of chosen files, share-target, push **delivery**
+Written down because they shipped and the original slice list does not mention
+them, which is how finished work becomes invisible:
+
+- **Conflict list and dismiss** — `pcsync conflicts` / `conflicts clear`. Clearing
+  dismisses the reminder only; the conflict copies on disk, the durable record, are
+  never touched by it.
+- **Transfer tallies** in the status snapshot, so `watch` can say what moved.
+- **`.pcsyncignore`** — a `.gitignore` subset that declines *local* paths by
+  pattern, the complement to selective sync's *server* prefixes. A path ignored
+  after it was already synced is left alone on the server, never trashed.
+- **`pcsync doctor`** — preflight checks, so a misconfigured client says why
+  instead of failing at the first request.
+
+## 6. Later slices ❌ (not yet)
+
+- ❌ The platform tray icon adapter + desktop installers / auto-update. Everything
+  it would display and every action it would fire is built and unit-tested in
+  `internal/tray` and the control client; what is missing is the platform shell.
+- ❌ Mobile polish: offline pinning of chosen files, share-target, push **delivery**
   (the subscription is stored server-side; something still has to send).
+- ❌ A device-management UI. The five routes in §7 are served and, per
+  `awaitingClient`, nothing in this repository calls them — so "I lost my laptop"
+  is today a `curl` or a `cloudctl` session, not a button.
 
 ---
 
@@ -149,12 +187,17 @@ improves. An unrecognised agent yields empty rather than a guess — a wrong
 platform is worse than none, because it makes the list look authoritative when it
 is not. Android is checked before Linux, since Android agents contain both.
 
-| Route | Purpose |
-|---|---|
-| `GET /devices` | list, with `current` marking the caller's own |
-| `PATCH /devices/{id}` | rename "unknown device" to "the laptop" |
-| `DELETE /devices/{id}` | revoke the token; effective on the next request |
-| `POST`/`DELETE /devices/{id}/push` | register / unregister a Web Push endpoint |
+| Route | Purpose | Built | Consumed |
+|---|---|---|---|
+| `GET /devices` | list, with `current` marking the caller's own | ✅ | ❌ |
+| `PATCH /devices/{id}` | rename "unknown device" to "the laptop" | ✅ | ❌ |
+| `DELETE /devices/{id}` | revoke the token; effective on the next request | ✅ | ❌ |
+| `POST`/`DELETE /devices/{id}/push` | register / unregister a Web Push endpoint | ✅ | ❌ |
+
+All five are declared in `awaitingClient` in
+[contract_test.go](../server/internal/httpapi/contract_test.go) with a reason, and
+that test fails if the declaration ever goes stale — so this table cannot quietly
+drift from the truth.
 
 ### The sharp edge: this plane is credential management
 

@@ -1,6 +1,14 @@
 # Phase 5 — Photos & Media Design
 
-**Status: complete.** Written after the code rather than before it — which is
+**Status: 🟠 server complete (8/8 slices); two front-of-API slices open.** The
+exit criterion below is met and the phase is usable end to end. What is still ❌ is
+a **map view** over the EXIF GPS the node already serves, and what is 🟠 is
+**reordering an album by pointer drag** — adding to an album and replacing the
+whole order in one call both work, but a person reorders with move-up/move-down
+buttons. ❌ Video metadata beyond "this is a video" needs a demuxer. Marks: ✅ done
+· 🟠 partial · ❌ not built; the ledger is [status.md](status.md).
+
+Written after the code rather than before it — which is
 itself part of the record: every other phase in this project got a design
 document first, this one did not, and it is the phase whose two halves drifted
 furthest apart before they were joined.
@@ -161,8 +169,8 @@ formats in-process, so the bounds are explicit:
 | **7** | `GET /media/timeline` | ✅ sorted by capture time, metadata batched per page |
 | **8** | `/albums` CRUD + items + reorder | ✅ ownership enforced on every node id the caller supplies |
 | **9** | Gallery, timeline, lightbox, album views in `web/` | ✅ built against the contract; they light up unchanged now the endpoints answer |
-| 10 | Drag-reorder and "add to album" wiring in `web/` | ⬜ front-of-API work; the endpoints it needs exist |
-| 11 | Map view from EXIF GPS | ⬜ front-of-API work; `gps` is served on the node |
+| 10 | Reorder and "add to album" wiring in `web/` | 🟠 **shipped, but not as a drag.** Selection mode → "Add to album…" ✅ (`POST /albums/{id}/items`, one call for the whole selection); reordering ✅ via move-up/move-down buttons in a "Manage" mode, persisted with the wholesale `PATCH /albums/{id}/items`. ❌ No pointer drag and no drag-select. The endpoint contract — replace the order wholesale, never N per-item updates — was written for a drag and the buttons already satisfy it, so the remaining work is entirely in the browser |
+| 11 | Map view from EXIF GPS | ❌ **not built.** `gps` is served on the node, unrounded, and typed in the web client (`api.ts`) — nothing renders it. No map library is a dependency, which is the decision to make first: an offline-capable PWA and a tile provider that phones home are in tension |
 
 ## 8. What the risks turned into
 

@@ -1,5 +1,13 @@
 # Phase 0 — Checklist
 
+**Status: 🟠 every piece is ✅ built and committed as code; the ticks below are the
+operator's.** This is a *procedure*, not a project ledger — an unticked box here
+means "you have not done this on your server yet", not "the repository is missing
+something". The one place where that distinction breaks down is the hardening
+follow-ups at the bottom, which are repository work and are marked accordingly.
+Marks: ✅ done · 🟠 partial · ❌ not built; the project-wide ledger is
+[status.md](status.md).
+
 Work top to bottom. Later steps assume earlier ones. All commands run **on the
 Ubuntu server**.
 
@@ -169,7 +177,8 @@ sudo chmod 0755 /var/lib/node_exporter/textfile
       is installed (step 9), query `privatecloud_zpool_health{state="ONLINE"}`.
       It must return `1` for your pool. If absent, the textfile collector isn't
       wired — see [custom-metrics.md](custom-metrics.md).
-- [ ] Export edited dashboards to JSON and commit them
+- [ ] ❌ Export edited dashboards to JSON and commit them — still open;
+        `deploy/monitoring/grafana/dashboards/` holds only `.gitkeep`
 
 ## 8. ntfy
 
@@ -306,26 +315,29 @@ Phase 0 is done when every one of these is true:
 
 ## Hardening follow-ups
 
-Worth doing, not worth blocking Phase 1 on.
+Worth doing, not worth blocking Phase 1 on. **Nine phases later, the two metric
+items are done and the rest are still open** — which is the honest outcome for a
+list explicitly marked as non-blocking, and the reason they are also recorded in
+[deferred-work.md](deferred-work.md) rather than only here.
 
-- [x] **Backup-freshness metric.** ✅ Done — `restic-backup.sh` now exports
+- [x] ✅ **Backup-freshness metric.** Done — `restic-backup.sh` now exports
       `privatecloud_backup_last_success_timestamp`; `BackupTooOld` /
       `BackupMetricsMissing` / `BackupLastRunFailed` alert on it. See
       [custom-metrics.md](custom-metrics.md).
-- [x] **Pool health metric.** ✅ Done — `scripts/zpool-metrics.sh` +
+- [x] ✅ **Pool health metric.** Done — `scripts/zpool-metrics.sh` +
       `privatecloud-zpool-metrics.timer` export `privatecloud_zpool_health` and
       scrub freshness; `ZpoolDegraded` / `ZpoolUnavailable` / `ZpoolScrubTooOld`
       / `ZpoolScrubFailed` alert on them.
-- [ ] **Pin images to digests.** Tags are mutable; `postgres:17.5-alpine` can
+- [ ] ❌ **Pin images to digests.** Tags are mutable; `postgres:17.5-alpine` can
       change under you. `docker inspect --format='{{index .RepoDigests 0}}' postgres:17.5-alpine`
       then use `image: postgres@sha256:...`. Add Renovate to bump them.
-- [ ] **Real TLS certs** via `tailscale cert`, replacing `tls internal` — see
+- [ ] ❌ **Real TLS certs** via `tailscale cert`, replacing `tls internal` — see
       [tailscale-setup.md](tailscale-setup.md#4-enable-magicdns-and-https).
-- [ ] **UPS + NUT** for clean shutdown on power loss.
-- [ ] **Unattended security upgrades:** `sudo apt install unattended-upgrades`.
-- [ ] **pgBackRest** for point-in-time recovery (Phase 1 — do it before there's
+- [ ] ❌ **UPS + NUT** for clean shutdown on power loss.
+- [ ] ❌ **Unattended security upgrades:** `sudo apt install unattended-upgrades`.
+- [ ] ❌ **pgBackRest** for point-in-time recovery (Phase 1 — do it before there's
       data you'd miss).
-- [ ] **Encrypted pool auto-unlock.** Currently a reboot leaves everything
+- [ ] 🟠 **Encrypted pool auto-unlock.** Currently a reboot leaves everything
       unmounted until you type the passphrase. That is a deliberate security
       property, not a bug — but decide consciously whether you want it, because
       it means a remote reboot needs a console.

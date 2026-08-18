@@ -1,5 +1,13 @@
 # Custom metrics & operational hardening
 
+**Status: ✅ both collectors, all alerts and the failure simulations are built and
+rule-tested.** 🟠 What is unticked is operator work: the simulations in
+§Validation have to be run once on the real server, and ❌ the Grafana dashboards
+are still not exported to JSON and committed —
+`deploy/monitoring/grafana/dashboards/` holds only `.gitkeep`. The same numbers
+these collectors write are what `GET /admin/storage` reads, by design, so the
+console and Grafana cannot disagree.
+
 Phase 0's stock exporters cover host, container, disk-SMART, and Postgres
 metrics. Two critical failure modes have no stock coverage, so we export them
 ourselves through node_exporter's **textfile collector**:

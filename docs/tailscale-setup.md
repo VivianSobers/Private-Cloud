@@ -1,5 +1,10 @@
 # Tailscale Setup
 
+**Status: ✅ procedure current.** One open item carried from
+[phase-0-checklist.md](phase-0-checklist.md): ❌ the Caddyfile still uses
+`tls internal` rather than real certificates from `tailscale cert`, so clients see a
+self-signed certificate on the tailnet plane. §4 is where that changes.
+
 Tailscale is the backbone of the private plane. Once it's up, **zero ports are
 forwarded on your router** and the entire stack is reachable only from devices
 you've explicitly authorised.

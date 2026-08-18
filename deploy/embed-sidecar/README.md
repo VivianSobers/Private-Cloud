@@ -1,5 +1,16 @@
 # Embedding inference sidecar
 
+**Status: ✅ the one sidecar this repository ships.** The server can be configured
+to talk to three: this embedder (`POST /embed`), a **generator**
+(`POST /generate`, `PC_GENERATE_URL`) behind `POST /chat`'s written answers, and a
+**face detector** (`POST /detect`, `PC_DETECT_URL`) behind the `faces` job. The
+latter two have a Go client and a config variable each and ❌ **no reference image
+here** — deliberately, because a generator is a multi-gigabyte decision about
+quality, latency and VRAM, and a detector is a decision about which biometric model
+an operator is willing to run. Both degrade cleanly when absent: `/chat` returns
+citations without prose, and the `faces` job does nothing. See
+[../../docs/deferred-work.md](../../docs/deferred-work.md).
+
 The model tier for semantic search. A small FastAPI service that loads a
 sentence-embedding model and answers `/embed`. It runs **separately** from the Go
 API and worker — on a GPU box (your 4090s) reached over the tailnet, or on the

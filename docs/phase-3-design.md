@@ -1,6 +1,11 @@
 # Phase 3 — Sync Engine Design
 
-**Status: complete — all four slices.** Written before any code, the same discipline
+**Status: ✅ complete — 4/4 slices, both sides of the API.** The daemon this phase
+built is also what Phase 6 wraps in a control surface; nothing here is
+outstanding. Marks: ✅ done · 🟠 partial · ❌ not built; the whole-project ledger
+is [status.md](status.md).
+
+Written before any code, the same discipline
 that carried Phases 1 and 2: make the expensive decisions deliberately, and keep
 the document as the record of *why*. Where the code later diverges, the section
 says so inline rather than being retconned.
@@ -22,11 +27,11 @@ chunking, "sync" is just repeated whole-file upload; with it, sync is a diff.
 Phase 2 is complete and verified: chunking, dedup, versioning and share links all
 land green. Two things must be true before a sync client writes:
 
-- [ ] The CAS delta primitives exist and are reviewed (slice 2). A client that
+- ✅ [x] The CAS delta primitives exist and are reviewed (slice 2). A client that
       uploads chunks by hash is a new write path into the blob store, and it must
       verify content against its address before trusting a byte — an unverified
       chunk-upload endpoint is how one client corrupts everyone's dedup.
-- [ ] A backup is current. Sync multiplies write volume and introduces deletes
+- ❌ [ ] A backup is current. Sync multiplies write volume and introduces deletes
       that propagate across devices; the first time a bug deletes the wrong file,
       it deletes it *everywhere*. The restore path is the safety net under that.
 

@@ -1,6 +1,13 @@
 # Phase 7 — Multi-user & sharing (behind the API) design
 
-**Status: complete.** The server half of the phase whose client half is described
+**Status: ✅ complete — 4/4 slices behind the API.** Two things remain: ❌ per-user
+API rate limiting (slice 5, deferred since Phase 4) and 🟠 the last-admin guard,
+whose *refusal* path has no integration test for a reason recorded in §4. In front
+of the API two consumers are still ❌ missing — see
+[phase-7-design.md](phase-7-design.md). Marks: ✅ done · 🟠 partial · ❌ not built;
+the ledger is [status.md](status.md).
+
+The server half of the phase whose client half is described
 in [phase-7-design.md](phase-7-design.md). Those three UIs — share-with-people,
 shared-with-me, the admin console — were built against the contract months
 before any of this existed and degraded to "not available on this server yet".
@@ -147,7 +154,7 @@ no way to enrol one without first signing in, so it redeems a code and then
 registers — reusing the recovery path rather than inventing an invite-token
 concept.
 
-### The last-admin guard, and an honest note on its coverage
+### 🟠 The last-admin guard, and an honest note on its coverage
 
 `UpdateUser` refuses to demote or disable the only enabled administrator. Locking
 every admin out of their own server is not a state one request should be able to
@@ -189,7 +196,14 @@ log was busy is a broken feature.
 | **2** | Grant endpoints, `/shared`, `?include_shared=` on children/search/tags | ✅ 11 tests |
 | **3** | Admin users, sessions, audit endpoints | ✅ 8 tests |
 | **4** | Editor writes: owner-charged quota, move and delete semantics | ✅ 7 tests |
-| 5 | Per-user API rate limiting | ⬜ still deferred — see [phase-4-hardening.md](phase-4-hardening.md) §5. Now more relevant than it was: a second user is no longer hypothetical |
+| 5 | Per-user API rate limiting | ❌ still deferred — see [phase-4-hardening.md](phase-4-hardening.md) §5. Now more relevant than it was: a second user is no longer hypothetical, and Phase 8 gave one request a GPU box to spend |
+
+**Consumed by a client?** Slices 1–4 are ✅ served and mostly ✅ consumed. Two
+route groups are served with no client and declared in `awaitingClient`:
+`GET`/`DELETE /admin/users/{id}/sessions` (no session management in the console),
+and the `?include_shared=true` widening on children/search/tags, which nothing in
+`web/` sends — so the ACL work is reachable through `/shared` but not by browsing
+into a granted folder.
 
 ## 7. Risks
 
