@@ -1,0 +1,65 @@
+[Unit]
+Description=Unlock the encrypted private-cloud ZFS pool from a keyfile (OPT-IN)
+Documentation=file:///opt/private-cloud/docs/phase-0-checklist.md
+DefaultDependencies=no
+After=zfs-import.target
+Before=zfs-mount.service
+Wants=zfs-mount.service
+
+# ---------------------------------------------------------------------------
+# THIS UNIT IS NOT ENABLED BY DEFAULT, AND THAT IS THE DESIGN.
+#
+# Without it, a reboot leaves every dataset locked until somebody types the
+# passphrase at a console. That is inconvenient — a remote reboot needs physical
+# access — and it is also the property that makes full-disk encryption mean
+# something: a stolen server is a box of noise, because the key was never on it.
+#
+# Enabling this puts the key on a medium the machine can read unattended, which
+# trades that property for convenience. Whether that is a good trade depends
+# entirely on WHERE the keyfile lives:
+#
+#   A USB stick you remove after boot        — theft of the server alone is
+#                                              still safe. The machine cannot
+#                                              reboot unattended either, so this
+#                                              buys very little.
+#   A USB stick left plugged in              — theft of the server takes the key
+#                                              with it. This is encryption that
+#                                              protects you against a disk sold
+#                                              on eBay and nothing else. It is a
+#                                              real threat model; just be honest
+#                                              that it is the only one left.
+#   A TPM-sealed key (systemd-cryptenroll)   — survives theft of the disks,
+#                                              defeated by theft of the whole
+#                                              machine while it can still boot.
+#   A file on the system disk                — pointless. Do not do this. The
+#                                              key and the ciphertext travel
+#                                              together, so the encryption is
+#                                              decorative.
+#
+# The unit refuses to run if the keyfile is on the root filesystem, because that
+# last case is the one somebody reaches for at 2am while frustrated.
+#
+# To enable:
+#   sudo cp deploy/systemd/privatecloud-zfs-unlock.service /etc/systemd/system/
+#   sudo systemctl edit privatecloud-zfs-unlock.service     # set PC_ZFS_KEYFILE
+#   sudo systemctl enable privatecloud-zfs-unlock.service
+# ---------------------------------------------------------------------------
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+
+# Override this in a drop-in. There is no default on purpose: a default path
+# would be a suggestion, and every safe answer here is specific to your setup.
+Environment=PC_ZFS_KEYFILE=
+Environment=PC_ZFS_POOL=tank
+
+ExecStart=/opt/private-cloud/scripts/zfs-unlock.sh
+
+# If the key is not available the pool stays locked and the boot continues.
+# Failing the boot would turn "the USB stick is not plugged in" into "the server
+# does not come up", which is a worse failure than the one being avoided.
+SuccessExitStatus=0 75
+
+[Install]
+WantedBy=zfs.target
