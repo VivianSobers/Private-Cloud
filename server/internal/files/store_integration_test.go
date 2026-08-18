@@ -581,8 +581,14 @@ func TestPurgeDropsRefcountAndGCReclaimsBytes(t *testing.T) {
 	if _, err := f.svc.CollectGarbage(f.ctx); err != nil {
 		t.Fatalf("CollectGarbage: %v", err)
 	}
-	if _, _, err := f.svc.Open(f.ctx, f.user, node.ID); err != nil {
+	// The reader is closed rather than discarded. On Linux an unlink of an open
+	// file succeeds, so a leaked handle here is invisible; on Windows it is a
+	// sharing violation that fails the very next Delete. Closing it keeps the
+	// test honest about the contract Open actually has.
+	if _, rc, err := f.svc.Open(f.ctx, f.user, node.ID); err != nil {
 		t.Fatalf("GC deleted a referenced blob: %v", err)
+	} else {
+		rc.Close()
 	}
 
 	if _, err := f.store.Trash(f.ctx, f.user, node.ID); err != nil {
@@ -655,8 +661,10 @@ func TestFsckFindsOrphansAndMissingContent(t *testing.T) {
 	if _, err := f.svc.Fsck(f.ctx, true); err != nil {
 		t.Fatalf("Fsck(repair): %v", err)
 	}
-	if _, _, err := f.svc.Open(f.ctx, f.user, node.ID); err != nil {
+	if _, rc, err := f.svc.Open(f.ctx, f.user, node.ID); err != nil {
 		t.Fatalf("repair deleted a live file: %v", err)
+	} else {
+		rc.Close()
 	}
 
 	report, err = f.svc.Fsck(f.ctx, false)
