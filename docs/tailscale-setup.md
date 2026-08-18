@@ -1,9 +1,21 @@
 # Tailscale Setup
 
-**Status: ✅ procedure current.** One open item carried from
-[phase-0-checklist.md](phase-0-checklist.md): ❌ the Caddyfile still uses
-`tls internal` rather than real certificates from `tailscale cert`, so clients see a
-self-signed certificate on the tailnet plane. §4 is where that changes.
+**Status: ✅ procedure current, and real certificates are now automated.**
+`scripts/tailscale-cert.sh` issues a genuine Let's Encrypt certificate for
+`<host>.<tailnet>.ts.net` through Tailscale's DNS-01 challenge — nothing is
+exposed to the internet to get it — installs it, rewrites `deploy/caddy/tls.conf`
+and reloads Caddy. `privatecloud-tailscale-cert.timer` renews it weekly inside
+the last 30 days of its life.
+
+```bash
+sudo ./scripts/tailscale-cert.sh            # issue or renew
+sudo ./scripts/tailscale-cert.sh --status   # what is installed, and until when
+```
+
+The default is still `tls internal`, because it works with no network and no
+admin-console setting; the swap is a file and a reload rather than an edit to the
+Caddyfile, and CI validates that the ingress config parses in both states. §4 is
+where you turn on the two admin-console settings this needs.
 
 Tailscale is the backbone of the private plane. Once it's up, **zero ports are
 forwarded on your router** and the entire stack is reachable only from devices

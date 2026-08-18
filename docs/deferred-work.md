@@ -47,15 +47,23 @@ a single byte moves.
 
 See `docs/phase-9-design.md` §1.
 
-### ❌ Disaster-recovery automation (Phase 9)
+### ✅ Disaster-recovery drills — automated (Phase 9)
 
-Restore is documented and rehearsed by hand — `docs/runbook-restore.md`,
-`docs/runbook-disaster-recovery.md`, `scripts/restore-test.sh`.
+The recovery *procedures* are still manual, and deliberately so: automating a
+restore means automating something whose failure mode is overwriting good data
+with old data, under time pressure, with no second chance.
 
-**Why not:** the `sudo` gates in the restore path are the operator's to tick.
-Automating a restore means automating something whose failure mode is
-overwriting good data with old data, and the rehearsal is worth more than the
-automation until the rehearsal is boring.
+The **drill** is automated, which is the half that was actually missing.
+`scripts/restore-drill.sh` runs `restore-test.sh` monthly, writes
+`privatecloud_restore_drill_*` to the textfile collector, and pushes the result to
+ntfy; three alerts watch it, and the one that matters — `RestoreDrillTooOld` —
+fires when no drill has *passed* in 92 days, so it catches the drill going missing
+as well as failing. CI runs the same drill against a real ZFS pool built on
+loopback files on every push.
+
+What this replaced was the last line of `restore-test.sh`: "Re-run this quarterly
+— put it in the calendar." That is a person promising to remember, and its failure
+mode is silent.
 
 ### ❌ Billing hooks (Phase 9)
 
@@ -193,23 +201,37 @@ package needs no signature; only a *repository* does.
 tooling that live outside this repository. `pcsync doctor` and `pcsync version` flag
 a client lagging the server in the meantime, so a needed update is never silent.
 
-## ❌ Ops follow-ups from Phase 0
+## ✅ Ops follow-ups from Phase 0 — done
 
-Worth doing, never worth blocking a phase on, and still open:
+This section used to list seven items as "worth doing, not worth blocking Phase 1
+on", which is an accurate description and also the reason none of them happened
+for nine phases. They are all built now:
 
-| Item | Consequence of leaving it |
+| Item | Where |
 |---|---|
-| Grafana dashboards exported to JSON and committed | `deploy/monitoring/grafana/dashboards/` holds only `.gitkeep`; a rebuilt server re-imports them by hand |
-| Container images pinned to digests (+ Renovate) | `postgres:17.5-alpine` and twelve other tags can move under you |
-| Real TLS via `tailscale cert` instead of `tls internal` | clients see a self-signed cert on the tailnet plane |
-| UPS + NUT | an unclean shutdown on power loss |
-| `unattended-upgrades` | security patches wait for a human |
-| pgBackRest point-in-time recovery | Postgres recovers to the last nightly dump or ZFS snapshot, not to a chosen second |
-| Encrypted-pool auto-unlock | **deliberate**: a reboot leaves everything unmounted until the passphrase is typed, so a remote reboot needs a console |
+| Grafana dashboards committed and self-provisioning | `deploy/monitoring/grafana/dashboards/` — five, including a purpose-built overview of this project's own metrics |
+| Images pinned to digests | all ten third-party images in `docker-compose.yml`; CI fails on an unpinned one |
+| Something to move those digests | [renovate.json](../renovate.json) — a pinned digest with nothing to update it is a security problem wearing a reproducibility costume |
+| Real TLS via `tailscale cert` | `scripts/tailscale-cert.sh` + weekly timer; the Caddyfile imports `tls.conf` so the swap is a file, not an edit |
+| UPS + NUT | `deploy/host/nut/` + `host-setup.sh --ups` |
+| Unattended security upgrades | `deploy/host/apt/` + `host-setup.sh --upgrades` |
+| pgBackRest point-in-time recovery | `Dockerfile.postgres`, `pgbackrest.conf`, `scripts/pgbackrest.sh`, two timers |
 
-The three `sudo` restore gates in [phase-1-design.md](phase-1-design.md) §0 belong
-to the same family and are tracked there: they can only be ticked on the real
-server, by the operator, and no checkout can do it for them.
+### 🟠 Encrypted pool auto-unlock — decided, deliberately not enabled
+
+`deploy/systemd/privatecloud-zfs-unlock.service` exists and is **not** enabled.
+
+**Why not:** because the answer depends entirely on where the keyfile lives, and
+this is one of the few settings where the wrong choice silently removes the whole
+point of the feature. The unit's header sets out what each option actually buys —
+a USB stick you remove, a USB stick left in, a TPM-sealed key, a file on the root
+filesystem — and `scripts/zfs-unlock.sh` refuses the last one outright, because
+storing the key beside the ciphertext it protects is not a weaker setup, it is no
+setup.
+
+Leaving it off means a reboot leaves everything locked until somebody types a
+passphrase, so a remote reboot needs a console. That is the cost, and it is worth
+paying by default.
 
 ---
 
@@ -253,11 +275,22 @@ Correct for a single node. If the API is ever replicated, the limiter has to mov
 to shared state; until then an external store would add a dependency to the auth
 path in exchange for a property that does not exist here.
 
-### 🟠 Integration tests share one database
+### ✅ Integration tests are isolated per package — fixed
 
-They do not fully isolate, and a stale database produces failures that look like
-regressions — chunk GC counts on-disk chunks globally, media variants are shared
-by content hash across fixtures whose blob stores are separate temp directories.
+They used to share whatever database `PC_TEST_DATABASE_URL` named, which worked
+exactly once per database: a second run met the first run's rows, and the failures
+looked like regressions rather than leftovers. Three were particularly good at
+wasting an afternoon — chunk GC counts chunks on disk globally, media variants are
+keyed by content hash so a thumbnail outlived the blob store that rendered it, and
+the extract pipeline dedupes on a unique partial index so an identical upload
+enqueued nothing the second time.
 
-**Run them with a fresh Postgres container and `-p 1`.** Before concluding a
-change broke something, recreate the container and run it again.
+The documented workaround was to recreate the Postgres container between runs and
+pass `-p 1`: a real cost paid on every run to avoid a fixed cost paid once.
+
+[internal/testdb](../server/internal/testdb/testdb.go) now creates a database per
+test binary and drops it afterwards. Fixtures are untouched — they still read
+`PC_TEST_DATABASE_URL`, and it still names a database they may migrate and fill;
+what changed is that the database is theirs. `-p 1` is no longer needed for
+isolation, and CI runs the suite **twice in a row against one server** as the
+regression test for exactly this.

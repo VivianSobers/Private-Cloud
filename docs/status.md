@@ -38,10 +38,21 @@ client** (down from 13), **25 migrations**, **506 Go test functions across 73 te
 files**, **20 web test cases** across two vitest files, and **one sidecar image in
 `deploy/` where three are configurable**.
 
-**This is not a test run.** There is no Go or Node toolchain on this checkout, so
-no ✅ here was re-verified by executing anything; each rests on reading the code and
-the tests beside it. The Go integration suite needs a fresh Postgres and `-p 1` —
-see [deferred-work.md](deferred-work.md).
+**This is now a test run.** Earlier revisions of this page carried a disclaimer
+that no ✅ had been verified by executing anything, because the checkout had no Go
+or Node toolchain. It has one now, and everything marked ✅ below was built and
+run: the Go suite (twice in a row against one database server, which is itself the
+regression test for the isolation described below), the web suite, the alert-rule
+unit tests, every dashboard query, and the ingress config in both TLS modes.
+[.github/workflows/ci.yml](../.github/workflows/ci.yml) runs the same set on every
+push, so the claim stays checked rather than being true once.
+
+✅ **The integration suite no longer needs a fresh Postgres or `-p 1`.** Each
+package creates and drops its own database through
+[internal/testdb](../server/internal/testdb/testdb.go). That was a documented
+limitation for several phases — a second run met the first run's rows and failed
+in three places that looked like regressions — and it is fixed rather than
+worked around.
 
 ---
 
@@ -49,7 +60,7 @@ see [deferred-work.md](deferred-work.md).
 
 | Phase | Scope | Behind the API | In front of it | Overall |
 |---|---|---|---|---|
-| 0 | Storage, network, monitoring, backups, runbooks | ✅ all of it is code in this repo | — | 🟠 code complete; the `sudo` gates are the operator's to tick |
+| 0 | Storage, network, monitoring, backups, runbooks | ✅ all of it is code, and CI proves the restore path | — | ✅ |
 | 1 | MVP: auth, files, resumable upload, web UI, WebDAV, search | ✅ 7/7 slices | ✅ | ✅ |
 | 2 | CAS engine, versioning, dedup, share links | ✅ 4/4 slices | ✅ | ✅ |
 | 3 | Sync engine: journal, delta protocol, Go client, conflicts | ✅ 4/4 slices | ✅ `pcsync` | ✅ |
@@ -88,13 +99,17 @@ real server, which no checkout can verify for you.
 | Pool-health textfile collector + systemd timer | ✅ |
 | Alert rules, with rule tests (`alerts.yml`, `alerts_test.yml`) | ✅ |
 | Runbooks: restore, disaster recovery, worker | ✅ |
-| `scripts/restore-test.sh` **executed against the real pool** | ❌ operator gate — [phase-1-design.md](phase-1-design.md) §0 |
-| Snapshot ladder confirmed filling in; one restic backup restored | ❌ operator gate |
-| Grafana dashboards exported to JSON and committed | ❌ `deploy/monitoring/grafana/dashboards/` holds only `.gitkeep` |
-| Images pinned to digests (+ Renovate to bump them) | ❌ tags only — `postgres:17.5-alpine` can move under you |
-| Real TLS via `tailscale cert` instead of `tls internal` | ❌ |
-| UPS + NUT · unattended-upgrades · pgBackRest PITR | ❌ hardening follow-ups; never blocked a phase |
+| Restore drill, automated (`scripts/restore-drill.sh` + monthly timer + 3 alerts) | ✅ and CI runs it against a real ZFS pool on loopback vdevs every push |
+| `scripts/restore-test.sh` executed against **your** pool | 🟠 operator gate — CI proves the path works; only you can prove *your* disks do |
+| Grafana dashboards committed and self-provisioning | ✅ five, including a purpose-built Private Cloud overview; CI parses all 350 queries |
+| Images pinned to digests (+ Renovate to move them) | ✅ all ten third-party images; CI fails on an unpinned one |
+| Real TLS via `tailscale cert` instead of `tls internal` | ✅ script + weekly timer; CI validates the Caddyfile in both states |
+| UPS + NUT | ✅ `deploy/host/nut/`, power events to the same ntfy topics |
+| Unattended security upgrades | ✅ `deploy/host/apt/`, security origins only, ZFS/kernel blacklisted |
+| pgBackRest point-in-time recovery | ✅ RPO 24h → one WAL segment; recovery in [runbook-restore.md](runbook-restore.md) §4c |
+| Encrypted pool auto-unlock | 🟠 **decided, not enabled** — the unit exists and documents what each keyfile location costs; a key on the root filesystem is refused |
 | Backup-freshness metric · pool-health metric | ✅ both landed as follow-ups |
+| CI ([.github/workflows/ci.yml](../.github/workflows/ci.yml)) | ✅ build, vet, race, govulncheck, contract, dashboards, alert-rule tests, Caddy, compose, shellcheck, restore drill |
 
 ## Phase 1 — MVP
 

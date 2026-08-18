@@ -1,12 +1,32 @@
 # Custom metrics & operational hardening
 
-**Status: ✅ both collectors, all alerts and the failure simulations are built and
-rule-tested.** 🟠 What is unticked is operator work: the simulations in
-§Validation have to be run once on the real server, and ❌ the Grafana dashboards
-are still not exported to JSON and committed —
-`deploy/monitoring/grafana/dashboards/` holds only `.gitkeep`. The same numbers
-these collectors write are what `GET /admin/storage` reads, by design, so the
-console and Grafana cannot disagree.
+**Status: ✅ collectors, alerts, dashboards and their tests are all built and
+checked by CI.** Four collectors now write into the textfile directory — pool
+health, backup freshness, the restore drill and pgBackRest — and every metric
+they emit has an alert that watches it and a unit test that pins the threshold.
+
+✅ **The dashboards are committed and provision themselves**; there is nothing to
+import by hand. CI parses every query in every dashboard as real PromQL, because
+a typo there is an empty panel discovered months later during the incident it was
+meant to explain.
+
+🟠 What remains operator work is the §Validation simulations below: they have to
+be run once on the real server, since nothing here can degrade your actual pool
+for you. The same numbers these collectors write are what `GET /admin/storage`
+reads, by design, so the console and Grafana cannot disagree.
+
+| Collector | Metric prefix | Written by | Alerts |
+|---|---|---|---|
+| Pool health | `privatecloud_zpool_*` | `scripts/zpool-metrics.sh` (5 min timer) | `ZpoolDegraded`, `ZpoolUnavailable`, `ZpoolScrubTooOld`, `ZpoolScrubFailed`, `ZpoolMetricsStale` |
+| Backup freshness | `privatecloud_backup_*` | `scripts/restic-backup.sh` (after every run) | `BackupTooOld`, `BackupMetricsMissing`, `BackupLastRunFailed`, `BackupTimerNotRunning` |
+| Restore drill | `privatecloud_restore_drill_*` | `scripts/restore-drill.sh` (monthly timer) | `RestoreDrillTooOld`, `RestoreDrillFailed`, `RestoreDrillMetricsMissing` |
+| Point-in-time recovery | `privatecloud_pgbackrest_*` | `scripts/pgbackrest.sh` (weekly + daily timers) | `PgBackRestFullTooOld`, `PgBackRestBackupFailed`, `PgBackRestNotConfigured` |
+
+Each of those four has an `absent()` alert as well as a threshold one, and that
+pairing is the point: a threshold alert cannot fire on a collector that stopped
+running, so "the metric is missing" and "the metric is bad" need separate rules.
+The missing case is the likelier one and the one that looks like everything being
+fine.
 
 Phase 0's stock exporters cover host, container, disk-SMART, and Postgres
 metrics. Two critical failure modes have no stock coverage, so we export them

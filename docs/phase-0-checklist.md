@@ -1,10 +1,29 @@
 # Phase 0 — Checklist
 
-**Status: 🟠 every piece is ✅ built and committed as code; the ticks below are the
-operator's.** This is a *procedure*, not a project ledger — an unticked box here
-means "you have not done this on your server yet", not "the repository is missing
-something". The one place where that distinction breaks down is the hardening
-follow-ups at the bottom, which are repository work and are marked accordingly.
+**Status: ✅ every piece is built, committed, and — where a machine can check it
+— checked by CI.** This is a *procedure*, not a project ledger: an unticked box
+here means "you have not done this on your server yet", not "the repository is
+missing something".
+
+The hardening follow-ups at the bottom were the exception, because those were
+repository work rather than operator work, and they sat unticked for nine phases.
+They are done now, and they are one command:
+
+```bash
+sudo ./scripts/host-setup.sh --all      # upgrades, UPS, timers
+sudo ./scripts/host-setup.sh --check    # report what is configured, change nothing
+```
+
+**What CI now proves, so you do not have to take this document's word for it**
+([.github/workflows/ci.yml](../.github/workflows/ci.yml)): the alert rules parse
+and pass their unit tests, every dashboard query is valid PromQL, the Caddyfile
+validates in both TLS modes, every third-party image is pinned to a digest, and
+— the one that matters — a ZFS pool is built on loopback files, backed up with
+restic, and restored, with the drill failing the build if the bytes do not come
+back. That last job is the automated form of §10 below. It does not replace
+running the drill against *your* pool, which is what §10 asks for, but it does
+mean the restore path is never silently broken.
+
 Marks: ✅ done · 🟠 partial · ❌ not built; the project-wide ledger is
 [status.md](status.md).
 
@@ -177,8 +196,15 @@ sudo chmod 0755 /var/lib/node_exporter/textfile
       is installed (step 9), query `privatecloud_zpool_health{state="ONLINE"}`.
       It must return `1` for your pool. If absent, the textfile collector isn't
       wired — see [custom-metrics.md](custom-metrics.md).
-- [ ] ❌ Export edited dashboards to JSON and commit them — still open;
-        `deploy/monitoring/grafana/dashboards/` holds only `.gitkeep`
+- [x] ✅ Dashboards are committed and provision themselves — there is nothing to
+      import by hand. `deploy/monitoring/grafana/dashboards/` holds five:
+      Node Exporter Full, PostgreSQL and SMART (normalised from the community
+      dashboards so they need no `${DS_PROMETHEUS}` answer at import time), a
+      purpose-built Docker/cAdvisor one (dashboard 193 is schemaVersion 12, a
+      2016-era layout), and **Private Cloud — Overview**, which is the one that
+      could not be downloaded: pool health, backup freshness, the job queue and
+      the API, all reading the same series `alerts.yml` fires on. CI parses every
+      query
 
 ## 8. ntfy
 
@@ -315,10 +341,12 @@ Phase 0 is done when every one of these is true:
 
 ## Hardening follow-ups
 
-Worth doing, not worth blocking Phase 1 on. **Nine phases later, the two metric
-items are done and the rest are still open** — which is the honest outcome for a
-list explicitly marked as non-blocking, and the reason they are also recorded in
-[deferred-work.md](deferred-work.md) rather than only here.
+Worth doing, not worth blocking Phase 1 on — which is exactly why, nine phases
+later, only the two metric items had been done. A list of things that never block
+anything is a list nothing ever removes an item from.
+
+**They are all done now, and each one is a file rather than a bullet.** The two
+that are still a decision rather than a task are marked as such.
 
 - [x] ✅ **Backup-freshness metric.** Done — `restic-backup.sh` now exports
       `privatecloud_backup_last_success_timestamp`; `BackupTooOld` /
@@ -328,16 +356,45 @@ list explicitly marked as non-blocking, and the reason they are also recorded in
       `privatecloud-zpool-metrics.timer` export `privatecloud_zpool_health` and
       scrub freshness; `ZpoolDegraded` / `ZpoolUnavailable` / `ZpoolScrubTooOld`
       / `ZpoolScrubFailed` alert on them.
-- [ ] ❌ **Pin images to digests.** Tags are mutable; `postgres:17.5-alpine` can
+- [x] ✅ **Pin images to digests.** Done — all ten third-party images in
+      `docker-compose.yml` carry `@sha256:...` beside their tag, and CI fails if
+      one does not. [renovate.json](../renovate.json) moves them, because a
+      pinned digest with nothing to update it is a security problem wearing a
+      reproducibility costume. Previously: tags are mutable; `postgres:17.5-alpine` can
       change under you. `docker inspect --format='{{index .RepoDigests 0}}' postgres:17.5-alpine`
       then use `image: postgres@sha256:...`. Add Renovate to bump them.
-- [ ] ❌ **Real TLS certs** via `tailscale cert`, replacing `tls internal` — see
+- [x] ✅ **Real TLS certs** via `tailscale cert`. Done —
+      [scripts/tailscale-cert.sh](../scripts/tailscale-cert.sh) issues and renews
+      one, `privatecloud-tailscale-cert.timer` keeps it alive, and the Caddyfile
+      imports `tls.conf` so the swap is a file and a reload rather than an edit.
+      Both states are validated in CI. See
       [tailscale-setup.md](tailscale-setup.md#4-enable-magicdns-and-https).
-- [ ] ❌ **UPS + NUT** for clean shutdown on power loss.
-- [ ] ❌ **Unattended security upgrades:** `sudo apt install unattended-upgrades`.
-- [ ] ❌ **pgBackRest** for point-in-time recovery (Phase 1 — do it before there's
-      data you'd miss).
-- [ ] 🟠 **Encrypted pool auto-unlock.** Currently a reboot leaves everything
+- [x] ✅ **UPS + NUT** for clean shutdown on power loss. Done —
+      [deploy/host/nut/](../deploy/host/nut/) plus `host-setup.sh --ups`. Power
+      events reach the same ntfy topics as every other alert. The point is not
+      uptime: ZFS survives one power cut by design, and what it survives badly is
+      the second and third during the resilver after the first.
+- [x] ✅ **Unattended security upgrades.** Done —
+      [deploy/host/apt/](../deploy/host/apt/) plus `host-setup.sh --upgrades`,
+      which also runs `unattended-upgrade --dry-run` because "I installed it" and
+      "it is applying updates" are different claims. Security origins only;
+      Docker, Tailscale and the ZFS/kernel pair are blacklisted, since a kernel
+      that no longer matches `zfs-dkms` is a machine that boots without its pool.
+- [x] ✅ **pgBackRest** for point-in-time recovery. Done —
+      [Dockerfile.postgres](../deploy/compose/Dockerfile.postgres) adds the binary
+      (archive_command runs *inside* the Postgres container, so a sidecar cannot
+      supply it), [pgbackrest.conf](../deploy/compose/pgbackrest.conf) configures
+      the repository on the pool, and
+      [scripts/pgbackrest.sh](../scripts/pgbackrest.sh) plus two timers run weekly
+      fulls and daily differentials. RPO goes from 24 hours to one WAL segment.
+      The nightly `pg_dumpall` stays: it survives this repository being the thing
+      that broke. Recovery is [runbook-restore.md §4c](runbook-restore.md).
+- [x] 🟠 **Encrypted pool auto-unlock — decided, and deliberately left off.**
+      [privatecloud-zfs-unlock.service](../deploy/systemd/privatecloud-zfs-unlock.service)
+      exists, is not enabled, and its header sets out what each possible keyfile
+      location actually buys; [scripts/zfs-unlock.sh](../scripts/zfs-unlock.sh)
+      refuses a key on the root filesystem, because storing the key beside the
+      ciphertext it protects is not a weaker setup, it is no setup. Currently a reboot leaves everything
       unmounted until you type the passphrase. That is a deliberate security
       property, not a bug — but decide consciously whether you want it, because
       it means a remote reboot needs a console.

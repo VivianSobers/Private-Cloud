@@ -75,7 +75,8 @@ sudo ./scripts/restore-test.sh        # the step that makes it real
 │   ├── caddy/Caddyfile               TLS + routing (tailnet-only)
 │   ├── monitoring/                   prometheus, alerts, alertmanager, grafana
 │   ├── sanoid/sanoid.conf            snapshot retention policy
-│   ├── systemd/                      backup timers
+│   ├── host/                         UPS + unattended-upgrades (see host/README.md)
+│   ├── systemd/                      backup, drill, cert and PITR timers
 │   └── secrets/.env.example          template; real .env is gitignored
 ├── server/                           Go API, worker and CLI — see server/README.md
 ├── client/                           pcsync, the headless sync daemon (separate Go module)
@@ -85,7 +86,12 @@ sudo ./scripts/restore-test.sh        # the step that makes it real
 │   ├── sanoid-setup.sh               snapshots
 │   ├── restic-backup.sh              nightly offsite backup + freshness metric
 │   ├── zpool-metrics.sh              pool-health textfile collector (systemd timer)
-│   └── restore-test.sh               proves backups restore
+│   ├── restore-test.sh               proves backups restore
+│   ├── restore-drill.sh              runs the above monthly and makes it a metric
+│   ├── pgbackrest.sh                 point-in-time recovery for the database
+│   ├── tailscale-cert.sh             real TLS certs, issued and renewed
+│   ├── zfs-unlock.sh                 opt-in pool unlock from a keyfile
+│   └── host-setup.sh                 UPS, unattended upgrades, timers
 └── docs/
     ├── status.md                     ✅/🟠/❌ every phase and slice — is it built?
     ├── remaining-work.md             what's left, what blocks it, what's by design
@@ -140,7 +146,7 @@ are documented, deliberate exceptions to the isolation rules, not oversights.
 
 | Phase | Scope | Status |
 |---|---|---|
-| 0 | Storage, network, monitoring, backups, runbooks | 🟠 **code complete** — every piece is committed; the three `sudo` restore gates in [docs/phase-1-design.md](docs/phase-1-design.md) §0 are the operator's to tick, and the Grafana dashboards, digest pinning and real TLS certs in [docs/phase-0-checklist.md](docs/phase-0-checklist.md) are still open follow-ups |
+| 0 | Storage, network, monitoring, backups, runbooks | ✅ **complete** — storage, snapshots, tailnet-only ingress with real TLS certificates, monitoring with five self-provisioning dashboards and 38 rule-tested alerts, nightly offsite backups, point-in-time recovery for the database, UPS shutdown, unattended security updates, and every image pinned to a digest. The restore drill runs monthly and is re-run by CI against a real ZFS pool on every push, so the restore path cannot break silently. 🟠 Running the drill against **your** pool stays yours — see [docs/phase-0-checklist.md](docs/phase-0-checklist.md) §10 |
 | 1 | MVP: auth (passkeys), upload/download, resumable uploads, web UI, WebDAV, search | ✅ **complete** — all 7 slices |
 | **2** | CAS storage engine, versioning, dedup, share links | ✅ **complete** — all 4 slices: FastCDC+BLAKE3+zstd chunking with cross-user dedup, background migration of Phase 1 blobs, real version history (list/restore/retention), and public share links (file & folder, password/expiry/download-cap, instant revocation) on a separate Caddy plane |
 | **3** | Sync engine: change journal, Go client, conflict resolution | ✅ **complete** — all 4 slices: a per-owner change journal with a gap-free cursor (`GET /changes`); a block-level delta protocol (fetch manifest, negotiate missing chunks, BLAKE3-verified chunk upload, manifest commit) so a changed file moves only its changed chunks; a headless Go sync client (`client/`, `pcsync`) — a separate pure-Go module with a SQLite state DB, initial tree reconcile, incremental journal replay, fsnotify + poll + rescan loops, and an app-password-to-device-token exchange; and lineage-based conflict resolution that never overwrites or merges — a both-sides edit or a delete-vs-edit becomes a visible `name (conflict from HOST DATE).ext` copy |
