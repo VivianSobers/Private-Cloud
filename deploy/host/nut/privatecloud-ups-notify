@@ -1,0 +1,45 @@
+#!/usr/bin/env bash
+#
+# NUT notification handler — installed to /usr/local/sbin/privatecloud-ups-notify
+# and called by upsmon with NOTIFYTYPE set and the message as $1.
+#
+# Power events go to the same ntfy topics as every other alert, because an alert
+# channel you have to remember to check is not an alert channel. ONBATT and
+# LOWBATT are the two that matter and they go to the critical topic: everything
+# else on this server can wait, but the machine is about to turn itself off.
+set -uo pipefail
+
+BACKUP_ENV="${BACKUP_ENV:-/etc/private-cloud/backup.env}"
+# shellcheck disable=SC1090  # path is configurable by design; nothing to follow
+[[ -r "$BACKUP_ENV" ]] && . "$BACKUP_ENV"
+
+NTFY_URL="${NTFY_URL:-http://127.0.0.1:8080}"
+TOPIC_NORMAL="${NTFY_TOPIC:-private-cloud}"
+TOPIC_CRITICAL="${NTFY_TOPIC_CRITICAL:-private-cloud-critical}"
+
+msg="${1:-UPS event}"
+type="${NOTIFYTYPE:-UNKNOWN}"
+
+case "$type" in
+  ONBATT)   topic="$TOPIC_CRITICAL"; title="On battery";        prio="urgent" ;;
+  LOWBATT)  topic="$TOPIC_CRITICAL"; title="Battery low";       prio="urgent" ;;
+  FSD)      topic="$TOPIC_CRITICAL"; title="Shutting down now"; prio="urgent" ;;
+  SHUTDOWN) topic="$TOPIC_CRITICAL"; title="Shutting down";     prio="urgent" ;;
+  COMMBAD)  topic="$TOPIC_CRITICAL"; title="Lost the UPS";      prio="high"   ;;
+  REPLBATT) topic="$TOPIC_NORMAL";   title="Replace battery";   prio="high"   ;;
+  ONLINE)   topic="$TOPIC_NORMAL";   title="Mains restored";    prio="default" ;;
+  COMMOK)   topic="$TOPIC_NORMAL";   title="UPS back";          prio="default" ;;
+  *)        topic="$TOPIC_NORMAL";   title="UPS: $type";        prio="default" ;;
+esac
+
+# Always log, whether or not the push succeeds. If the power event is what took
+# the network down, syslog is the only record that will survive.
+logger -t privatecloud-ups "$type: $msg"
+
+curl -fsS --max-time 10 \
+  ${NTFY_TOKEN:+-H "Authorization: Bearer $NTFY_TOKEN"} \
+  -H "Title: $title" \
+  -H "Priority: $prio" \
+  -H "Tags: electric_plug" \
+  -d "$msg" \
+  "$NTFY_URL/$topic" >/dev/null 2>&1 || logger -t privatecloud-ups "ntfy push failed for $type"

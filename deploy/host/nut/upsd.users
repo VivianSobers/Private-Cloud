@@ -1,0 +1,13 @@
+# NUT users — /etc/nut/upsd.users
+#
+# One user, one job: upsmon logs in to read the battery state and to declare a
+# forced shutdown. The password is a placeholder; scripts/host-setup.sh
+# generates a real one and writes it into both this file and upsmon.conf, so
+# neither carries a secret in git.
+#
+# Permissions matter more than the password here: this file is chmod 0640,
+# owned root:nut, because anything that can read it can order a shutdown.
+
+[upsmon]
+    password = UPSMON_PASSWORD_PLACEHOLDER
+    upsmon primary
