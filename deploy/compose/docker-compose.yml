@@ -61,7 +61,7 @@ services:
   # Postgres — metadata store for every later phase.
   # ==========================================================================
   postgres:
-    image: postgres:17.5-alpine
+    image: postgres:17.5-alpine@sha256:6567bca8d7bc8c82c5922425a0baee57be8402df92bae5eacad5f01ae9544daa
     container_name: privatecloud-postgres
     <<: *default-restart
     logging: *default-logging
@@ -333,7 +333,7 @@ services:
   # Caddy — TLS termination and the only ingress.
   # ==========================================================================
   caddy:
-    image: caddy:2.8.4-alpine
+    image: caddy:2.8.4-alpine@sha256:af32e97399febea808609119bb21544d0265c58a02836576e32a2d082c262c17
     container_name: privatecloud-caddy
     <<: *default-restart
     logging: *default-logging
@@ -369,7 +369,7 @@ services:
   # Monitoring
   # ==========================================================================
   prometheus:
-    image: prom/prometheus:v3.1.0
+    image: prom/prometheus:v3.1.0@sha256:6559acbd5d770b15bb3c954629ce190ac3cbbdb2b7f1c30f0385c4e05104e218
     container_name: privatecloud-prometheus
     <<: *default-restart
     logging: *default-logging
@@ -394,7 +394,7 @@ services:
     cap_drop: [ALL]
 
   alertmanager:
-    image: prom/alertmanager:v0.28.0
+    image: prom/alertmanager:v0.28.0@sha256:d5155cfac40a6d9250ffc97c19db2c5e190c7bc57c6b67125c94903358f8c7d8
     container_name: privatecloud-alertmanager
     <<: *default-restart
     logging: *default-logging
@@ -416,7 +416,7 @@ services:
     cap_drop: [ALL]
 
   grafana:
-    image: grafana/grafana:11.5.1
+    image: grafana/grafana:11.5.1@sha256:5781759b3d27734d4d548fcbaf60b1180dbf4290e708f01f292faa6ae764c5e6
     container_name: privatecloud-grafana
     <<: *default-restart
     logging: *default-logging
@@ -441,7 +441,7 @@ services:
 
   # --- exporters ------------------------------------------------------------
   node_exporter:
-    image: prom/node-exporter:v1.8.2
+    image: prom/node-exporter:v1.8.2@sha256:4032c6d5bfd752342c3e631c2f1de93ba6b86c41db6b167b9a35372c139e7706
     container_name: privatecloud-node-exporter
     <<: *default-restart
     logging: *default-logging
@@ -477,7 +477,7 @@ services:
     cap_drop: [ALL]
 
   cadvisor:
-    image: gcr.io/cadvisor/cadvisor:v0.49.1
+    image: gcr.io/cadvisor/cadvisor:v0.49.1@sha256:3cde6faf0791ebf7b41d6f8ae7145466fed712ea6f252c935294d2608b1af388
     container_name: privatecloud-cadvisor
     <<: *default-restart
     logging: *default-logging
@@ -498,7 +498,7 @@ services:
       - --store_container_labels=false
 
   smartctl_exporter:
-    image: prometheuscommunity/smartctl-exporter:v0.13.0
+    image: prometheuscommunity/smartctl-exporter:v0.13.0@sha256:0eb6b1613e23ea59c4bd6e95720dabcdcdfc0387f89a61925587b62ebc2b71f1
     container_name: privatecloud-smartctl-exporter
     <<: *default-restart
     logging: *default-logging
@@ -512,7 +512,7 @@ services:
     security_opt: [no-new-privileges:true]
 
   postgres_exporter:
-    image: prometheuscommunity/postgres-exporter:v0.16.0
+    image: prometheuscommunity/postgres-exporter:v0.16.0@sha256:6999a7657e2f2fb0ca6ebf417213eebf6dc7d21b30708c622f6fcb11183a2bb0
     container_name: privatecloud-postgres-exporter
     <<: *default-restart
     logging: *default-logging
@@ -532,7 +532,7 @@ services:
   # ntfy — push alerts to your phone.
   # ==========================================================================
   ntfy:
-    image: binwiederhier/ntfy:v2.11.0
+    image: binwiederhier/ntfy:v2.11.0@sha256:4a7d0f0adc6d5d9fc36e64ab55ef676e76e124a2bdd50ce115b6d9c1c7430294
     container_name: privatecloud-ntfy
     <<: *default-restart
     logging: *default-logging

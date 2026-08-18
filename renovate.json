@@ -1,0 +1,60 @@
+{
+  "$schema": "https://docs.renovatebot.com/renovate-schema.json",
+  "extends": ["config:recommended"],
+  "timezone": "Europe/London",
+  "schedule": ["before 6am on monday"],
+  "labels": ["dependencies"],
+  "prConcurrentLimit": 3,
+  "description": [
+    "Pinning every image to a digest makes a rebuild reproducible; without something",
+    "to move those digests it also makes the stack permanently out of date, and a",
+    "stale digest is a security problem wearing a reproducibility costume. This is",
+    "the other half of the pin.",
+    "",
+    "Digests are pinned alongside their tags (image:tag@sha256:...) so the file stays",
+    "readable: the tag says what it is, the digest says exactly which bytes."
+  ],
+  "packageRules": [
+    {
+      "description": "Group the observability stack. These are upgraded together or not at all — a Prometheus that has moved past its exporters is how a dashboard quietly empties.",
+      "matchPackageNames": [
+        "prom/prometheus",
+        "prom/alertmanager",
+        "prom/node-exporter",
+        "grafana/grafana",
+        "prometheuscommunity/smartctl-exporter",
+        "prometheuscommunity/postgres-exporter",
+        "gcr.io/cadvisor/cadvisor"
+      ],
+      "groupName": "observability stack"
+    },
+    {
+      "description": "Postgres majors are a migration, not an update: the data directory format changes and the container will refuse to start on an old one. Kept separate so it can never ride along in a group PR.",
+      "matchPackageNames": ["postgres"],
+      "matchUpdateTypes": ["major"],
+      "dependencyDashboardApproval": true
+    },
+    {
+      "description": "Go modules in both modules, batched. The server and the client share no dependencies by design, so these are genuinely independent.",
+      "matchManagers": ["gomod"],
+      "groupName": "go modules",
+      "postUpdateOptions": ["gomodTidy"]
+    },
+    {
+      "description": "Security fixes bypass the weekly schedule. Waiting until Monday to patch a known-exploited CVE is a policy that only looks tidy.",
+      "matchDatasources": ["go", "docker", "npm"],
+      "vulnerabilityAlerts": {
+        "enabled": true
+      },
+      "schedule": ["at any time"]
+    }
+  ],
+  "vulnerabilityAlerts": {
+    "labels": ["security"],
+    "schedule": ["at any time"]
+  },
+  "docker": {
+    "pinDigests": true
+  },
+  "postUpdateOptions": ["gomodTidy"]
+}
