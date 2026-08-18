@@ -3,6 +3,7 @@ package config
 import (
 	"os"
 	"path/filepath"
+	"strconv"
 	"testing"
 )
 
@@ -16,11 +17,19 @@ func write(t *testing.T, body string) string {
 }
 
 func TestLoadAppliesDefaults(t *testing.T) {
+	// The root is taken from t.TempDir rather than a hardcoded "/tmp/sync",
+	// because Load absolutises it (filepath.Abs) and an absolute path is
+	// spelled differently per platform: on Windows a rooted "/tmp/sync"
+	// acquires the current drive letter, so the expectation and the value
+	// agreed only on POSIX. This client cross-compiles to Windows and macOS,
+	// so a test that can only pass on one of them is testing the developer's
+	// machine rather than the code.
+	root := t.TempDir()
 	p := write(t, `{
 		"server_url": "https://cloud.example.ts.net/",
 		"username": "vivian",
 		"app_password": "pcap_0011223344556677_00112233445566778899aabbccddeeff",
-		"root": "/tmp/sync"
+		"root": `+strconv.Quote(root)+`
 	}`)
 	c, err := Load(p)
 	if err != nil {
@@ -32,11 +41,14 @@ func TestLoadAppliesDefaults(t *testing.T) {
 	if c.PollSeconds != defaultPollSeconds || c.RescanSeconds != defaultRescanSeconds {
 		t.Errorf("defaults not applied: poll=%d rescan=%d", c.PollSeconds, c.RescanSeconds)
 	}
-	if c.StateDB != filepath.Join("/tmp/sync", stateDirName, "state.db") {
-		t.Errorf("state db default wrong: %q", c.StateDB)
+	if want := filepath.Join(root, stateDirName, "state.db"); c.StateDB != want {
+		t.Errorf("state db default wrong: %q, want %q", c.StateDB, want)
 	}
-	if c.StateDir() != filepath.Join("/tmp/sync", stateDirName) {
-		t.Errorf("state dir wrong: %q", c.StateDir())
+	if want := filepath.Join(root, stateDirName); c.StateDir() != want {
+		t.Errorf("state dir wrong: %q, want %q", c.StateDir(), want)
+	}
+	if !filepath.IsAbs(c.Root) {
+		t.Errorf("root not absolutised: %q", c.Root)
 	}
 }
 

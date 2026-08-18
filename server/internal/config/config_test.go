@@ -5,6 +5,21 @@ import (
 	"testing"
 )
 
+// validEnv sets the environment a successful Load needs, so a test about one
+// setting is not also asserting the defaults of every other.
+//
+// PC_BLOB_PATH is set explicitly because its default, "/data/blobs", is
+// absolute only on the deployment target. filepath.IsAbs answers a question
+// about the *host*: on Windows a rooted path with no drive letter is relative,
+// so the default fails its own validation there. The validation is right — a
+// drive-relative blob root is a real misconfiguration — so the test supplies a
+// path that is absolute wherever it runs rather than weakening the check.
+func validEnv(t *testing.T) {
+	t.Helper()
+	t.Setenv("PC_DATABASE_URL", "postgres://u:p@localhost:5432/pc")
+	t.Setenv("PC_BLOB_PATH", t.TempDir())
+}
+
 func TestLoadRequiresDatabaseURL(t *testing.T) {
 	t.Setenv("PC_DATABASE_URL", "")
 	if _, err := Load(); err == nil {
@@ -22,7 +37,7 @@ func TestLoadRejectsNonPostgresURL(t *testing.T) {
 }
 
 func TestLoadDefaults(t *testing.T) {
-	t.Setenv("PC_DATABASE_URL", "postgres://u:p@localhost:5432/pc")
+	validEnv(t)
 
 	c, err := Load()
 	if err != nil {
@@ -40,7 +55,7 @@ func TestLoadDefaults(t *testing.T) {
 }
 
 func TestLoadRejectsBadEnum(t *testing.T) {
-	t.Setenv("PC_DATABASE_URL", "postgres://u:p@localhost:5432/pc")
+	validEnv(t)
 
 	for _, tc := range []struct{ key, val string }{
 		{"PC_ENV", "staging"},
@@ -57,7 +72,7 @@ func TestLoadRejectsBadEnum(t *testing.T) {
 }
 
 func TestLoadRejectsMinConnsAboveMax(t *testing.T) {
-	t.Setenv("PC_DATABASE_URL", "postgres://u:p@localhost:5432/pc")
+	validEnv(t)
 	t.Setenv("PC_DB_MIN_CONNS", "50")
 	t.Setenv("PC_DB_MAX_CONNS", "10")
 
@@ -89,7 +104,7 @@ func TestRedactedHidesPassword(t *testing.T) {
 // RPID with a scheme or port is the classic WebAuthn misconfiguration, and the
 // browser-side error it produces is famously unhelpful. Fail at startup instead.
 func TestLoadRejectsMalformedRPID(t *testing.T) {
-	t.Setenv("PC_DATABASE_URL", "postgres://u:p@localhost:5432/pc")
+	validEnv(t)
 
 	for _, bad := range []string{
 		"https://cloud.example.ts.net",
@@ -106,7 +121,7 @@ func TestLoadRejectsMalformedRPID(t *testing.T) {
 }
 
 func TestLoadAcceptsBareRPID(t *testing.T) {
-	t.Setenv("PC_DATABASE_URL", "postgres://u:p@localhost:5432/pc")
+	validEnv(t)
 	t.Setenv("PC_WEBAUTHN_RPID", "cloud.example.ts.net")
 
 	if _, err := Load(); err != nil {
@@ -116,7 +131,7 @@ func TestLoadAcceptsBareRPID(t *testing.T) {
 
 // Origins are the mirror image of RPID: they must carry a scheme.
 func TestLoadRejectsSchemelessOrigin(t *testing.T) {
-	t.Setenv("PC_DATABASE_URL", "postgres://u:p@localhost:5432/pc")
+	validEnv(t)
 	t.Setenv("PC_WEBAUTHN_ORIGINS", "cloud.example.ts.net")
 
 	if _, err := Load(); err == nil {
@@ -125,7 +140,7 @@ func TestLoadRejectsSchemelessOrigin(t *testing.T) {
 }
 
 func TestLoadParsesOriginList(t *testing.T) {
-	t.Setenv("PC_DATABASE_URL", "postgres://u:p@localhost:5432/pc")
+	validEnv(t)
 	// Trailing comma and stray spaces are the realistic hand-edited .env.
 	t.Setenv("PC_WEBAUTHN_ORIGINS", "https://a.ts.net, https://b.ts.net,")
 
@@ -144,7 +159,7 @@ func TestLoadParsesOriginList(t *testing.T) {
 // Shipping session cookies in the clear in production must be impossible to do
 // by accident.
 func TestLoadRejectsInsecureCookiesInProd(t *testing.T) {
-	t.Setenv("PC_DATABASE_URL", "postgres://u:p@localhost:5432/pc")
+	validEnv(t)
 	t.Setenv("PC_ENV", "prod")
 	t.Setenv("PC_COOKIE_SECURE", "false")
 
