@@ -462,8 +462,14 @@ export const api = {
 
   node: (id: string) => request<{ node: Node }>(`/api/v1/nodes/${id}`),
 
-  children: (id: string) =>
-    request<{ parent: Node; children: Node[] }>(`/api/v1/nodes/${id}/children`),
+  // includeShared is the Phase 7 opt-in. Without it this returns exactly what it
+  // returned before sharing existed, byte for byte — which is why browsing into
+  // somebody else's folder has to ask for it explicitly rather than the default
+  // widening under every client that was written before grants.
+  children: (id: string, opts: { includeShared?: boolean } = {}) =>
+    request<{ parent: Node; children: Node[] }>(
+      `/api/v1/nodes/${id}/children${opts.includeShared ? "?include_shared=true" : ""}`,
+    ),
 
   resolve: (path: string) =>
     request<{ node: Node }>(`/api/v1/nodes/resolve?path=${encodeURIComponent(path)}`),
@@ -495,7 +501,14 @@ export const api = {
 
   search: (
     q: string,
-    opts: { under?: string; kind?: string; limit?: number; offset?: number; semantic?: boolean } = {},
+    opts: {
+      under?: string;
+      kind?: string;
+      limit?: number;
+      offset?: number;
+      semantic?: boolean;
+      includeShared?: boolean;
+    } = {},
   ) => {
     const params = new URLSearchParams({ q });
     if (opts.under && opts.under !== "/") params.set("under", opts.under);
@@ -507,6 +520,9 @@ export const api = {
     // Semantic mode ranks by meaning via the embedding sidecar; a 503 here means
     // it is not enabled, which the caller can fall back from to lexical search.
     if (opts.semantic) params.set("semantic", "true");
+    // Same opt-in as children: searching from inside a shared tree should find
+    // what is in it, and searching anywhere else must not change.
+    if (opts.includeShared) params.set("include_shared", "true");
     return request<{ query: string; results: SearchHit[]; count: number; has_more: boolean }>(
       `/api/v1/search?${params}`,
     );
@@ -529,10 +545,11 @@ export const api = {
 
   listTags: () => request<{ tags: { tag: string; count: number }[] }>("/api/v1/tags"),
 
-  tagNodes: (tag: string, opts: { limit?: number; offset?: number } = {}) => {
+  tagNodes: (tag: string, opts: { limit?: number; offset?: number; includeShared?: boolean } = {}) => {
     const params = new URLSearchParams();
     if (opts.limit) params.set("limit", String(opts.limit));
     if (opts.offset) params.set("offset", String(opts.offset));
+    if (opts.includeShared) params.set("include_shared", "true");
     const qs = params.toString();
     return request<{ tag: string; nodes: Node[]; count: number; has_more: boolean }>(
       `/api/v1/tags/${encodeURIComponent(tag)}${qs ? `?${qs}` : ""}`,

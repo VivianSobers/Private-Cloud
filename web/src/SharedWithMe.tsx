@@ -4,9 +4,11 @@ import { api, ApiError, type Node } from "./api";
 
 // "Shared with me": the roots other users have granted me access to. Reads the
 // Phase 7 `GET /shared` surface. Each item carries an `access` object naming the
-// owner and my role; a file can be downloaded, a folder shows where it lives.
+// owner and my role; a file can be downloaded, and a folder opens in the file
+// browser through the `?include_shared=true` opt-in the server has supported
+// since Phase 7 slice 2.
 
-export function SharedWithMe() {
+export function SharedWithMe({ onOpenFolder }: { onOpenFolder?: (id: string) => void } = {}) {
   const [items, setItems] = useState<Node[] | null>(null);
   const [error, setError] = useState<string | null>(null);
 
@@ -42,7 +44,13 @@ export function SharedWithMe() {
             </span>
             <span className="stack" style={{ flex: 1, gap: 0 }}>
               <span>
-                <strong>{n.name}</strong>
+                {n.kind === "folder" && onOpenFolder ? (
+                  <button className="link" onClick={() => onOpenFolder(n.id)}>
+                    <strong>{n.name}</strong>
+                  </button>
+                ) : (
+                  <strong>{n.name}</strong>
+                )}
                 {n.access && <span className="role-badge">{n.access.role}</span>}
               </span>
               <span className="muted small">
@@ -58,8 +66,8 @@ export function SharedWithMe() {
         ))}
       </ul>
       <p className="muted small">
-        Opening a shared folder inline is coming with the shared browser; for now a
-        shared folder shows where it lives in its owner's tree.
+        Opening a shared folder browses it in place, in its owner's tree. Your own
+        listings are unchanged: shared content appears only where you asked for it.
       </p>
     </section>
   );

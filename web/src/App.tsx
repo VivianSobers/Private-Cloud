@@ -18,6 +18,9 @@ export function App() {
   const [me, setMe] = useState<Me | null>(null);
   const [loading, setLoading] = useState(true);
   const [view, setView] = useState<View>("files");
+  // A folder somebody else granted, opened from "Shared with me". Undefined is
+  // the ordinary case: the browser starts at the user's own root.
+  const [openFolder, setOpenFolder] = useState<string | undefined>(undefined);
 
   // Codes are shown exactly once, right after they are issued. Held here rather
   // than in the component that created them so navigating away cannot make them
@@ -72,7 +75,16 @@ export function App() {
       <header className="top">
         <h1>private cloud</h1>
         <nav className="row small">
-          <button className="link" onClick={() => setView("files")} aria-current={view === "files"}>
+          <button
+            className="link"
+            onClick={() => {
+              // "Files" always means your own files, even if the last thing open
+              // was a folder somebody shared with you.
+              setOpenFolder(undefined);
+              setView("files");
+            }}
+            aria-current={view === "files"}
+          >
             Files
           </button>
           <button className="link" onClick={() => setView("photos")} aria-current={view === "photos"}>
@@ -134,7 +146,10 @@ export function App() {
       {freshCodes && <RecoveryCodes codes={freshCodes} onDismiss={() => setFreshCodes(null)} />}
 
       {view === "files" ? (
-        <Browser />
+        // The key remounts the browser when a different shared folder is opened,
+        // so its initial load runs again instead of the prop being ignored by an
+        // already-mounted component sitting on somebody else's folder.
+        <Browser key={openFolder ?? "own-root"} initialFolderId={openFolder} />
       ) : view === "photos" ? (
         <Photos />
       ) : view === "people" ? (
@@ -142,7 +157,12 @@ export function App() {
       ) : view === "ask" ? (
         <Ask />
       ) : view === "shared" ? (
-        <SharedWithMe />
+        <SharedWithMe
+          onOpenFolder={(id) => {
+            setOpenFolder(id);
+            setView("files");
+          }}
+        />
       ) : view === "offline" ? (
         <Offline />
       ) : view === "admin" && me.user.is_admin ? (

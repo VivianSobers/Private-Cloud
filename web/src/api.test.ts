@@ -111,6 +111,53 @@ describe("request success", () => {
   });
 });
 
+describe("the shared-content opt-in", () => {
+  // ?include_shared=true widens what a listing MEANS without changing its shape,
+  // so the rule is that it is sent only when asked for. These assert both halves
+  // of that: absent by default, present on request.
+  function captureUrl(): { calls: string[] } {
+    const calls: string[] = [];
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (url: string) => {
+        calls.push(url);
+        return jsonResponse(200, {});
+      }),
+    );
+    return { calls };
+  }
+
+  it("omits include_shared from a listing by default", async () => {
+    const seen = captureUrl();
+    await api.children("abc");
+    expect(seen.calls[0]).toBe("/api/v1/nodes/abc/children");
+  });
+
+  it("sends include_shared on a listing when the caller opts in", async () => {
+    const seen = captureUrl();
+    await api.children("abc", { includeShared: true });
+    expect(seen.calls[0]).toBe("/api/v1/nodes/abc/children?include_shared=true");
+  });
+
+  it("omits include_shared from a search by default", async () => {
+    const seen = captureUrl();
+    await api.search("invoices");
+    expect(seen.calls[0]).not.toContain("include_shared");
+  });
+
+  it("sends include_shared on a search when the caller opts in", async () => {
+    const seen = captureUrl();
+    await api.search("invoices", { includeShared: true });
+    expect(seen.calls[0]).toContain("include_shared=true");
+  });
+
+  it("sends include_shared on a tag listing when the caller opts in", async () => {
+    const seen = captureUrl();
+    await api.tagNodes("receipts", { includeShared: true });
+    expect(seen.calls[0]).toContain("include_shared=true");
+  });
+});
+
 describe("contentUrl", () => {
   it("omits the variant query for the original", () => {
     expect(api.contentUrl("abc")).toBe("/api/v1/nodes/abc/content");

@@ -1,6 +1,15 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 
-import { ApiError, api, formatBytes, formatDate, type Node, type SearchHit, type Usage } from "./api";
+import {
+  ApiError,
+  api,
+  formatBytes,
+  formatDate,
+  type Node,
+  type Role,
+  type SearchHit,
+  type Usage,
+} from "./api";
 import { ShareDialog } from "./ShareDialog";
 import { Shares } from "./Shares";
 import { Trash } from "./Trash";
@@ -23,7 +32,7 @@ interface Transfer {
 
 let transferSeq = 0;
 
-export function Browser() {
+export function Browser({ initialFolderId }: { initialFolderId?: string } = {}) {
   const [folder, setFolder] = useState<Node | null>(null);
   const [children, setChildren] = useState<Node[]>([]);
   const [usage, setUsage] = useState<Usage | null>(null);
@@ -50,12 +59,29 @@ export function Browser() {
 
   const fileInput = useRef<HTMLInputElement>(null);
 
-  const load = useCallback(async (id?: string) => {
+  // Shared browsing: true while the user is inside a tree somebody else owns.
+  //
+  // It is a mode rather than a permanent setting because `?include_shared=true`
+  // is the Phase 7 opt-in — the default listing has to keep returning exactly
+  // what it returned before grants existed. A ref alongside the state so `load`
+  // can read the current value without being rebuilt on every toggle, which
+  // would restart the effect that calls it.
+  const sharedRef = useRef(false);
+  const [sharedBrowse, setSharedBrowse] = useState(false);
+
+  const load = useCallback(async (id?: string, opts: { shared?: boolean } = {}) => {
     setLoading(true);
     setError(null);
+    const wantShared = opts.shared ?? sharedRef.current;
     try {
       const target = id ?? (await api.root()).node.id;
-      const res = await api.children(target);
+      const res = await api.children(target, { includeShared: wantShared });
+      // Stay in shared mode as long as the folder on screen is somebody else's.
+      // Descending from a granted folder into its subfolders keeps the opt-in on
+      // without the user having to ask again; navigating Home turns it off.
+      const inShared = wantShared && Boolean(res.parent.access);
+      sharedRef.current = inShared;
+      setSharedBrowse(inShared);
       setFolder(res.parent);
       setChildren(res.children);
       setUsage(await api.usage());
@@ -67,8 +93,10 @@ export function Browser() {
   }, []);
 
   useEffect(() => {
-    void load();
-  }, [load]);
+    // An initial folder id only ever arrives from "Shared with me", so it opens
+    // in shared mode; without one this is the user's own root, as before.
+    void load(initialFolderId, { shared: initialFolderId !== undefined });
+  }, [load, initialFolderId]);
 
   // Debounced search. Without the delay every keystroke is a trigram scan, and
   // responses can arrive out of order — the `cancelled` flag is what stops a
@@ -84,7 +112,7 @@ export function Browser() {
     const timer = setTimeout(() => {
       void (async () => {
         try {
-          const res = await api.search(text, { under, semantic });
+          const res = await api.search(text, { under, semantic, includeShared: sharedBrowse });
           if (cancelled) return;
           setHits(res.results);
           setSemanticFellBack(false);
@@ -97,7 +125,7 @@ export function Browser() {
           // the difference is the whole reason the toggle exists.
           if (semantic && err instanceof ApiError && err.status === 503) {
             try {
-              const res = await api.search(text, { under });
+              const res = await api.search(text, { under, includeShared: sharedBrowse });
               if (cancelled) return;
               setHits(res.results);
               setSemanticFellBack(true);
@@ -120,7 +148,7 @@ export function Browser() {
       cancelled = true;
       clearTimeout(timer);
     };
-  }, [query, searchScoped, folder?.path, semantic]);
+  }, [query, searchScoped, folder?.path, semantic, sharedBrowse]);
 
   // Errors from search are shown in place of results, so they need to read as
   // sentences rather than as an error code.
@@ -155,6 +183,11 @@ export function Browser() {
       setTransfers((ts) => [...ts, { id, name: file.name, sent: 0, total: file.size, handle }]);
     }
   }
+
+  // A viewer grant is read-only, so the write controls are disabled rather than
+  // offered and refused with a 403. An editor's writes are allowed — they land
+  // in the owner's tree, on the owner's quota, which the banner above says.
+  const readOnly = folder?.access?.role === "viewer";
 
   async function guard(fn: () => Promise<unknown>) {
     setError(null);
@@ -205,15 +238,39 @@ export function Browser() {
       {shareFor && <ShareDialog node={shareFor} onClose={() => setShareFor(null)} />}
       {tagsFor && <Tags node={tagsFor} onClose={() => setTagsFor(null)} />}
       <div className="row">
-        <Breadcrumbs folder={folder} onNavigate={(id) => void load(id)} />
+        <Breadcrumbs
+          folder={folder}
+          shared={sharedBrowse}
+          // Home leaves the shared tree, so it also leaves shared mode; every
+          // other crumb stays inside it.
+          onNavigate={(id) => void load(id, id === undefined ? { shared: false } : {})}
+        />
         <span style={{ flex: 1 }} />
         {usage && <QuotaBar usage={usage} />}
       </div>
 
       {error && <div className="banner error">{error}</div>}
 
+      {/* Say whose folder this is and what the grant allows. A shared folder that
+          looks identical to your own is how somebody deletes a file believing it
+          was theirs. */}
+      {folder?.access && (
+        <div className="banner small">
+          Shared by <strong>{folder.access.owner}</strong> · you are a{" "}
+          <strong>{folder.access.role}</strong> here
+          {folder.access.role === "viewer"
+            ? " — read only."
+            : " — anything you add lands in their tree and counts against their quota."}
+        </div>
+      )}
+
       <div className="row">
-        <button className="primary" onClick={() => fileInput.current?.click()} disabled={!folder}>
+        <button
+          className="primary"
+          onClick={() => fileInput.current?.click()}
+          disabled={!folder || readOnly}
+          title={readOnly ? "You have viewer access to this folder" : undefined}
+        >
           Upload
         </button>
         <input
@@ -228,7 +285,7 @@ export function Browser() {
           }}
         />
         <button
-          disabled={!folder}
+          disabled={!folder || readOnly}
           onClick={() =>
             void guard(async () => {
               const name = window.prompt("New folder name");
@@ -359,6 +416,10 @@ export function Browser() {
               <Row
                 key={n.id}
                 node={n}
+                // A child of a granted folder inherits the grant, so a row with
+                // no access object of its own inside a shared folder is still
+                // somebody else's file.
+                inheritedRole={folder?.access?.role}
                 onOpen={() => void load(n.id)}
                 onRename={() =>
                   void guard(async () => {
@@ -462,6 +523,7 @@ function SearchResults({
 
 function Row({
   node,
+  inheritedRole,
   onOpen,
   onRename,
   onMove,
@@ -471,6 +533,7 @@ function Row({
   onTags,
 }: {
   node: Node;
+  inheritedRole?: Role;
   onOpen: () => void;
   onRename: () => void;
   onMove: () => void;
@@ -479,6 +542,12 @@ function Row({
   onShare: () => void;
   onTags: () => void;
 }) {
+  const role = node.access?.role ?? inheritedRole;
+  const mine = role === undefined;
+  // Only the owner may grant: an editor re-sharing would spread access beyond
+  // what the owner can see or revoke, so the button is not offered.
+  const canWrite = mine || role === "editor" || role === "owner";
+
   return (
     <tr>
       <td className="name">
@@ -506,33 +575,57 @@ function Row({
             History
           </button>
         )}
-        <button className="link" onClick={onShare}>
-          Share
-        </button>
-        {node.kind === "file" && (
+        {mine && (
+          <button className="link" onClick={onShare}>
+            Share
+          </button>
+        )}
+        {node.kind === "file" && canWrite && (
           <button className="link" onClick={onTags}>
             Tags
           </button>
         )}
-        <button className="link" onClick={onRename}>
-          Rename
-        </button>
-        <button className="link" onClick={onMove}>
-          Move
-        </button>
-        <button className="link danger" onClick={onTrash}>
-          Delete
-        </button>
+        {canWrite && (
+          <button className="link" onClick={onRename}>
+            Rename
+          </button>
+        )}
+        {/* Move is owner-only even for an editor: both ends of a move resolve
+            against the same owner, so moving a shared file into your own tree is
+            refused server-side rather than silently copying it onto your quota. */}
+        {mine && (
+          <button className="link" onClick={onMove}>
+            Move
+          </button>
+        )}
+        {canWrite && (
+          <button className="link danger" onClick={onTrash}>
+            Delete
+          </button>
+        )}
+        {!mine && <span className="role-badge">{role}</span>}
       </td>
     </tr>
   );
 }
 
-function Breadcrumbs({ folder, onNavigate }: { folder: Node | null; onNavigate: (id?: string) => void }) {
+function Breadcrumbs({
+  folder,
+  shared,
+  onNavigate,
+}: {
+  folder: Node | null;
+  shared?: boolean;
+  onNavigate: (id?: string) => void;
+}) {
   const [ancestors, setAncestors] = useState<Node[]>([]);
 
   useEffect(() => {
-    if (!folder) {
+    // Inside somebody else's tree the ancestors above the granted root are not
+    // resolvable — `resolve` is owner-scoped, and asking would be a string of
+    // 404s. The grant is the root of what this user can see, so the trail starts
+    // there rather than pretending to know the owner's folder structure.
+    if (!folder || shared) {
       setAncestors([]);
       return;
     }
@@ -554,11 +647,17 @@ function Breadcrumbs({ folder, onNavigate }: { folder: Node | null; onNavigate: 
     return () => {
       cancelled = true;
     };
-  }, [folder]);
+  }, [folder, shared]);
 
   return (
     <nav className="crumbs" aria-label="Breadcrumb">
       <button onClick={() => onNavigate(undefined)}>Home</button>
+      {shared && (
+        <>
+          <span className="sep">/</span>
+          <span className="muted">Shared</span>
+        </>
+      )}
       {ancestors.map((a) => (
         <span key={a.id} className="row" style={{ gap: "0.25rem" }}>
           <span className="sep">/</span>
