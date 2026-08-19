@@ -1,7 +1,9 @@
 package httpapi
 
 import (
+	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"strconv"
 	"strings"
@@ -51,6 +53,8 @@ func (s *Server) handleChat(w http.ResponseWriter, r *http.Request) {
 		} `json:"scope"`
 		IncludeShared bool `json:"include_shared"`
 		Limit         int  `json:"limit"`
+		// Server-sent events instead of one JSON object. See streamChat.
+		Stream bool `json:"stream"`
 	}
 	if !decodeJSON(w, r, &body) {
 		return
@@ -131,6 +135,13 @@ func (s *Server) handleChat(w http.ResponseWriter, r *http.Request) {
 	// this design refuses to ship.
 	if len(passages) == 0 {
 		out["answer_unavailable"] = "no_matching_documents"
+		if body.Stream {
+			// Still a stream, because the client asked for one: a caller that set
+			// up an event reader must not have to also handle a plain JSON body on
+			// the days retrieval finds nothing.
+			s.streamChat(w, r, out, nil, "")
+			return
+		}
 		writeJSON(w, r, http.StatusOK, out)
 		return
 	}
@@ -138,7 +149,16 @@ func (s *Server) handleChat(w http.ResponseWriter, r *http.Request) {
 	if s.generator == nil {
 		// Retrieval-only mode. The passages are the useful, trustworthy half.
 		out["answer_unavailable"] = "generation_disabled"
+		if body.Stream {
+			s.streamChat(w, r, out, nil, "")
+			return
+		}
 		writeJSON(w, r, http.StatusOK, out)
+		return
+	}
+
+	if body.Stream {
+		s.streamChat(w, r, out, passages, question)
 		return
 	}
 
@@ -160,6 +180,110 @@ func (s *Server) handleChat(w http.ResponseWriter, r *http.Request) {
 	out["answer"] = answer
 	out["model"] = s.generator.Model()
 	writeJSON(w, r, http.StatusOK, out)
+}
+
+// streamChat delivers the same answer as Server-Sent Events.
+//
+// This was deferred through two phases for one reason, and the reason is worth
+// stating because it also dictates the shape: citations are mandatory, and an
+// answer that streamed ahead of its citations would be — for the whole duration
+// of the stream — exactly the unverifiable output this design refuses to
+// produce. A reader would watch a confident paragraph assemble itself with
+// nothing yet saying where any of it came from.
+//
+// What unblocks it is that the citations do not depend on the answer. They are
+// computed from retrieval, before the generator is called at all. So they are
+// sent FIRST, as a complete event, and no token of prose is written until the
+// client already holds every source the answer is grounded in. Streaming then
+// costs nothing in verifiability and buys the thing it is worth having for: a
+// model on modest hardware takes tens of seconds to finish a paragraph, and
+// watching it arrive is the difference between a feature that feels broken and
+// one that feels slow.
+//
+// The event sequence, which is the contract with the client:
+//
+//	event: citations   the full citation list, always, exactly once, first
+//	event: delta       a piece of the answer; zero or more
+//	event: done        the terminator, carrying model or answer_unavailable
+//
+// `done` is always sent, including on failure, because a stream that simply
+// stops is indistinguishable from a network that dropped — and a client that
+// cannot tell those apart either hangs forever or reports a failure that did not
+// happen.
+func (s *Server) streamChat(w http.ResponseWriter, r *http.Request, out map[string]any, passages []embed.Passage, question string) {
+	// Written before the first byte, since headers cannot be set afterwards.
+	// no-transform and X-Accel-Buffering exist for the proxy in front: Caddy will
+	// happily buffer a response into one write, which turns a stream back into a
+	// slow whole answer without anything appearing to be wrong.
+	h := w.Header()
+	h.Set("Content-Type", "text/event-stream")
+	h.Set("Cache-Control", "no-cache, no-transform")
+	h.Set("X-Accel-Buffering", "no")
+	h.Set("Connection", "keep-alive")
+	w.WriteHeader(http.StatusOK)
+
+	rc := http.NewResponseController(w)
+	send := func(event string, payload any) error {
+		data, err := json.Marshal(payload)
+		if err != nil {
+			return err
+		}
+		if _, err := fmt.Fprintf(w, "event: %s\ndata: %s\n\n", event, data); err != nil {
+			return err
+		}
+		// Flushing per event is the whole point; without it the writer buffers and
+		// the client sees one delivery at the end.
+		return rc.Flush()
+	}
+
+	// Citations first, always, before a single token of prose.
+	if err := send("citations", out); err != nil {
+		return
+	}
+
+	// Nothing to generate: retrieval-only mode, or nothing citable. The reason is
+	// already in `out`, so the terminator carries it and the stream ends here.
+	if len(passages) == 0 {
+		_ = send("done", map[string]any{"answer_unavailable": out["answer_unavailable"]})
+		return
+	}
+
+	streamer, ok := s.generator.(embed.StreamingGenerator)
+	if !ok {
+		// A generator that cannot stream is still a generator. Ask for the whole
+		// answer and deliver it as one delta: the client's rendering is identical,
+		// it simply arrives at once.
+		answer, err := s.generator.Generate(r.Context(), question, passages)
+		if err != nil {
+			s.log.Warn("generation failed", "error", err, "request_id", RequestID(r.Context()))
+			_ = send("done", map[string]any{"answer_unavailable": "generation_unavailable"})
+			return
+		}
+		_ = send("delta", map[string]any{"text": answer})
+		_ = send("done", map[string]any{"model": s.generator.Model()})
+		return
+	}
+
+	var wrote bool
+	err := streamer.GenerateStream(r.Context(), question, passages, func(delta string) error {
+		wrote = true
+		return send("delta", map[string]any{"text": delta})
+	})
+	if err != nil {
+		s.log.Warn("generation stream failed", "error", err, "wrote_any", wrote,
+			"request_id", RequestID(r.Context()))
+		// A failure after prose has already been sent is reported as a truncation
+		// rather than as an absent answer: the client is holding half a paragraph,
+		// and telling it the answer is unavailable would be a lie about something
+		// the user can see on screen.
+		reason := "generation_unavailable"
+		if wrote {
+			reason = "generation_truncated"
+		}
+		_ = send("done", map[string]any{"answer_unavailable": reason})
+		return
+	}
+	_ = send("done", map[string]any{"model": s.generator.Model()})
 }
 
 // The contract also sketches scope.node_ids and scope.tags. Neither is

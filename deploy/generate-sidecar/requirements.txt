@@ -1,0 +1,11 @@
+# Deliberately three dependencies. The model is not one of them: generation runs
+# in a separate OpenAI-compatible runtime the operator already has (llama.cpp,
+# vLLM, Ollama), because that is a build tuned to their GPU and CUDA version, and
+# reproducing it inside this image would be a worse copy of it.
+#
+# Floors rather than exact pins, matching the embed sidecar: this is an image the
+# operator builds for their own hardware, and a hard pin here buys nothing when
+# the thing that actually varies lives on the other side of the HTTP call.
+fastapi>=0.110
+uvicorn[standard]>=0.29
+httpx>=0.27

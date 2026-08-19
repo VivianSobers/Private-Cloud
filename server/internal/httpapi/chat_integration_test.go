@@ -2,6 +2,7 @@ package httpapi_test
 
 import (
 	"context"
+	"encoding/json"
 	"hash/fnv"
 	"net/http"
 	"strconv"
@@ -283,4 +284,226 @@ func (f *apiFixture) rootID(t *testing.T) uuid.UUID {
 		t.Fatalf("ensure root: %v", err)
 	}
 	return root.ID
+}
+
+// --- streaming (Phase 8 slice 4) --------------------------------------------
+
+// streamingStub is a generator that emits its answer a word at a time, so the
+// ORDER of what reaches the client can be asserted rather than assumed.
+type streamingStub struct {
+	pieces []string
+
+	err error
+
+	// failAfter emits this many pieces and then fails, which is how a truncated
+	// answer is produced on purpose.
+	failAfter int
+}
+
+func (g *streamingStub) Model() string { return "stub-streamer" }
+
+func (g *streamingStub) Generate(_ context.Context, _ string, _ []embed.Passage) (string, error) {
+	if g.err != nil {
+		return "", g.err
+	}
+	return strings.Join(g.pieces, ""), nil
+}
+
+func (g *streamingStub) GenerateStream(_ context.Context, _ string, _ []embed.Passage, onDelta func(string) error) error {
+	// An error with no failAfter fails before writing anything, which is the
+	// case where no prose has reached the client at all.
+	if g.err != nil && g.failAfter == 0 {
+		return g.err
+	}
+	for i, p := range g.pieces {
+		if g.failAfter > 0 && i >= g.failAfter {
+			return embed.ErrGenerationUnavailable
+		}
+		if err := onDelta(p); err != nil {
+			return err
+		}
+	}
+	return g.err
+}
+
+// sseEvent is one parsed `event:`/`data:` pair.
+type sseEvent struct {
+	name string
+	data map[string]any
+}
+
+func parseSSE(t *testing.T, raw string) []sseEvent {
+	t.Helper()
+	var events []sseEvent
+	for _, block := range strings.Split(strings.TrimSpace(raw), "\n\n") {
+		var ev sseEvent
+		for _, line := range strings.Split(block, "\n") {
+			switch {
+			case strings.HasPrefix(line, "event: "):
+				ev.name = strings.TrimPrefix(line, "event: ")
+			case strings.HasPrefix(line, "data: "):
+				if err := json.Unmarshal([]byte(strings.TrimPrefix(line, "data: ")), &ev.data); err != nil {
+					t.Fatalf("event %q has undecodable data: %v", ev.name, err)
+				}
+			}
+		}
+		if ev.name != "" {
+			events = append(events, ev)
+		}
+	}
+	return events
+}
+
+// The property the whole feature turns on: every citation is delivered BEFORE
+// the first token of prose. An answer that streamed ahead of its citations would
+// be, for the duration of the stream, exactly the unverifiable output this design
+// refuses to produce.
+func TestChatStreamSendsCitationsBeforeAnyProse(t *testing.T) {
+	gen := &streamingStub{pieces: []string{"the office ", "closes at six", " [1]"}}
+	f := newAPIFixtureWithAI(t, gen)
+	f.indexDoc(t, "handbook.txt", "the office closes at six on fridays and stays shut all weekend")
+
+	rec := f.json(http.MethodPost, "/api/v1/chat", map[string]any{
+		"question": "when does the office close on friday",
+		"stream":   true,
+	})
+	if rec.Code != http.StatusOK {
+		t.Fatalf("streamed chat = %d: %s", rec.Code, rec.Body)
+	}
+	if ct := rec.Header().Get("Content-Type"); !strings.HasPrefix(ct, "text/event-stream") {
+		t.Fatalf("Content-Type = %q, want text/event-stream", ct)
+	}
+
+	events := parseSSE(t, rec.Body.String())
+	if len(events) == 0 {
+		t.Fatal("no events were sent")
+	}
+	if events[0].name != "citations" {
+		t.Fatalf("first event = %q, want citations before anything else", events[0].name)
+	}
+	if len(events[0].data["citations"].([]any)) == 0 {
+		t.Fatal("the citations event carried no citations")
+	}
+
+	var answer string
+	for _, ev := range events[1:] {
+		if ev.name == "delta" {
+			answer += ev.data["text"].(string)
+		}
+	}
+	if answer != "the office closes at six [1]" {
+		t.Errorf("reassembled answer = %q, want the pieces in order", answer)
+	}
+
+	last := events[len(events)-1]
+	if last.name != "done" {
+		t.Errorf("last event = %q, want done", last.name)
+	}
+	if last.data["model"] != "stub-streamer" {
+		t.Errorf("done carried model %v, want the generator's identity", last.data["model"])
+	}
+}
+
+// A generator with no streaming support is still a generator: the answer arrives
+// as one delta rather than the request failing or falling back to no answer.
+func TestChatStreamFallsBackToAWholeAnswer(t *testing.T) {
+	gen := &stubGenerator{} // implements Generator, not StreamingGenerator
+	f := newAPIFixtureWithAI(t, gen)
+	f.indexDoc(t, "handbook.txt", "the office closes at six on fridays")
+
+	rec := f.json(http.MethodPost, "/api/v1/chat", map[string]any{
+		"question": "when does the office close",
+		"stream":   true,
+	})
+	events := parseSSE(t, rec.Body.String())
+	if len(events) < 3 || events[0].name != "citations" {
+		t.Fatalf("unexpected event sequence: %+v", events)
+	}
+	var deltas int
+	for _, ev := range events {
+		if ev.name == "delta" {
+			deltas++
+		}
+	}
+	if deltas != 1 {
+		t.Errorf("got %d deltas, want the whole answer as one", deltas)
+	}
+}
+
+// A stream must always terminate with `done`, including when it fails. A stream
+// that simply stops is indistinguishable from a dropped connection, and a client
+// that cannot tell those apart either hangs or reports a failure that never
+// happened.
+func TestChatStreamAlwaysTerminates(t *testing.T) {
+	// The generator fails before writing a single token: no prose reached the
+	// client, so the honest terminator is that no answer is available.
+	t.Run("the sidecar fails before writing anything", func(t *testing.T) {
+		gen := &streamingStub{pieces: []string{"x"}, err: embed.ErrGenerationUnavailable}
+		assertStreamEndsWith(t, gen, true, "generation_unavailable")
+	})
+
+	// The generator fails part way through. The client is holding half a
+	// paragraph it can see on screen, so reporting the answer as unavailable
+	// would be a lie about something visible; it is reported as truncated.
+	t.Run("the sidecar fails part way through", func(t *testing.T) {
+		gen := &streamingStub{pieces: []string{"half an ", "answer"}, failAfter: 1}
+		assertStreamEndsWith(t, gen, true, "generation_truncated")
+	})
+
+	// Nothing retrieved. The generator is never called at all, because a model
+	// asked to answer from no passages invents one.
+	t.Run("nothing was retrieved", func(t *testing.T) {
+		gen := &streamingStub{pieces: []string{"unused"}}
+		assertStreamEndsWith(t, gen, false, "no_matching_documents")
+	})
+}
+
+// assertStreamEndsWith drives one streamed question and checks the two
+// invariants every failure path shares: citations still come first, and the
+// stream still terminates with a `done` naming the reason.
+func assertStreamEndsWith(t *testing.T, gen embed.Generator, indexed bool, want string) {
+	t.Helper()
+
+	f := newAPIFixtureWithAI(t, gen)
+	if indexed {
+		f.indexDoc(t, "handbook.txt", "the office closes at six on fridays")
+	}
+
+	rec := f.json(http.MethodPost, "/api/v1/chat", map[string]any{
+		"question": "when does the office close",
+		"stream":   true,
+	})
+	events := parseSSE(t, rec.Body.String())
+	if len(events) == 0 {
+		t.Fatal("no events")
+	}
+	if events[0].name != "citations" {
+		t.Errorf("first event = %q, want citations even on the failure paths", events[0].name)
+	}
+	last := events[len(events)-1]
+	if last.name != "done" {
+		t.Fatalf("last event = %q, want done", last.name)
+	}
+	if last.data["answer_unavailable"] != want {
+		t.Errorf("answer_unavailable = %v, want %v", last.data["answer_unavailable"], want)
+	}
+}
+
+// Retrieval-only deployments stream too: a client that set up an event reader
+// must not also have to handle a plain JSON body on a server with no generator.
+func TestChatStreamWithoutAGenerator(t *testing.T) {
+	f := newAPIFixtureWithAI(t, nil)
+	f.indexDoc(t, "handbook.txt", "the office closes at six on fridays")
+
+	rec := f.json(http.MethodPost, "/api/v1/chat", map[string]any{
+		"question": "when does the office close",
+		"stream":   true,
+	})
+	events := parseSSE(t, rec.Body.String())
+	if len(events) != 2 || events[0].name != "citations" || events[1].name != "done" {
+		t.Fatalf("unexpected event sequence: %+v", events)
+	}
+	if events[1].data["answer_unavailable"] != "generation_disabled" {
+		t.Errorf("answer_unavailable = %v, want generation_disabled", events[1].data["answer_unavailable"])
+	}
 }

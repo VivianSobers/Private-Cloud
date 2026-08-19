@@ -1,6 +1,7 @@
 package embed
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"encoding/json"
@@ -34,6 +35,22 @@ var ErrGenerationUnavailable = errors.New("generation is not available")
 type Generator interface {
 	Generate(ctx context.Context, question string, passages []Passage) (string, error)
 	Model() string
+}
+
+// StreamingGenerator emits an answer in pieces as the model produces them.
+//
+// Optional, and deliberately a separate interface: a Generator that cannot
+// stream is still a complete generator, and the endpoint falls back to asking
+// for the whole answer and delivering it as one piece. That keeps a sidecar an
+// operator already runs working after this shipped, which is the property the
+// whole sidecar contract is supposed to have.
+//
+// onDelta is called in order, on the request's goroutine. Returning an error
+// from it stops the generation — that is how a client disconnecting stops the
+// work rather than letting a model keep spending a GPU on a browser tab that
+// closed.
+type StreamingGenerator interface {
+	GenerateStream(ctx context.Context, question string, passages []Passage, onDelta func(string) error) error
 }
 
 // Passage is one retrieved chunk offered to the generator as context.
@@ -71,6 +88,11 @@ type generateRequest struct {
 	Question string    `json:"question"`
 	Passages []Passage `json:"passages"`
 	Model    string    `json:"model,omitempty"`
+	// Asks the sidecar for newline-delimited JSON instead of one object. A
+	// sidecar that does not know the field ignores it and answers whole, which
+	// the reader below handles — so an older sidecar keeps working and simply
+	// arrives all at once.
+	Stream bool `json:"stream,omitempty"`
 }
 
 type generateResponse struct {
@@ -133,3 +155,107 @@ func (c *GenClient) Generate(ctx context.Context, question string, passages []Pa
 	}
 	return out.Answer, nil
 }
+
+// streamChunk is one line of the sidecar's newline-delimited stream: a piece of
+// the answer, an error, or the end. `answer` is accepted too, so a sidecar that
+// ignores `stream` and replies with the ordinary whole-answer object is read
+// correctly rather than treated as a protocol violation.
+type streamChunk struct {
+	Delta  string `json:"delta,omitempty"`
+	Answer string `json:"answer,omitempty"`
+	Done   bool   `json:"done,omitempty"`
+	Error  string `json:"error,omitempty"`
+}
+
+// GenerateStream asks the sidecar for the answer in pieces.
+//
+// NDJSON rather than SSE between server and sidecar: this hop is machine to
+// machine on your own tailnet, and SSE's event names and retry semantics buy
+// nothing here while costing a parser. The browser-facing hop upstream IS SSE,
+// because that is what a browser can consume without a library.
+//
+// The delta is passed on as it arrives and never buffered into a full answer
+// first, which would reintroduce exactly the latency streaming exists to remove.
+func (c *GenClient) GenerateStream(ctx context.Context, question string, passages []Passage, onDelta func(string) error) error {
+	if c.base == "" {
+		return ErrGenerationUnavailable
+	}
+
+	body, err := json.Marshal(generateRequest{
+		Question: question, Passages: passages, Model: c.model, Stream: true,
+	})
+	if err != nil {
+		return err
+	}
+
+	url := strings.TrimRight(c.base, "/") + "/generate"
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(body))
+	if err != nil {
+		return err
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Accept", "application/x-ndjson, application/json")
+
+	resp, err := c.http.Do(req)
+	if err != nil {
+		return fmt.Errorf("%w: %v", ErrGenerationUnavailable, err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return fmt.Errorf("%w: sidecar returned %d", ErrGenerationUnavailable, resp.StatusCode)
+	}
+
+	// Bounded the same way the non-streaming path is, but per line and in total:
+	// a sidecar looping forever must not be able to hold the API open or grow its
+	// memory, and a stream has no Content-Length to check first.
+	scanner := bufio.NewScanner(io.LimitReader(resp.Body, maxStreamBytes))
+	scanner.Buffer(make([]byte, 0, 8<<10), maxStreamLine)
+
+	var got bool
+	for scanner.Scan() {
+		line := strings.TrimSpace(scanner.Text())
+		if line == "" {
+			continue
+		}
+		var chunk streamChunk
+		if err := json.Unmarshal([]byte(line), &chunk); err != nil {
+			return fmt.Errorf("%w: malformed stream", ErrGenerationUnavailable)
+		}
+		if chunk.Error != "" {
+			return fmt.Errorf("%w: %s", ErrGenerationUnavailable, chunk.Error)
+		}
+		// `answer` is the whole-answer shape, which a sidecar that ignored the
+		// stream flag will have sent. Treat it as one delta and finish.
+		for _, piece := range []string{chunk.Delta, chunk.Answer} {
+			if piece == "" {
+				continue
+			}
+			got = true
+			if err := onDelta(piece); err != nil {
+				return err
+			}
+		}
+		if chunk.Done {
+			break
+		}
+	}
+	if err := scanner.Err(); err != nil {
+		return fmt.Errorf("%w: %v", ErrGenerationUnavailable, err)
+	}
+	if !got {
+		// Same rule as the whole-answer path: nothing at all, with no error, is a
+		// broken sidecar rather than an empty but valid answer.
+		return fmt.Errorf("%w: empty answer", ErrGenerationUnavailable)
+	}
+	return nil
+}
+
+const (
+	// One line is one token or a short run of them; 256 KiB is far past any
+	// legitimate piece and still small enough to be harmless.
+	maxStreamLine = 256 << 10
+	// The same 1 MiB ceiling the whole-answer path applies, so streaming cannot
+	// become a way around it.
+	maxStreamBytes = 1 << 20
+)

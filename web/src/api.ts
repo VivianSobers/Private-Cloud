@@ -135,7 +135,15 @@ export interface ChatResponse {
   citations: Citation[];
   answer?: string;
   model?: string;
-  answer_unavailable?: "no_matching_documents" | "generation_disabled" | "generation_unavailable";
+  /** Why there is no answer, or — for generation_truncated — why the answer on
+   *  screen stops where it does. Present alongside `answer` in that one case:
+   *  the prose already delivered is real and stays, and the note says it is
+   *  incomplete rather than pretending the whole thing failed. */
+  answer_unavailable?:
+    | "no_matching_documents"
+    | "generation_disabled"
+    | "generation_unavailable"
+    | "generation_truncated";
 }
 
 /** A file the server judges similar to another, with its similarity score. */
@@ -348,6 +356,90 @@ export interface Device {
   current: boolean;
   platform?: string;
   app_version?: string;
+}
+
+/** Reads a Server-Sent Events response, calling back per event.
+ *
+ *  fetch rather than EventSource, for two reasons that both matter here:
+ *  EventSource cannot issue a POST, and the question is a POST body; and it
+ *  reconnects on its own, which for a generation endpoint means silently
+ *  spending a GPU again on a request the user never repeated.
+ *
+ *  Errors before the stream opens are ordinary ApiErrors, so a caller handles a
+ *  503 from a server with no embedder exactly as it does for every other call.
+ */
+export async function streamSSE(
+  path: string,
+  body: unknown,
+  onEvent: (event: string, data: Record<string, unknown>) => void,
+  signal?: AbortSignal,
+): Promise<void> {
+  const res = await fetch(path, {
+    method: "POST",
+    credentials: "same-origin",
+    headers: { "Content-Type": "application/json", Accept: "text/event-stream" },
+    body: JSON.stringify(body),
+    signal,
+  });
+
+  if (!res.ok) {
+    const text = await res.text();
+    let parsed: ApiErrorBody | undefined;
+    try {
+      parsed = JSON.parse(text) as ApiErrorBody;
+    } catch {
+      throw new ApiError(res.status, "unexpected_response", text.slice(0, 200));
+    }
+    throw new ApiError(
+      res.status,
+      parsed?.error?.code ?? "unknown",
+      parsed?.error?.message ?? `request failed (${res.status})`,
+      parsed?.error?.request_id,
+    );
+  }
+  if (!res.body) throw new ApiError(502, "unexpected_response", "the response carried no stream");
+
+  const reader = res.body.getReader();
+  const decoder = new TextDecoder();
+  // Events are separated by a blank line and can be split across reads, so the
+  // tail of a chunk is carried forward rather than parsed as a whole event.
+  let buffer = "";
+
+  for (;;) {
+    const { value, done } = await reader.read();
+    if (done) break;
+    buffer += decoder.decode(value, { stream: true });
+
+    let split = buffer.indexOf("\n\n");
+    while (split !== -1) {
+      dispatchSSE(buffer.slice(0, split), onEvent);
+      buffer = buffer.slice(split + 2);
+      split = buffer.indexOf("\n\n");
+    }
+  }
+  // A final event with no trailing blank line still counts: the server always
+  // sends one, but a connection closed after the last byte should not lose it.
+  if (buffer.trim()) dispatchSSE(buffer, onEvent);
+}
+
+function dispatchSSE(
+  block: string,
+  onEvent: (event: string, data: Record<string, unknown>) => void,
+): void {
+  let event = "message";
+  const data: string[] = [];
+  for (const line of block.split("\n")) {
+    if (line.startsWith("event:")) event = line.slice(6).trim();
+    else if (line.startsWith("data:")) data.push(line.slice(5).trim());
+  }
+  if (data.length === 0) return;
+  try {
+    onEvent(event, JSON.parse(data.join("\n")) as Record<string, unknown>);
+  } catch {
+    // A malformed event is dropped rather than killing the stream: the rest of
+    // the answer is still worth showing, and the `done` event is what tells the
+    // caller how it ended.
+  }
 }
 
 async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
@@ -754,6 +846,43 @@ export const api = {
         limit: opts.limit,
       }),
     }),
+
+  // The same question, answered as it is written.
+  //
+  // The citations arrive first and complete, before a single word of prose —
+  // that ordering is the server's contract and the reason streaming is
+  // acceptable here at all: the reader always holds every source before there is
+  // an answer to check against them. onCitations therefore fires once, and
+  // always, including on the paths where no answer follows.
+  chatStream: (
+    question: string,
+    handlers: {
+      onCitations: (citations: Citation[]) => void;
+      onDelta: (text: string) => void;
+      onDone: (info: { model?: string; answerUnavailable?: string }) => void;
+    },
+    opts: { under?: string; includeShared?: boolean; limit?: number; signal?: AbortSignal } = {},
+  ) =>
+    streamSSE(
+      "/api/v1/chat",
+      {
+        question,
+        scope: { under: opts.under ?? "" },
+        include_shared: opts.includeShared ?? false,
+        limit: opts.limit,
+        stream: true,
+      },
+      (event, data) => {
+        if (event === "citations") handlers.onCitations((data.citations as Citation[]) ?? []);
+        if (event === "delta") handlers.onDelta((data.text as string) ?? "");
+        if (event === "done")
+          handlers.onDone({
+            model: data.model as string | undefined,
+            answerUnavailable: data.answer_unavailable as string | undefined,
+          });
+      },
+      opts.signal,
+    ),
 
   // --- versions -------------------------------------------------------------
 

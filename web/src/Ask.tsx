@@ -16,6 +16,8 @@ const UNAVAILABLE: Record<string, string> = {
     "A written answer isn't enabled on this server — here are the most relevant documents.",
   generation_unavailable:
     "The answer generator is unavailable right now — here are the most relevant documents.",
+  generation_truncated:
+    "The answer stopped part way through — the generator failed mid-sentence. What's above is what it managed; the citations below are complete.",
 };
 
 export function Ask() {
@@ -32,8 +34,33 @@ export function Ask() {
     setLoading(true);
     setError(null);
     setRes(null);
+
     try {
-      setRes(await api.chat(question, { limit: LIMIT }));
+      // The citations land first and complete — the server writes them before a
+      // single word of prose — so the sources are on screen while the answer is
+      // still being written, and the reader is never looking at an unattributed
+      // paragraph. Each delta is appended to the answer already rendered.
+      await api.chatStream(
+        question,
+        {
+          onCitations: (citations) => setRes({ question, citations }),
+          onDelta: (text) =>
+            setRes((cur) =>
+              cur ? { ...cur, answer: (cur.answer ?? "") + text } : { question, citations: [], answer: text },
+            ),
+          onDone: (info) =>
+            setRes((cur) =>
+              cur
+                ? {
+                    ...cur,
+                    model: info.model,
+                    answer_unavailable: info.answerUnavailable as ChatResponse["answer_unavailable"],
+                  }
+                : cur,
+            ),
+        },
+        { limit: LIMIT },
+      );
     } catch (e) {
       setError(describe(e));
     } finally {
