@@ -6,7 +6,7 @@ answers) and ❌ the **detection** sidecar (`POST /detect`, for the `faces` job)
 Go client and a config variable each and **no reference image in `deploy/`** — only
 the embedder does. `POST /chat` therefore returns citations without prose, and
 `--kind=faces` does nothing, until an operator stands up a service at those URLs.
-See [deferred-work.md](deferred-work.md).
+See [status.md](status.md#what-is-not-done--the-whole-open-list).
 
 **Read this to turn on, monitor, or fix the Phase 4 intelligence layer.** All of
 it is optional and additive: with none of it running, every file endpoint works

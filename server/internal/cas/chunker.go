@@ -24,7 +24,7 @@ import (
 	"github.com/zeebo/blake3"
 )
 
-// Chunking parameters. See docs/phase-2-design.md §3 for the reasoning; the
+// Chunking parameters. See docs/status.md § Phase 2 for the reasoning; the
 // short version is that below MinSize a chunk's database row costs more than
 // the chunk saves, and above MaxSize a single edit invalidates too much.
 const (

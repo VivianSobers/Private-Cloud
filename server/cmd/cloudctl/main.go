@@ -512,7 +512,7 @@ func gcCommand(ctx context.Context, database *db.DB, log *slog.Logger) error {
 // migrateCommand drains Phase 1 whole-file blobs into content-addressed chunks.
 //
 // Operator-driven on purpose: a storage rewrite is exactly when a fresh backup
-// should exist first (see docs/phase-2-design.md §0), so this is a command the
+// should exist first (see docs/status.md § Phase 2), so this is a command the
 // admin runs deliberately rather than something the server does on its own.
 // One bounded batch by default; --all repeats until the backlog is drained.
 func migrateCommand(ctx context.Context, database *db.DB, log *slog.Logger, args []string) error {

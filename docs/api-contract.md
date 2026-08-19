@@ -1,7 +1,7 @@
 # API contract — the seam between the two tracks
 
 This is the **one file both developers edit** (see
-[roadmap-split.md](roadmap-split.md)). It is the source of truth for the
+[the ownership split in status.md](status.md#the-seam-who-owns-what)). It is the source of truth for the
 `/api/v1` surface the clients code against. Rules:
 
 - **Additive only.** New endpoints and fields are fine; changing or removing the
@@ -389,7 +389,7 @@ listings, still unexercised.*
 > would make `GET /shared` incoherent, handing out ids the client is then
 > refused permission to fetch. An editor's writes are owned by, and charged to,
 > the node's owner; an editor cannot move a shared file into their own tree. See
-> [phase-7-server-design.md](phase-7-server-design.md).
+> [status.md § Phase 7](status.md#phase-7--multi-user-sharing-rbac-admin-quotas).
 
 > **The one phase with a compatibility hazard.** Everything today is
 > owner-scoped: every query filters `owner_id = $me`, and search and tags are
@@ -498,7 +498,7 @@ detection sidecars have ❌ no reference image in `deploy/` — so on a stock in
 > `answer_unavailable` code rather than failing. `GET /nodes/{id}/faces` was
 > added alongside the reassign route, since a "who is in this picture" overlay
 > needs the face ids before it can reassign one. See
-> [phase-8-server-design.md](phase-8-server-design.md).
+> [status.md § Phase 8](status.md#phase-8--advanced-intelligence).
 
 Every endpoint here depends on a GPU sidecar and must degrade the way semantic
 search already does: **`503` with a stable code, never a 500 and never a hang.**
@@ -588,7 +588,7 @@ tier it would report on is ❌ not built, deliberately, and the endpoint says
 > capacity is likewise not reported: the database knows what the application
 > stored (`accounted`), the collector knows what the disks hold, and conflating
 > them gives a number wrong in both readings. See
-> [phase-9-design.md](phase-9-design.md).
+> [status.md § Phase 9](status.md#phase-9--scale--resilience).
 
 Mostly ops, so the API surface is small: it exists to let the admin console show
 what the runbooks already describe.

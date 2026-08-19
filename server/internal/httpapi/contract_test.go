@@ -19,8 +19,9 @@ import (
 
 // The contract test.
 //
-// docs/roadmap-split.md calls contract tests "the shared safety net … the only
-// place both tracks' assumptions meet, and it fails loudly when they drift."
+// docs/status.md ("The seam: who owns what") calls contract tests "the shared
+// safety net … the only place both tracks' assumptions meet, and it fails
+// loudly when they drift."
 // There was no such test, and the drift it was supposed to catch happened: the
 // web client shipped whole views against Phase 5, 7 and 8 endpoints that do not
 // exist, and nothing failed.

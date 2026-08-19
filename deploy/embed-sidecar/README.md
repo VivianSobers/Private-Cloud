@@ -9,7 +9,7 @@ here** — deliberately, because a generator is a multi-gigabyte decision about
 quality, latency and VRAM, and a detector is a decision about which biometric model
 an operator is willing to run. Both degrade cleanly when absent: `/chat` returns
 citations without prose, and the `faces` job does nothing. See
-[../../docs/deferred-work.md](../../docs/deferred-work.md).
+[../../docs/status.md](../../docs/status.md#what-is-not-done--the-whole-open-list).
 
 The model tier for semantic search. A small FastAPI service that loads a
 sentence-embedding model and answers `/embed`. It runs **separately** from the Go

@@ -7,7 +7,7 @@ thirteen) or
 one of three deliberate omissions: the ❌ object-storage cold tier, ❌ streaming
 chat answers, and ❌ image-embedding similarity for photos. See
 [../docs/status.md](../docs/status.md) for the slice-by-slice ledger and
-[../docs/deferred-work.md](../docs/deferred-work.md) for the reasons.
+[../docs/status.md](../docs/status.md#what-is-not-done--the-whole-open-list) for the reasons.
 
 Configuration, database pool, embedded migrations, health probes, Prometheus
 metrics, structured logging, graceful shutdown, passkey auth, the file tree
@@ -24,7 +24,7 @@ semantic search, auto-tagging, plus OIDC single sign-on and a hardening pass
 thumbnails and previews into a content-addressed store; `?variant=` on the content
 route serves them; `/media/timeline` orders a gallery by capture time; and
 `/albums` provides hand-ordered collections that never move a file. See
-[../docs/phase-5-design.md](../docs/phase-5-design.md).
+[../docs/status.md](../docs/status.md).
 
 ✅ **Phase 6 (devices)** adds a device name and five `/devices` routes, where a
 device *is* a device-kind session so revoking one is revoking the token. ✅ **Phase
