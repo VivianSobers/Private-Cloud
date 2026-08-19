@@ -742,3 +742,46 @@ dialog::backdrop {
   align-items: center;
   gap: 0.5rem;
 }
+
+/* The map. No tiles, so the whole visual is the graticule, the pins and the
+   background — which means these three rules are the map's entire appearance. */
+.photo-map {
+  width: 100%;
+  aspect-ratio: 3 / 2;
+  background: var(--bg-subtle);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  touch-action: none; /* the drag is ours; without this a touch pans the page */
+  cursor: grab;
+}
+.photo-map:active {
+  cursor: grabbing;
+}
+.photo-map .graticule {
+  stroke: var(--border);
+  stroke-width: 0.15%;
+  vector-effect: non-scaling-stroke;
+}
+.photo-map .graticule-label {
+  fill: var(--fg-muted);
+  font-size: 2.2%;
+  paint-order: stroke;
+}
+.photo-map .map-pin circle {
+  fill: var(--accent);
+  fill-opacity: 0.75;
+  stroke: var(--bg);
+  stroke-width: 0.2%;
+  vector-effect: non-scaling-stroke;
+  cursor: pointer;
+}
+.photo-map .map-pin.is-selected circle {
+  fill-opacity: 1;
+  stroke: var(--fg);
+}
+.photo-map .map-pin-count {
+  fill: var(--bg);
+  font-size: 3%;
+  text-anchor: middle;
+  pointer-events: none;
+}

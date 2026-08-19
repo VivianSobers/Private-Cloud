@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState, type PointerEvent } from "react";
 
 import {
   api,
@@ -10,6 +10,18 @@ import {
   type Person,
   type SimilarHit,
 } from "./api";
+import {
+  clusterPlaced,
+  fitView,
+  formatLat,
+  formatLon,
+  gridStep,
+  normaliseLon,
+  project,
+  unprojectLat,
+  type Cluster,
+  type Placed,
+} from "./geo";
 import { isPinned, pinFile, supportsPinning, unpinFile } from "./pin";
 
 // The Photos view: a timeline of media sorted by when the shutter fired, and
@@ -17,7 +29,7 @@ import { isPinned, pinFile, supportsPinning, unpinFile } from "./pin";
 // where the server has not implemented an endpoint yet, each panel degrades to a
 // clear empty/unavailable state rather than a broken screen.
 
-type Tab = "timeline" | "albums";
+type Tab = "timeline" | "map" | "albums";
 
 export function Photos() {
   const [tab, setTab] = useState<Tab>("timeline");
@@ -38,6 +50,16 @@ export function Photos() {
         </button>
         <button
           className="link"
+          aria-current={tab === "map" && !openAlbum}
+          onClick={() => {
+            setTab("map");
+            setOpenAlbum(null);
+          }}
+        >
+          Map
+        </button>
+        <button
+          className="link"
           aria-current={tab === "albums" || !!openAlbum}
           onClick={() => {
             setTab("albums");
@@ -52,6 +74,8 @@ export function Photos() {
         <AlbumDetail album={openAlbum} onBack={() => setOpenAlbum(null)} />
       ) : tab === "timeline" ? (
         <Timeline />
+      ) : tab === "map" ? (
+        <PhotoMap />
       ) : (
         <Albums onOpen={setOpenAlbum} />
       )}
@@ -63,6 +87,246 @@ export function Photos() {
  *  time — the fallback the contract says the client must make visible itself. */
 function takenAt(n: Node): string {
   return n.media?.taken_at ?? n.updated_at;
+}
+
+// --- the map ---------------------------------------------------------------
+//
+// The server has served `gps` on every geotagged photo, exact and unrounded,
+// since Phase 5 — nothing rendered it. What held this up was not the drawing:
+// it was that a map usually means a tile provider, and an offline-capable app
+// whose users hold their own data cannot quietly send the coordinates of every
+// photo they own to a stranger's server, one HTTP request per tile, every time
+// somebody pans.
+//
+// So this map has no tiles and no map library. It draws a graticule and plots
+// the photos on it, projected the way every web map projects, and it works with
+// the network off. That is less pretty than a street map and it is the whole
+// point: nothing here phones anywhere. A single "open in OpenStreetMap" link per
+// place is offered inside the strip, because one deliberate click that the user
+// makes is a different thing from a hundred the page makes for them.
+//
+// Web Mercator, so shapes and bearings look the way people expect, and clamped
+// at the poles where the projection runs to infinity.
+function PhotoMap() {
+  const [items, setItems] = useState<Node[] | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const [truncated, setTruncated] = useState(false);
+  const [lightbox, setLightbox] = useState<Node | null>(null);
+  const [selected, setSelected] = useState<Cluster | null>(null);
+
+  // The view: a centre in projected units and a half-span. Fitted to the photos
+  // once they arrive, then moved by the user.
+  const [view, setView] = useState({ cx: 0, cy: 0, span: 180 });
+  const svgRef = useRef<SVGSVGElement>(null);
+  const dragging = useRef<{ x: number; y: number } | null>(null);
+
+  useEffect(() => {
+    let live = true;
+    // The timeline is the only listing that carries media metadata, so it is
+    // also the source for the map. Paged rather than asked for everything at
+    // once: a library can be large, and a map that has to load all of it before
+    // drawing anything shows nothing for a long time.
+    void (async () => {
+      const collected: Node[] = [];
+      let offset = 0;
+      let more = true;
+      try {
+        for (let page = 0; page < 10 && more; page++) {
+          const res = await api.timeline({ limit: 200, offset });
+          if (!live) return;
+          collected.push(...res.items.filter((n) => n.media?.gps));
+          more = res.has_more;
+          offset += res.items.length;
+          if (res.items.length === 0) break;
+        }
+        if (!live) return;
+        setTruncated(more);
+        setItems(collected);
+      } catch (e) {
+        if (live) setError(describe(e));
+      }
+    })();
+    return () => {
+      live = false;
+    };
+  }, []);
+
+  const placed: Placed[] = (items ?? []).flatMap((node) => {
+    const gps = node.media?.gps;
+    if (!gps) return [];
+    return [{ node, lat: gps.lat, lon: gps.lon, ...project(gps.lat, gps.lon) }];
+  });
+
+  // Fit the view to the photos the first time they land, and never again: after
+  // that the view is the user's, and refitting would undo their pan.
+  const fitted = useRef(false);
+  useEffect(() => {
+    if (fitted.current || placed.length === 0) return;
+    fitted.current = true;
+    setView(fitView(placed));
+  }, [placed]);
+
+  const zoom = useCallback((factor: number) => {
+    setView((v) => ({ ...v, span: Math.min(180, Math.max(0.002, v.span * factor)) }));
+  }, []);
+
+  // Panning converts pixels to view units through the rendered width, so a drag
+  // moves the map by the distance under the pointer at any zoom.
+  const onPointerDown = (e: PointerEvent<SVGSVGElement>) => {
+    dragging.current = { x: e.clientX, y: e.clientY };
+    e.currentTarget.setPointerCapture(e.pointerId);
+  };
+
+  const onPointerMove = (e: PointerEvent<SVGSVGElement>) => {
+    const from = dragging.current;
+    const box = svgRef.current?.getBoundingClientRect();
+    if (!from || !box || box.width === 0) return;
+    const unitsPerPixel = (view.span * 2) / box.width;
+    setView((v) => ({
+      ...v,
+      cx: v.cx - (e.clientX - from.x) * unitsPerPixel,
+      cy: v.cy - (e.clientY - from.y) * unitsPerPixel,
+    }));
+    dragging.current = { x: e.clientX, y: e.clientY };
+  };
+
+  const onPointerUp = () => {
+    dragging.current = null;
+  };
+
+  if (error) return <Unavailable what="the map" detail={error} />;
+  if (!items) return <p className="muted">Loading photos…</p>;
+  if (placed.length === 0)
+    return (
+      <p className="muted">
+        No photos with a location yet. Coordinates come from the EXIF a camera
+        writes, so a photo that was taken with location off, or stripped by
+        another app before upload, has none to show.
+      </p>
+    );
+
+  const step = gridStep(view.span * 2);
+  const left = view.cx - view.span;
+  const right = view.cx + view.span;
+  const top = view.cy - view.span;
+  const bottom = view.cy + view.span;
+
+  const verticals: number[] = [];
+  for (let x = Math.ceil(left / step) * step; x <= right; x += step) verticals.push(x);
+  const horizontals: number[] = [];
+  for (let y = Math.ceil(top / step) * step; y <= bottom; y += step) horizontals.push(y);
+
+  // Cluster at roughly 26 screen pixels, expressed in view units so the grouping
+  // loosens as you zoom out and separates as you zoom in.
+  const clusters = clusterPlaced(placed, (view.span * 2 * 26) / 600);
+
+  return (
+    <>
+      <div className="row small photos-toolbar">
+        <span className="muted">
+          {placed.length} photo{placed.length === 1 ? "" : "s"} with a location
+          {truncated && " (most recent 2000)"}
+        </span>
+        <span style={{ flex: 1 }} />
+        <button className="link" onClick={() => zoom(0.6)} title="Zoom in">
+          +
+        </button>
+        <button className="link" onClick={() => zoom(1.6)} title="Zoom out">
+          −
+        </button>
+        <button
+          className="link"
+          onClick={() => {
+            fitted.current = false;
+            setView({ cx: 0, cy: 0, span: 180 });
+            setSelected(null);
+          }}
+          title="Show everything again"
+        >
+          Reset
+        </button>
+      </div>
+
+      <svg
+        ref={svgRef}
+        className="photo-map"
+        viewBox={`${left} ${top} ${view.span * 2} ${view.span * 2}`}
+        preserveAspectRatio="xMidYMid meet"
+        role="img"
+        aria-label={`Map of ${placed.length} geotagged photos`}
+        onPointerDown={onPointerDown}
+        onPointerMove={onPointerMove}
+        onPointerUp={onPointerUp}
+        onPointerCancel={onPointerUp}
+      >
+        {verticals.map((x) => (
+          <g key={`v${x}`}>
+            <line x1={x} y1={top} x2={x} y2={bottom} className="graticule" />
+            <text x={x} y={top + view.span * 0.06} className="graticule-label">
+              {formatLon(normaliseLon(x))}
+            </text>
+          </g>
+        ))}
+        {horizontals.map((y) => (
+          <g key={`h${y}`}>
+            <line x1={left} y1={y} x2={right} y2={y} className="graticule" />
+            <text x={left + view.span * 0.02} y={y - view.span * 0.01} className="graticule-label">
+              {formatLat(unprojectLat(y))}
+            </text>
+          </g>
+        ))}
+
+        {clusters.map((c) => (
+          <g
+            key={`${c.x},${c.y}`}
+            className={`map-pin${selected === c ? " is-selected" : ""}`}
+            onClick={() => setSelected(c)}
+          >
+            <circle cx={c.x} cy={c.y} r={view.span * 0.035} />
+            {c.items.length > 1 && (
+              <text x={c.x} y={c.y + view.span * 0.014} className="map-pin-count">
+                {c.items.length}
+              </text>
+            )}
+          </g>
+        ))}
+      </svg>
+
+      <p className="muted small">
+        Drag to pan. No map tiles are fetched from anywhere — this is drawn from
+        your photos' own coordinates, so it works with the network off.
+      </p>
+
+      {selected && (
+        <section className="stack">
+          <div className="row small">
+            <strong>
+              {formatLat(selected.lat)} {formatLon(selected.lon)}
+            </strong>
+            <span className="muted">
+              {selected.items.length} photo{selected.items.length === 1 ? "" : "s"}
+            </span>
+            <span style={{ flex: 1 }} />
+            {/* One deliberate click, not a request per tile. */}
+            <a
+              className="link"
+              href={`https://www.openstreetmap.org/?mlat=${selected.lat}&mlon=${selected.lon}#map=14/${selected.lat}/${selected.lon}`}
+              target="_blank"
+              rel="noreferrer noopener"
+            >
+              Open in OpenStreetMap ↗
+            </a>
+            <button className="link" onClick={() => setSelected(null)}>
+              Close
+            </button>
+          </div>
+          <PhotoGrid nodes={selected.items.map((i) => i.node)} onOpen={setLightbox} />
+        </section>
+      )}
+
+      {lightbox && <Lightbox node={lightbox} onClose={() => setLightbox(null)} />}
+    </>
+  );
 }
 
 function Timeline() {
