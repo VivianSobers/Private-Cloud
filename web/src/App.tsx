@@ -10,7 +10,9 @@ import { People } from "./People";
 import { Photos } from "./Photos";
 import { Settings } from "./Settings";
 import { SharedWithMe } from "./SharedWithMe";
+import { ShareTarget } from "./ShareTarget";
 import { RecoveryCodes } from "./RecoveryCodes";
+import { shareArrived } from "./share";
 
 type View = "files" | "photos" | "people" | "ask" | "shared" | "offline" | "admin" | "settings";
 
@@ -26,6 +28,38 @@ export function App() {
   // than in the component that created them so navigating away cannot make them
   // vanish before they have been written down.
   const [freshCodes, setFreshCodes] = useState<string[] | null>(null);
+
+  // Arrived from the OS share sheet: the service worker parked the files and
+  // redirected here with ?share=inbox. Read once, at mount — the flag is a
+  // one-shot fact about how this page load started, not a route.
+  const [sharing, setSharing] = useState(() =>
+    typeof window !== "undefined" ? shareArrived(window.location.search) : false,
+  );
+
+  // Drop the marker so a refresh, or a later back-button, does not reopen a
+  // share that has already been dealt with.
+  const dismissShare = useCallback(() => {
+    setSharing(false);
+    if (typeof window !== "undefined") {
+      window.history.replaceState(null, "", window.location.pathname);
+    }
+  }, []);
+
+  const finishShare = useCallback(() => {
+    dismissShare();
+    setOpenFolder(undefined);
+    setView("files");
+  }, [dismissShare]);
+
+  // Navigating anywhere by hand also abandons the share screen — otherwise the
+  // nav would appear to do nothing while the share sat on top of it.
+  const go = useCallback(
+    (v: View) => {
+      dismissShare();
+      setView(v);
+    },
+    [dismissShare],
+  );
 
   const refresh = useCallback(async () => {
     try {
@@ -81,33 +115,33 @@ export function App() {
               // "Files" always means your own files, even if the last thing open
               // was a folder somebody shared with you.
               setOpenFolder(undefined);
-              setView("files");
+              go("files");
             }}
             aria-current={view === "files"}
           >
             Files
           </button>
-          <button className="link" onClick={() => setView("photos")} aria-current={view === "photos"}>
+          <button className="link" onClick={() => go("photos")} aria-current={view === "photos"}>
             Photos
           </button>
-          <button className="link" onClick={() => setView("people")} aria-current={view === "people"}>
+          <button className="link" onClick={() => go("people")} aria-current={view === "people"}>
             People
           </button>
-          <button className="link" onClick={() => setView("ask")} aria-current={view === "ask"}>
+          <button className="link" onClick={() => go("ask")} aria-current={view === "ask"}>
             Ask
           </button>
-          <button className="link" onClick={() => setView("shared")} aria-current={view === "shared"}>
+          <button className="link" onClick={() => go("shared")} aria-current={view === "shared"}>
             Shared
           </button>
-          <button className="link" onClick={() => setView("offline")} aria-current={view === "offline"}>
+          <button className="link" onClick={() => go("offline")} aria-current={view === "offline"}>
             Offline
           </button>
           {me.user.is_admin && (
-            <button className="link" onClick={() => setView("admin")} aria-current={view === "admin"}>
+            <button className="link" onClick={() => go("admin")} aria-current={view === "admin"}>
               Admin
             </button>
           )}
-          <button className="link" onClick={() => setView("settings")} aria-current={view === "settings"}>
+          <button className="link" onClick={() => go("settings")} aria-current={view === "settings"}>
             Settings
           </button>
         </nav>
@@ -145,7 +179,9 @@ export function App() {
 
       {freshCodes && <RecoveryCodes codes={freshCodes} onDismiss={() => setFreshCodes(null)} />}
 
-      {view === "files" ? (
+      {sharing ? (
+        <ShareTarget onDone={finishShare} />
+      ) : view === "files" ? (
         // The key remounts the browser when a different shared folder is opened,
         // so its initial load runs again instead of the prop being ignored by an
         // already-mounted component sitting on somebody else's folder.

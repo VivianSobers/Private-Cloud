@@ -785,3 +785,18 @@ dialog::backdrop {
   text-anchor: middle;
   pointer-events: none;
 }
+
+/* --- Share target --------------------------------------------------------- */
+/* Where files handed over by the phone's share sheet land, before they are put
+   anywhere. The destination block is set apart because choosing it is the one
+   decision this screen exists to collect. */
+.share-dest {
+  padding: 0.6rem;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--bg-subtle);
+  gap: 0.5rem;
+}
+.share-dest .tag {
+  cursor: pointer;
+}

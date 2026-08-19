@@ -12,6 +12,7 @@
 // Bumping CACHE invalidates everything on the next activate.
 const CACHE = "pc-shell-v2";
 const PIN = "pc-pinned"; // offline-pinned file bytes, managed by the page (pin.ts)
+const SHARE = "pc-share-inbox"; // files handed over by the OS share sheet (share.ts)
 const SHELL = "/index.html";
 
 self.addEventListener("install", (event) => {
@@ -24,15 +25,33 @@ self.addEventListener("activate", (event) => {
   event.waitUntil(
     caches
       .keys()
-      // Keep the current shell cache AND the pinned-files bucket; a shell version
-      // bump must never evict a user's offline files.
-      .then((keys) => Promise.all(keys.filter((k) => k !== CACHE && k !== PIN).map((k) => caches.delete(k))))
+      // Keep the current shell cache, the pinned-files bucket AND the share
+      // inbox; a shell version bump must never evict a user's offline files, nor
+      // a share that arrived seconds before an update landed.
+      .then((keys) =>
+        Promise.all(
+          keys.filter((k) => k !== CACHE && k !== PIN && k !== SHARE).map((k) => caches.delete(k)),
+        ),
+      )
       .then(() => self.clients.claim()),
   );
 });
 
 self.addEventListener("fetch", (event) => {
   const req = event.request;
+
+  // The share target. The OS share sheet POSTs here; this POST is never meant to
+  // reach the server, and would not know where to put the files if it did — the
+  // destination is a decision the user has not made yet. The files are parked in
+  // a cache and the page is opened to deal with them.
+  //
+  // The redirect is what makes the app open at all: a share target that answers
+  // with a body leaves the user staring at a response instead of at their files.
+  if (req.method === "POST" && new URL(req.url).pathname === "/share-target") {
+    event.respondWith(receiveShare(req));
+    return;
+  }
+
   if (req.method !== "GET") return;
 
   const url = new URL(req.url);
@@ -84,3 +103,41 @@ self.addEventListener("fetch", (event) => {
     );
   }
 });
+
+// receiveShare parks the shared files and sends the user into the app.
+//
+// Each file becomes a cache entry under a synthetic URL, because Cache Storage
+// keys on URLs and two shares of "photo.jpg" must not overwrite each other. The
+// real filename travels in a header instead: it can contain spaces, slashes and
+// anything else a phone allows, none of which survives being part of a key.
+//
+// It never fails the navigation. A share that cannot be stored still opens the
+// app — with an empty inbox and a page that says so — rather than showing the OS
+// share sheet an error the user cannot act on.
+async function receiveShare(req) {
+  try {
+    const form = await req.formData();
+    const files = form.getAll("files").filter((f) => f && typeof f !== "string");
+    const cache = await caches.open(SHARE);
+    const stamp = Date.now();
+
+    for (const [i, file] of files.entries()) {
+      const key = `/__share/${stamp}-${i}`;
+      await cache.put(
+        new Request(key),
+        new Response(file, {
+          headers: {
+            "Content-Type": file.type || "application/octet-stream",
+            "X-Share-Filename": encodeURIComponent(file.name || `shared-${i}`),
+          },
+        }),
+      );
+    }
+  } catch {
+    // Deliberately swallowed: see above. The user lands in the app either way.
+  }
+  // Absolute, resolved against this worker's own origin: a relative URL here is
+  // legal but has been the source of enough cross-browser surprises that being
+  // explicit costs nothing.
+  return Response.redirect(new URL("/?share=inbox", self.location.origin).toString(), 303);
+}
