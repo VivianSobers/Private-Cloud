@@ -71,6 +71,15 @@ type Server struct {
 	// data. Keyed per user, and loose enough that the debounced search box in the
 	// web client never meets it.
 	searchLimiter *rateLimiter
+
+	// The general per-user budget on the authenticated API, applied in
+	// requireAuth. Generous: it bounds a scripted flood without ever being felt
+	// by a person or by a busy sync client.
+	userLimiter *rateLimiter
+
+	// The tight per-user budget on the routes that spend GPU time on a shared
+	// sidecar. See ratelimit_user.go.
+	heavyLimiter *rateLimiter
 }
 
 // SetEmbedder enables semantic search by wiring the query embedder. Left unset
@@ -109,7 +118,16 @@ func NewServer(log *slog.Logger, database *db.DB, m *metrics.Metrics, authSvc *a
 		// typist stays well inside this, while a scripted loop against the
 		// sidecar is bounded.
 		searchLimiter: newRateLimiter(120, 30),
-		oidcFlowKey:   newFlowKey(),
+		// 1200/min, burst 600. A person browsing generates a handful of requests
+		// a second at most and a sync client's metadata traffic is a poll every
+		// few seconds, so this is invisible to both; a script hammering an
+		// endpoint is held to 20/s, which is the point.
+		userLimiter: newRateLimiter(1200, 600),
+		// 30/min, burst 15 for the sidecar-spending routes. A person asking
+		// questions of their library asks a few a minute; this bounds a loop that
+		// would otherwise occupy a GPU box on somebody else's behalf.
+		heavyLimiter: newRateLimiter(30, 15),
+		oidcFlowKey:  newFlowKey(),
 	}
 }
 

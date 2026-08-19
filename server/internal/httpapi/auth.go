@@ -81,6 +81,14 @@ func (s *Server) requireAuth(next http.HandlerFunc) http.HandlerFunc {
 			return
 		}
 
+		// Per-user rate limiting, applied here because this is the one place
+		// every authenticated route passes through and the first place there is
+		// an identity to key on. See ratelimit_user.go for the cost classes and
+		// why the data plane is exempt.
+		if !s.userAllowed(w, r, user.ID.String()) {
+			return
+		}
+
 		// Cheap freshness for the "last seen" column; not worth a write on
 		// every single request.
 		if time.Since(sess.LastSeenAt) > 5*time.Minute {
