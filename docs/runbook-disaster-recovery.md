@@ -3,8 +3,12 @@
 **Status: ✅ written; 🟠 never executed end to end on this deployment.** The
 placeholders in "What you need before you start" are the operator's to fill in, and
 until `scripts/restore-test.sh` has passed against the real pool this document is a
-plan rather than a rehearsed procedure. ❌ Automating any of it is deliberately not
-built — [status.md](status.md#what-is-not-done--the-whole-open-list).
+plan rather than a rehearsed procedure. The parts of it that can be exercised
+without an actual disaster are rehearsed monthly by `scripts/dr-drill.sh` — see
+[Is this document still true?](#is-this-document-still-true) for exactly which
+parts those are. ❌ Automating a restore *into production* is deliberately not
+built and is not planned —
+[status.md](status.md#what-is-not-done--the-whole-open-list).
 
 **The server is gone.** Fire, theft, flood, dead motherboard, or a mistake you
 can't undo. This document rebuilds the whole thing from a git repo and a backup
@@ -168,6 +172,10 @@ sudo cp deploy/systemd/*.service deploy/systemd/*.timer /etc/systemd/system/
 sudo systemctl daemon-reload
 sudo systemctl enable --now restic-backup.timer restic-check.timer
 
+# The rehearsal that keeps this document honest. host-setup.sh --timers copies
+# the unit in but does not enable it, so enable it explicitly.
+sudo systemctl enable --now privatecloud-dr-drill.timer
+
 sudo ./scripts/restore-test.sh    # prove it, don't assume it
 ```
 
@@ -182,7 +190,52 @@ sudo ./scripts/restore-test.sh    # prove it, don't assume it
 - [ ] Test alert arrives on your phone via ntfy
 - [ ] `systemctl list-timers` — `restic-backup.timer` scheduled
 - [ ] `sudo ./scripts/restore-test.sh` — passes
+- [ ] `sudo ./scripts/dr-drill.sh` — passes on the rebuilt machine
 - [ ] `sudo ss -tlnp` — everything bound to `100.x.y.z`, nothing on `0.0.0.0`
+
+---
+
+## Is this document still true?
+
+`scripts/dr-drill.sh` runs monthly from `privatecloud-dr-drill.timer` and
+rehearses the parts of this runbook that can be run without a disaster. It
+restores into a scratch directory, never over live data, refuses to start if
+that directory is anywhere near a live path, and removes it afterwards.
+
+**What a passing drill proves:**
+
+- the offsite restic repository is reachable from this machine, the password
+  here opens it, it holds snapshots, and a sample of its data still checksums
+- the newest snapshot is recent enough that rebuilding today would not bring
+  back last month's data
+- `tank/configs` and `tank/postgres` come back, with files in them
+- the `pg_dumpall` dump inside that snapshot replays into a throwaway Postgres
+  container and yields a database with tables in it
+- the deploy tree, its git remote, the secret files and the compose definition
+  that Phase D depends on are present
+- how long the restore leg took — a measured number, not the estimate below
+
+**What it does not prove, and nothing on this server should be read as proving:**
+
+- that a machine has been rebuilt. Phases A, B and D are manual and stay manual
+- that the pool passphrase and restic password exist on paper in your safe.
+  Those are the two items with no recovery path, and no script can see them
+- that point-in-time recovery works. The drill runs `pgbackrest check`, which
+  proves WAL archiving works end to end and the repository is reachable. It
+  restores nothing
+- by default, that file *content* restores, because restoring every byte needs
+  as much scratch space as the pool holds. `restic check` re-reads a sample of
+  the repository instead, and `DR_INCLUDE_BLOBS=true` covers the rest wherever
+  there is room for it
+
+The outcome is exported as `privatecloud_dr_drill_*` and alerted on. The alert
+that matters is `DrDrillTooOld`, because a rehearsal that quietly stops running
+looks exactly like one that keeps passing.
+
+```bash
+sudo ./scripts/dr-drill.sh            # run it now
+sudo ./scripts/dr-drill.sh --status   # when did it last pass?
+```
 
 ---
 
@@ -196,6 +249,12 @@ sudo ./scripts/restore-test.sh    # prove it, don't assume it
 | D — stack | 30 min | yes, with C |
 | E — protection | 20 min | after C+D |
 | **Total** | **4–8 h realistic** | assumes hardware in hand |
+
+Row C is the only one measured rather than estimated:
+`privatecloud_dr_drill_restore_seconds` is how long the last rehearsal actually
+spent restoring, and `DrDrillRestoreSlowerThanRunbook` fires when it outgrows
+the range above. The other rows are still estimates, and they are estimates for
+work no drill performs.
 
 Add days, not hours, if you're waiting on replacement disks to ship. Consider
 keeping a cold spare drive on a shelf — it converts a week of downtime into an

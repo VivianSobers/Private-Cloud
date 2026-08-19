@@ -1,0 +1,18 @@
+[Unit]
+Description=Monthly disaster-recovery drill
+Documentation=file:///opt/private-cloud/docs/runbook-disaster-recovery.md
+
+[Timer]
+# The 15th, because the restore drill runs on the 1st and both of them read the
+# whole offsite repository. Two heavy readers on the same night is how one of
+# them ends up being turned off.
+OnCalendar=*-*-15 02:30
+RandomizedDelaySec=1h
+# Monthly, while DrDrillTooOld only complains after 45 days: one missed cycle is
+# forgiven, so a rebooting offsite target does not page anybody, and a recovery
+# path that has actually rotted still does.
+Persistent=true
+Unit=privatecloud-dr-drill.service
+
+[Install]
+WantedBy=timers.target

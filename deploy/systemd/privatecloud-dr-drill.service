@@ -1,0 +1,38 @@
+[Unit]
+Description=Disaster-recovery drill — rehearse the rebuild into a scratch location
+Documentation=file:///opt/private-cloud/docs/runbook-disaster-recovery.md
+After=network-online.target docker.service
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=/opt/private-cloud/scripts/dr-drill.sh
+
+# The rehearsal reads the whole offsite repository and restores out of it. Like
+# the restore drill it is deliberately the lowest-priority thing on the box: a
+# verification that competes with serving files is one somebody eventually
+# disables.
+Nice=15
+IOSchedulingClass=idle
+CPUSchedulingPolicy=batch
+
+# Restoring over a domestic uplink legitimately takes hours. What it must not do
+# is run forever and still be going when the next rehearsal starts.
+TimeoutStartSec=6h
+
+# The scratch tree lives under /var/tmp, so a private one means systemd removes
+# it even when the unit is killed before the script's own cleanup runs. Belt and
+# braces with the path check inside the script, which is what actually keeps the
+# restore away from live data.
+PrivateTmp=true
+
+# Modest hardening only, for the same reason as restic-backup.service: it
+# legitimately needs the network, docker.sock and zfs.
+NoNewPrivileges=true
+ProtectHome=read-only
+
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target

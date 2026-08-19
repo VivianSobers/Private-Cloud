@@ -461,6 +461,77 @@ groups:
           description: "Either the drill has never run or the textfile collector is not wired up. Install: sudo ./scripts/host-setup.sh --timers"
 
   # ==========================================================================
+  # Disaster-recovery rehearsals
+  # ==========================================================================
+  # The restore drill above proves the backups restore. scripts/dr-drill.sh
+  # rehearses the rest of docs/runbook-disaster-recovery.md into a scratch
+  # directory: reach the offsite repository and read it, restore the datasets a
+  # rebuild cannot start without, replay the database dump into a throwaway
+  # cluster, and check the deploy tree and secrets a rebuild needs.
+  #
+  # What these series therefore mean, exactly: the paper parts of the runbook
+  # were still true the last time anybody checked. They do not mean a machine has
+  # been rebuilt. Phases A, B and D of that document are manual and stay manual,
+  # and restoring into production is deliberately not automated at all.
+  #
+  # DrDrillTooOld is the one that earns the group. A rehearsal that quietly stops
+  # running looks exactly like a rehearsal that keeps passing, on every dashboard,
+  # forever.
+  - name: dr-drill
+    rules:
+      # Derived in this group and not a shared one: rules within a group evaluate
+      # in order, which is what guarantees the alert below reads an age computed
+      # this instant. See privatecloud_backup_age_seconds for the race that
+      # placing it elsewhere reintroduces.
+      - record: privatecloud_dr_drill_age_seconds
+        expr: time() - privatecloud_dr_drill_last_success_timestamp
+
+      # 45 days, while the timer runs monthly. One missed cycle is forgiven, so
+      # an offsite target that was rebooting during a rehearsal does not page
+      # anybody, and a recovery path that has actually rotted still does.
+      - alert: DrDrillTooOld
+        expr: privatecloud_dr_drill_age_seconds > 3888000
+        for: 1h
+        labels:
+          severity: critical
+        annotations:
+          summary: "No successful disaster-recovery drill in over 45 days"
+          description: "Last successful rehearsal was {{ $value | humanizeDuration }} ago, so the rebuild path in docs/runbook-disaster-recovery.md is unverified. Run: sudo ./scripts/dr-drill.sh; check: journalctl -u privatecloud-dr-drill.service"
+
+      - alert: DrDrillFailed
+        expr: privatecloud_dr_drill_last_run_success == 0
+        for: 15m
+        labels:
+          severity: warning
+        annotations:
+          summary: "The last disaster-recovery drill failed"
+          description: "Some part of the documented rebuild is no longer true. privatecloud_dr_drill_stage_success names the stage: offsite, restore, postgres or rebuild. See /var/log/private-cloud/dr-drill-*.log and docs/runbook-disaster-recovery.md"
+
+      # Never run at all. Without absent() a server where the drill was never
+      # enabled is indistinguishable from one where it passes every month: no
+      # series, no alert, no signal.
+      - alert: DrDrillMetricsMissing
+        expr: absent(privatecloud_dr_drill_last_success_timestamp)
+        for: 6h
+        labels:
+          severity: warning
+        annotations:
+          summary: "No disaster-recovery drill has ever reported"
+          description: "Either the drill has never run or the textfile collector is not wired up. Install the units from deploy/systemd and run: sudo systemctl enable --now privatecloud-dr-drill.timer"
+
+      # The runbook's phase C claims 1-6 hours. This is the rule that makes that
+      # number an observation instead of an assertion, and it fires when the
+      # claim stops holding rather than when somebody discovers it mid-rebuild.
+      - alert: DrDrillRestoreSlowerThanRunbook
+        expr: privatecloud_dr_drill_restore_seconds > 21600
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "The measured DR restore leg now takes over 6 hours"
+          description: "The last rehearsal spent {{ $value | humanizeDuration }} restoring, against the 1-6h phase C estimate in docs/runbook-disaster-recovery.md. Either the data has outgrown the link or the offsite target has slowed down; correct the timeline in the runbook rather than finding out during a rebuild."
+
+  # ==========================================================================
   # Recording rules that nothing in this file alerts on live beside the
   # dashboards that read them. A derived series consumed by an alert belongs in
   # the alert's own group instead — see privatecloud_backup_age_seconds in the

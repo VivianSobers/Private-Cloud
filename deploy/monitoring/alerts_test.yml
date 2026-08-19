@@ -258,3 +258,86 @@ tests:
             exp_annotations:
               summary: "pgBackRest has never reported a backup"
               description: "Point-in-time recovery is not running; the only recovery point is the nightly dump, with a 24h RPO. Set up: sudo ./scripts/pgbackrest.sh setup"
+
+  # ---- disaster-recovery drills -------------------------------------------
+  # The 45-day threshold is reached here by starting the last-success timestamp
+  # 45 days BEFORE the epoch instead of simulating 45 days of evaluations.
+  # promtool measures time() from epoch 0, so a last success at -3888000 is
+  # already exactly 45 days stale at t=0, and `for: 1h` can then be exercised in
+  # two simulated hours rather than 65,000 evaluations of every rule in this
+  # file. The restore drill's 92-day equivalent needed a second file with an
+  # hourly interval for want of this trick; it asserts the same thing either way.
+  - name: dr drill age derives and DrDrillTooOld fires past 45 days
+    interval: 1m
+    input_series:
+      - series: 'privatecloud_dr_drill_last_success_timestamp'
+        values: '-3888000x120'     # last pass 45d before t=0; age grows from there
+    promql_expr_test:
+      - expr: privatecloud_dr_drill_age_seconds
+        eval_time: 90m
+        exp_samples:
+          - labels: 'privatecloud_dr_drill_age_seconds'
+            value: 3893400         # 45d + 90m
+    alert_rule_test:
+      # Over the threshold from the first minute, but `for: 1h` is not satisfied
+      # yet: one late rehearsal must not page before the hour is up.
+      - alertname: DrDrillTooOld
+        eval_time: 30m
+        exp_alerts: []
+      - alertname: DrDrillTooOld
+        eval_time: 90m
+        exp_alerts:
+          - exp_labels: { severity: critical }
+            exp_annotations:
+              summary: "No successful disaster-recovery drill in over 45 days"
+              description: "Last successful rehearsal was 45d 1h 30m 0s ago, so the rebuild path in docs/runbook-disaster-recovery.md is unverified. Run: sudo ./scripts/dr-drill.sh; check: journalctl -u privatecloud-dr-drill.service"
+
+  - name: DrDrillFailed fires when the last rehearsal did not pass
+    interval: 1m
+    input_series:
+      - series: 'privatecloud_dr_drill_last_run_success'
+        values: '1x30 0x60'        # passing, then failing
+    alert_rule_test:
+      - alertname: DrDrillFailed
+        eval_time: 20m             # still passing
+        exp_alerts: []
+      - alertname: DrDrillFailed
+        eval_time: 50m             # failed at 30m, held past `for: 15m`
+        exp_alerts:
+          - exp_labels: { severity: warning }
+            exp_annotations:
+              summary: "The last disaster-recovery drill failed"
+              description: "Some part of the documented rebuild is no longer true. privatecloud_dr_drill_stage_success names the stage: offsite, restore, postgres or rebuild. See /var/log/private-cloud/dr-drill-*.log and docs/runbook-disaster-recovery.md"
+
+  # The failure mode that matters most and that a pass/fail alert cannot see: a
+  # machine where the DR drill was never enabled has no series at all, so nothing
+  # fires, and every dashboard looks exactly like one where it passes monthly.
+  - name: DrDrillMetricsMissing fires when no rehearsal has ever reported
+    interval: 1m
+    input_series:
+      - series: 'up{job="node"}'   # unrelated series so the database is not empty
+        values: '1x600'
+    alert_rule_test:
+      - alertname: DrDrillMetricsMissing
+        eval_time: 7h
+        exp_alerts:
+          - exp_labels: { severity: warning }
+            exp_annotations:
+              summary: "No disaster-recovery drill has ever reported"
+              description: "Either the drill has never run or the textfile collector is not wired up. Install the units from deploy/systemd and run: sudo systemctl enable --now privatecloud-dr-drill.timer"
+
+  # The runbook claims 1-6 hours for phase C. This is the assertion that the
+  # claim is being measured rather than repeated.
+  - name: DrDrillRestoreSlowerThanRunbook fires when the measured leg outgrows the estimate
+    interval: 1m
+    input_series:
+      - series: 'privatecloud_dr_drill_restore_seconds'
+        values: '25200x30'         # 7h, over the 6h threshold
+    alert_rule_test:
+      - alertname: DrDrillRestoreSlowerThanRunbook
+        eval_time: 10m
+        exp_alerts:
+          - exp_labels: { severity: warning }
+            exp_annotations:
+              summary: "The measured DR restore leg now takes over 6 hours"
+              description: "The last rehearsal spent 7h 0m 0s restoring, against the 1-6h phase C estimate in docs/runbook-disaster-recovery.md. Either the data has outgrown the link or the offsite target has slowed down; correct the timeline in the runbook rather than finding out during a rebuild."
