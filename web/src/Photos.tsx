@@ -263,6 +263,43 @@ function AlbumDetail({ album, onBack }: { album: Album; onBack: () => void }) {
     [persistOrder],
   );
 
+  // Pointer-drag reordering. The tile being carried is tracked by index, and
+  // passing over another tile reorders the local list immediately, so the grid
+  // shows the result while the pointer is still down rather than jumping when it
+  // is released.
+  //
+  // The server is told once, on drop — the contract's rule is that an order is
+  // replaced wholesale rather than patched per item, and dragging across ten
+  // tiles would otherwise be ten chances to end up half-applied. The move-up and
+  // move-down buttons stay: they are the keyboard and touch path, and a grid
+  // that can only be reordered by dragging cannot be reordered by everybody.
+  const dragFrom = useRef<number | null>(null);
+
+  const dragOver = useCallback((index: number) => {
+    setItems((cur) => {
+      const from = dragFrom.current;
+      if (!cur || from === null || from === index) return cur;
+      const next = [...cur];
+      const [carried] = next.splice(from, 1);
+      if (!carried) return cur;
+      next.splice(index, 0, carried);
+      dragFrom.current = index;
+      return next;
+    });
+  }, []);
+
+  // The order to persist is read from a ref rather than from inside a state
+  // updater: an updater has to be pure, and firing the request from inside one
+  // would send it twice under React's development double-invoke.
+  const latest = useRef<Node[] | null>(null);
+  latest.current = items;
+
+  const dropped = useCallback(() => {
+    if (dragFrom.current === null) return;
+    dragFrom.current = null;
+    if (latest.current) void persistOrder(latest.current);
+  }, [persistOrder]);
+
   const remove = useCallback(
     async (n: Node) => {
       setBusy(true);
@@ -313,7 +350,31 @@ function AlbumDetail({ album, onBack }: { album: Album; onBack: () => void }) {
       ) : manage ? (
         <div className="photo-grid">
           {items.map((n, i) => (
-            <figure key={n.id} className={`managed-tile${cover === n.id ? " is-cover" : ""}`}>
+            <figure
+              key={n.id}
+              className={`managed-tile${cover === n.id ? " is-cover" : ""}`}
+              draggable
+              onDragStart={(e) => {
+                dragFrom.current = i;
+                e.dataTransfer.effectAllowed = "move";
+                // Firefox starts no drag at all without payload on the transfer.
+                e.dataTransfer.setData("text/plain", n.id);
+              }}
+              onDragOver={(e) => {
+                // Without preventDefault the element is not a drop target and
+                // the browser shows the "no drop" cursor over every tile.
+                e.preventDefault();
+                e.dataTransfer.dropEffect = "move";
+                dragOver(i);
+              }}
+              onDrop={(e) => {
+                e.preventDefault();
+                dropped();
+              }}
+              // A drag released outside the grid still ends here, so the order on
+              // screen is saved rather than silently reverting on the next load.
+              onDragEnd={dropped}
+            >
               <Thumb id={n.id} alt={n.name} />
               <figcaption className="tile-actions">
                 <button title="Move earlier" disabled={i === 0} onClick={() => move(i, -1)}>

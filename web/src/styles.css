@@ -659,6 +659,15 @@ dialog::backdrop {
   outline: 3px solid var(--accent);
   outline-offset: -3px;
 }
+/* Manage mode is the only place a tile is draggable, so the grab cursor is the
+   affordance that says so — the move-up/move-down buttons stay for keyboard and
+   touch, where there is no drag to discover. */
+.managed-tile[draggable="true"] {
+  cursor: grab;
+}
+.managed-tile[draggable="true"]:active {
+  cursor: grabbing;
+}
 .tile-actions {
   position: absolute;
   inset: auto 0 0 0;
