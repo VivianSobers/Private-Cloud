@@ -1,6 +1,7 @@
 package media
 
 import (
+	"bytes"
 	"encoding/binary"
 	"testing"
 	"time"
@@ -260,5 +261,105 @@ func TestUnknownDurationStaysAbsent(t *testing.T) {
 	}
 	if m.DurationMS != nil {
 		t.Errorf("duration = %v, want nil for the unknown-duration sentinel", m.DurationMS)
+	}
+}
+
+// The two layouts, which is the whole point of the seek path.
+//
+// "faststart" puts moov before mdat, so a prefix contains it. A recording that
+// was not written that way puts moov after the media data — the normal thing for
+// a camera, which cannot know the header's contents until it stops recording —
+// and on any file longer than the prefix, that header used to be unreachable.
+func TestMP4WithTrailingMoovIsReadThroughTheSeeker(t *testing.T) {
+	moov := box("moov", concat(mvhdV0(600, 600*30, 0), box("trak", tkhdV0(1280, 720, 90))))
+	mdat := box("mdat", make([]byte, 64<<10))
+
+	for _, tc := range []struct {
+		name string
+		file []byte
+		// prefix is what a bounded read would have captured — deliberately too
+		// short to contain a trailing moov.
+		prefixLen int
+	}{
+		{"faststart: moov before mdat", concat(ftyp(), moov, mdat), 4096},
+		{"as recorded: moov after mdat", concat(ftyp(), mdat, moov), 4096},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			prefix := tc.file
+			if len(prefix) > tc.prefixLen {
+				prefix = prefix[:tc.prefixLen]
+			}
+
+			m, err := AnalyzeSource("video/mp4", prefix, bytes.NewReader(tc.file))
+			if err != nil {
+				t.Fatalf("AnalyzeSource: %v", err)
+			}
+			if m.Width != 1280 || m.Height != 720 {
+				t.Errorf("dimensions = %dx%d, want 1280x720", m.Width, m.Height)
+			}
+			if m.DurationMS == nil || *m.DurationMS != 30_000 {
+				t.Errorf("duration = %v, want 30000ms", m.DurationMS)
+			}
+			if m.Orientation != 6 {
+				t.Errorf("orientation = %d, want 6", m.Orientation)
+			}
+		})
+	}
+}
+
+// The seeker is an addition, never a replacement: a caller that has only bytes
+// gets exactly what it got before, and a trailing moov it cannot reach is still
+// a bare record rather than an invention.
+func TestMP4TrailingMoovWithoutASeekerStaysBare(t *testing.T) {
+	moov := box("moov", concat(mvhdV0(600, 600*30, 0), box("trak", tkhdV0(1280, 720, 0))))
+	file := concat(ftyp(), box("mdat", make([]byte, 64<<10)), moov)
+
+	m, err := Analyze("video/mp4", file[:4096])
+	if err != nil {
+		t.Fatalf("should degrade, not error: %v", err)
+	}
+	if m.Source != "video" {
+		t.Errorf("source = %q, want video", m.Source)
+	}
+	if m.Width != 0 || m.DurationMS != nil {
+		t.Errorf("invented metadata from a header it never saw: %+v", m)
+	}
+}
+
+// A seeker over a file whose top-level boxes are nonsense must give up rather
+// than walk, loop or read a declared length it cannot honour.
+func TestMP4SeekOnMalformedFilesDegrades(t *testing.T) {
+	cases := map[string][]byte{
+		"box larger than the file": concat(ftyp(), []byte("\x7f\xff\xff\xffmdat")),
+		"size below the header":    concat(ftyp(), []byte("\x00\x00\x00\x01mdat")),
+		"truncated moov body":      concat(ftyp(), []byte("\x00\x00\x10\x00moov")),
+		"nothing but a truncation": []byte("\x00\x00"),
+	}
+	for name, file := range cases {
+		t.Run(name, func(t *testing.T) {
+			m, err := AnalyzeSource("video/mp4", file, bytes.NewReader(file))
+			if err != nil {
+				t.Fatalf("malformed input should degrade, not error: %v", err)
+			}
+			if m.Source != "video" {
+				t.Errorf("source = %q, want video", m.Source)
+			}
+			if m.Width != 0 {
+				t.Errorf("read dimensions out of a malformed file: %+v", m)
+			}
+		})
+	}
+}
+
+// A moov whose declared body exceeds the bound is refused rather than
+// allocated: the length comes from the file, and a 3 GB "header" is not one.
+func TestMP4SeekRefusesAnAbsurdMoov(t *testing.T) {
+	var hdr [8]byte
+	binary.BigEndian.PutUint32(hdr[:], uint32(8+maxMoovBytes+1))
+	copy(hdr[4:], "moov")
+	file := concat(ftyp(), hdr[:], make([]byte, maxMoovBytes+1))
+
+	if _, ok := parseMP4Seek(bytes.NewReader(file)); ok {
+		t.Error("a moov past the size bound was accepted")
 	}
 }

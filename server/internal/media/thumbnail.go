@@ -83,17 +83,23 @@ func VariantSpecs() []struct {
 // "smaller" copy of it would be the same pixels in a new file. Treating that as
 // unfinished would re-render every icon in the library on every pass, forever.
 //
-// Video returns nil: analyzeVideo records what a file is without a demuxer, and
-// there is no frame to render a tile from.
+// Video returns nil HERE, and that is now a statement about this function
+// rather than about video: rendering a video tile needs a decoder, so what a
+// video should have depends on whether ffmpeg is configured on the machine
+// asking. Thumbnailer.ExpectedVariants answers that; this one is also what fsck
+// consults, and fsck must not report every video in the library as incomplete
+// on a deployment that deliberately does not decode video.
 func ExpectedVariants(contentType string, width, height int) []string {
 	if !isImage(contentType) || width <= 0 || height <= 0 {
 		return nil
 	}
-	longest := width
-	if height > longest {
-		longest = height
-	}
+	return variantsForEdge(longestEdge(width, height))
+}
 
+// variantsForEdge is the size rule itself, shared with the video path so a
+// video's expectations cannot drift from an image's. A source at or below a
+// target needs no copy of it — see ErrNoVariantNeeded.
+func variantsForEdge(longest int) []string {
 	var out []string
 	for _, spec := range VariantSpecs() {
 		if longest > spec.MaxEdge {
@@ -101,6 +107,13 @@ func ExpectedVariants(contentType string, width, height int) []string {
 		}
 	}
 	return out
+}
+
+func longestEdge(width, height int) int {
+	if height > width {
+		return height
+	}
+	return width
 }
 
 // Render decodes an image once and produces the named variants from it.

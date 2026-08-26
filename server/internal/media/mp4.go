@@ -2,6 +2,7 @@ package media
 
 import (
 	"encoding/binary"
+	"io"
 	"time"
 )
 
@@ -63,7 +64,14 @@ func parseMP4(data []byte) (Metadata, bool) {
 	if !found {
 		return Metadata{}, false
 	}
+	return parseMoov(moov)
+}
 
+// parseMoov reads one `moov` body, whichever way it was located — from the
+// prefix already in memory, or from the seek walk below. Split out so both
+// paths produce identical metadata by construction rather than by two
+// implementations agreeing.
+func parseMoov(moov []byte) (Metadata, bool) {
 	m := Metadata{Orientation: 1, Source: "video"}
 	ok := false
 
@@ -103,6 +111,93 @@ func parseMP4(data []byte) (Metadata, bool) {
 	})
 
 	return m, ok
+}
+
+// maxMoovBytes bounds how much of a trailing `moov` will be read into memory.
+//
+// A moov carries the sample tables, which grow with the length of the
+// recording rather than with its resolution: an hour of 60fps video is on the
+// order of a megabyte of them. 64 MiB is far above any real file and far below
+// the point where one crafted header can take the worker's memory — the same
+// shape of bound MaxInputBytes is, applied to the one read that is allowed to
+// reach past the prefix.
+const maxMoovBytes = 64 << 20
+
+// maxTopLevelBoxes bounds how many boxes the seek walk will step through
+// looking for `moov`. A real file has a handful — ftyp, free, mdat, moov — and
+// a file with thousands is one whose header is being used to make us do
+// unbounded IO one 8-byte read at a time.
+const maxTopLevelBoxes = 256
+
+// parseMP4Seek finds `moov` in a file too large to hold in memory, by walking
+// the top-level boxes with the seeker rather than scanning bytes.
+//
+// This is the fix for the case analyzeVideo used to simply record as "a video,
+// nothing known": a recording that was not written "faststart" carries moov
+// AFTER the media data, so on any file longer than the bounded prefix the
+// header was genuinely unreachable. It is unreachable from a PREFIX, not from
+// the file — and the worker's opener hands back an io.ReadSeekCloser, because
+// the download path needs Range support anyway.
+//
+// The walk is cheap and bounded: each step reads 8 or 16 bytes of header and
+// jumps by the declared length, so finding a trailing moov in a 4 GB file costs
+// a handful of seeks rather than 4 GB of reads. mdat is never read.
+//
+// It reports ok=false for anything it cannot resolve — an unseekable source, a
+// truncated file, a moov larger than the bound — and the caller degrades to the
+// bare video record exactly as before. What it must never do is report metadata
+// it did not actually read.
+func parseMP4Seek(rs io.ReadSeeker) (Metadata, bool) {
+	size, err := rs.Seek(0, io.SeekEnd)
+	if err != nil || size < 8 {
+		return Metadata{}, false
+	}
+
+	var hdr [16]byte
+	for i, off := 0, int64(0); i < maxTopLevelBoxes && off+8 <= size; i++ {
+		if _, err := rs.Seek(off, io.SeekStart); err != nil {
+			return Metadata{}, false
+		}
+		if _, err := io.ReadFull(rs, hdr[:8]); err != nil {
+			return Metadata{}, false
+		}
+		boxSize := int64(binary.BigEndian.Uint32(hdr[:4]))
+		typ := string(hdr[4:8])
+		header := int64(8)
+
+		switch boxSize {
+		case 0:
+			// "to end of file" — the last box, so its extent is known exactly
+			// here in a way it never is from a prefix.
+			boxSize = size - off
+		case 1:
+			if _, err := io.ReadFull(rs, hdr[8:16]); err != nil {
+				return Metadata{}, false
+			}
+			boxSize = int64(binary.BigEndian.Uint64(hdr[8:16]))
+			header = 16
+		}
+		if boxSize < header || off+boxSize > size {
+			return Metadata{}, false // nonsense, or a truncated file
+		}
+
+		if typ == "moov" {
+			body := boxSize - header
+			if body <= 0 || body > maxMoovBytes {
+				return Metadata{}, false
+			}
+			buf := make([]byte, body)
+			if _, err := rs.Seek(off+header, io.SeekStart); err != nil {
+				return Metadata{}, false
+			}
+			if _, err := io.ReadFull(rs, buf); err != nil {
+				return Metadata{}, false
+			}
+			return parseMoov(buf)
+		}
+		off += boxSize
+	}
+	return Metadata{}, false
 }
 
 // forEachBox walks the boxes laid out directly in data, handing each one its

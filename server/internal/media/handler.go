@@ -70,6 +70,9 @@ type Handler struct {
 	store  VariantStore
 	blobs  BlobWriter
 	log    *slog.Logger
+	// video renders stills from video, or is nil where the deployment has not
+	// configured ffmpeg. Nil is the default and the supported state.
+	video *Thumbnailer
 }
 
 func NewHandler(opener Opener, store VariantStore, blobs BlobWriter, log *slog.Logger) *Handler {
@@ -77,6 +80,30 @@ func NewHandler(opener Opener, store VariantStore, blobs BlobWriter, log *slog.L
 		log = slog.New(slog.NewTextHandler(io.Discard, nil))
 	}
 	return &Handler{opener: opener, store: store, blobs: blobs, log: log}
+}
+
+// VideoThumbnails enables video tiles, following extract's Tagging and Chain
+// rather than growing NewHandler a fifth argument: an optional capability that
+// most deployments will not configure has no business in the signature every
+// caller and every test has to satisfy.
+//
+// An unavailable Thumbnailer is stored as nil, so "not configured" and
+// "configured but the binary was not found" collapse to one behaviour here and
+// stay distinguishable in the startup log, which is where the difference is
+// actionable.
+func (h *Handler) VideoThumbnails(t *Thumbnailer) {
+	if t.Available() {
+		h.video = t
+	}
+}
+
+// expectedVariants is what this handler, on this machine, should produce for
+// this content — images always, videos only where a decoder is configured.
+func (h *Handler) expectedVariants(contentType string, width, height int) []string {
+	if isVideo(contentType) {
+		return h.video.ExpectedVariants(contentType, width, height)
+	}
+	return ExpectedVariants(contentType, width, height)
 }
 
 // Handle analyses one node. Like the extract handler it returns nil for every
@@ -116,7 +143,7 @@ func (h *Handler) Handle(ctx context.Context, nodeID *uuid.UUID, ownerID uuid.UU
 	if err != nil {
 		return err
 	}
-	missing := missingVariants(ExpectedVariants(fc.MIME, width, height), have)
+	missing := missingVariants(h.expectedVariants(fc.MIME, width, height), have)
 	if hasMeta && len(missing) == 0 {
 		return nil
 	}
@@ -128,7 +155,14 @@ func (h *Handler) Handle(ctx context.Context, nodeID *uuid.UUID, ownerID uuid.UU
 
 	meta := Meta{Width: width, Height: height}
 	if !hasMeta {
-		meta, err = Analyze(fc.MIME, data)
+		// The reader is passed alongside the bytes, not instead of them. Only
+		// one case consults it — an MP4 whose moov sits past the prefix that was
+		// just read — and only when the opener handed back something seekable,
+		// which the file service does because the download path needs Range
+		// support anyway. A source that is not seekable degrades exactly as it
+		// did before.
+		seeker, _ := fc.Reader.(io.ReadSeeker)
+		meta, err = AnalyzeSource(fc.MIME, data, seeker)
 		switch {
 		case errors.Is(err, ErrUnsupported), errors.Is(err, ErrDecode):
 			// A file that claims to be an image and is not, or one too large to
@@ -145,7 +179,7 @@ func (h *Handler) Handle(ctx context.Context, nodeID *uuid.UUID, ownerID uuid.UU
 		}
 		// Dimensions were unknown before the analysis, so what is expected could
 		// not be computed until now.
-		missing = missingVariants(ExpectedVariants(fc.MIME, meta.Width, meta.Height), have)
+		missing = missingVariants(h.expectedVariants(fc.MIME, meta.Width, meta.Height), have)
 	}
 
 	// Variants are best effort AFTER the metadata is stored, deliberately in
@@ -178,12 +212,27 @@ func missingVariants(want, have []string) []string {
 	return out
 }
 
+// render picks the renderer for the content: the in-process image path, or the
+// ffmpeg frame grab whose output then goes through that same image path. The
+// variants are the same shape either way, which is what lets everything below
+// this line be unaware of which produced them.
+func (h *Handler) render(ctx context.Context, contentType string, data []byte, names []string) ([]Variant, error) {
+	if isVideo(contentType) {
+		return h.video.Render(ctx, contentType, data, names...)
+	}
+	return Render(contentType, data, names...)
+}
+
 // renderVariants renders only the names asked for, so a re-run that is repairing
 // one lost thumbnail does not re-encode the preview beside it.
 func (h *Handler) renderVariants(ctx context.Context, fc FileContent, data []byte, names []string) error {
-	variants, err := Render(fc.MIME, data, names...)
-	if errors.Is(err, ErrUnsupported) || errors.Is(err, ErrDecode) {
-		return nil // video, or an image only the header of which decoded
+	variants, err := h.render(ctx, fc.MIME, data, names)
+	if errors.Is(err, ErrUnsupported) || errors.Is(err, ErrDecode) || errors.Is(err, ErrNoThumbnailer) {
+		// An image only the header of which decoded, a container ffmpeg could not
+		// demux, or video on a machine that does not render it. None improves on
+		// a retry, and none is worth failing the job that already stored the
+		// metadata a timeline needs.
+		return nil
 	}
 	if err != nil {
 		return err

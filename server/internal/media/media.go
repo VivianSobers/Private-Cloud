@@ -7,10 +7,16 @@
 // run in the co-located worker and in a test with a synthetic JPEG, and it keeps
 // the decoding — the part that runs on hostile input — in one reviewable place.
 //
-// Nothing here shells out and nothing here is a model. Image decoding is the Go
-// standard library; EXIF is a small reader in this package. A video's duration
-// needs a container parser, which is why video metadata is currently limited to
-// what a probe can determine without one.
+// Nothing here is a model, and everything a deployment gets by default runs
+// in-process: image decoding is the Go standard library, EXIF is a small reader
+// in this package, and video metadata is two container parsers — mp4.go and
+// mkv.go — reading plain header fields rather than demuxing.
+//
+// Exactly one thing shells out, and it is off unless an operator turns it on: a
+// video THUMBNAIL needs a real decoder, so video.go drives ffmpeg as a
+// subprocess when PC_FFMPEG_PATH names one, on the same terms extraction drives
+// tesseract. No cgo, a crash takes the subprocess rather than the worker, and a
+// deployment without it renders every photo thumbnail exactly as before.
 package media
 
 import (
@@ -18,6 +24,7 @@ import (
 	"errors"
 	"fmt"
 	"image"
+	"io"
 	"strings"
 	"time"
 
@@ -108,11 +115,28 @@ func isVideo(contentType string) bool {
 // pixel bound is checked against those dimensions BEFORE anything decodes, which
 // is what makes the bomb guard actually preventive.
 func Analyze(contentType string, data []byte) (Metadata, error) {
+	return AnalyzeSource(contentType, data, nil)
+}
+
+// AnalyzeSource is Analyze with the whole file still reachable.
+//
+// src is optional and is only ever consulted for a video whose header was not
+// in the prefix — see analyzeVideo. Images are unaffected: a decoder reads a
+// header from the front of the file, so there is nothing past the prefix an
+// image could want, and handing this a nil src is a perfectly ordinary call.
+//
+// It exists because "the caller has the bytes" and "the caller can reach the
+// file" are genuinely different situations and the difference changes what can
+// be reported. A test with a synthetic buffer stays a one-argument call; the
+// worker, whose opener returns an io.ReadSeekCloser because the download path
+// needs Range support anyway, passes the reader and gets the metadata a
+// non-faststart recording keeps at its end.
+func AnalyzeSource(contentType string, data []byte, src io.ReadSeeker) (Metadata, error) {
 	switch {
 	case isImage(contentType):
 		return analyzeImage(data)
 	case isVideo(contentType):
-		return analyzeVideo(data)
+		return analyzeVideo(data, src)
 	default:
 		return Metadata{}, ErrUnsupported
 	}
@@ -146,30 +170,41 @@ func analyzeImage(data []byte) (Metadata, error) {
 // analyzeVideo reads what the container header can tell us, and records the file
 // as video regardless.
 //
-// MP4 and QuickTime keep duration, dimensions, rotation and capture time in the
-// `moov` header as plain fields, ahead of any codec, so mp4.go reads them
-// without a demuxer and without the cgo dependency a THUMBNAIL would need — that
-// one still requires a video decoder, and Render still declines video.
+// Both container families keep duration, dimensions, rotation and capture time
+// as plain fields ahead of any codec — MP4 and QuickTime in the `moov` box tree,
+// Matroska and WebM in the EBML tree — so mp4.go and mkv.go read them without a
+// demuxer and without the dependency a THUMBNAIL needs. That one does need a
+// video decoder, which is why it lives behind the ffmpeg switch in video.go and
+// why Render, which only ever decodes in-process, still declines video.
 //
-// Two cases legitimately yield nothing but the bare record, and neither is an
-// error:
+// The prefix bound only bites one of the two. Matroska requires Info and Tracks
+// before the first Cluster, so a prefix that reaches the Segment header reaches
+// everything read here. MP4 has no such rule: a recording that was not written
+// "faststart" carries `moov` after the media data, and on a file longer than
+// MaxInputBytes the header is genuinely past the end of what was read. When the
+// caller can still reach the file, parseMP4Seek walks the top-level boxes to
+// find it — a handful of seeks, never a scan, and mdat is never read.
 //
-//   - A container this parser does not read. Matroska and WebM keep the same
-//     facts in an EBML tree, which is a different parser; until it exists those
-//     files behave as every video did before.
-//   - An MP4 whose `moov` sits after the media data. Writing the header last is
-//     normal for a recording, "faststart" is what moves it to the front, and
-//     this package is handed a bounded PREFIX of the file — so a long recording
-//     can genuinely have its header beyond what was read.
-//
-// Returning a bare record rather than an error is deliberate in both: it marks
-// the file as media so a timeline includes it, ordered by upload time until
-// something can tell it when the video was actually shot. `source` is what a
-// later, better analyser uses to find the rows worth redoing.
-func analyzeVideo(data []byte) (Metadata, error) {
+// What is left is a bare record: a container neither parser recognises, a
+// truncated file, or a non-faststart MP4 supplied as bytes alone. That is not
+// an error. It marks the file as media so a timeline includes it, ordered by
+// upload time until something can say when the video was actually shot, and
+// `source` is what a later, better analyser uses to find the rows worth redoing.
+func analyzeVideo(data []byte, src io.ReadSeeker) (Metadata, error) {
+	if looksLikeMatroska(data) {
+		if m, ok := parseMKV(data); ok {
+			return m, nil
+		}
+	}
 	if looksLikeMP4(data) {
 		if m, ok := parseMP4(data); ok {
 			return m, nil
+		}
+		// The prefix was an MP4 and held no reachable moov. Ask the file.
+		if src != nil {
+			if m, ok := parseMP4Seek(src); ok {
+				return m, nil
+			}
 		}
 	}
 	return Metadata{Orientation: 1, Source: "video"}, nil
