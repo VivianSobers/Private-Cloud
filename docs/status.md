@@ -59,6 +59,7 @@ deliberate deferrals.
 | Streaming chat answers | `bd59bf6` | ✅ server-side SSE, citations first; `Ask.tsx` does not consume it yet |
 | DR rehearsal on a schedule | `0fdce2d` | ✅ `scripts/dr-drill.sh`, timer, alert rules |
 | Per-user API rate limiting | `8c7f792` | ✅ the item this document had carried longest as "most overdue" — built, wired in `requireAuth`, tested |
+| pgvector / HNSW index | *this change* | ✅ optional: stock Postgres keeps the exact scan, pgvector gets SQL ranking and an HNSW index per vector width |
 | Generation + detection sidecars | `fafa1d0` | ✅ both reference images committed — Dockerfile, `app.py`, `requirements.txt` each |
 
 ---
@@ -80,8 +81,7 @@ deliberate deferrals.
 | 11 | **Billing hooks** | 9 | ❌ | Not started. There is no second tenant; quota exists and is enforced, and the thing billing would attach to is one person's disk |
 | 12 | **Encrypted pool auto-unlock** | 0 | 🟠 | **Decided, deliberately not enabled.** The unit exists and documents what each keyfile location costs; `scripts/zfs-unlock.sh` refuses a key on the root filesystem, because storing the key beside the ciphertext is not a weaker setup, it is no setup. Cost: a remote reboot needs a console |
 | 13 | **`restore-test.sh` against *your* pool** | 0 | 🟠 | Operator gate. CI proves the restore path against a loopback pool on every push; only you can prove *your* disks do |
-| 14 | **pgvector / HNSW index** | 4, 8 | ❌ | Deferred by design — the exact cosine scan is correct at this corpus size, bounded by `maxSemanticScan`, and the query layer adopts pgvector with no schema change. Face clustering now wants the same upgrade for the same reason |
-| 15 | **Last-admin guard refusal test** | 7 | 🟠 | The guard exists and its succeeding path is tested; its **refusal** path has no integration test, because the condition is a global property of the `users` table that every fixture's second admin defeats. Recorded, not papered over |
+| 14 | **Last-admin guard refusal test** | 7 | 🟠 | The guard exists and its succeeding path is tested; its **refusal** path has no integration test, because the condition is a global property of the `users` table that every fixture's second admin defeats. Recorded, not papered over |
 
 ### Served, with no client
 
@@ -104,7 +104,7 @@ Everything unticked needs `sudo` on the real server — the procedure is
 | ZFS pool + dataset layout (`scripts/zfs-setup.sh`) | ✅ |
 | Snapshot ladder (`scripts/sanoid-setup.sh`, `deploy/sanoid/`) | ✅ |
 | Tailscale-only plane, zero forwarded ports (`deploy/caddy/Caddyfile`) | ✅ |
-| Docker stack: Postgres, Caddy, Prometheus, Grafana, Alertmanager, ntfy, exporters | ✅ |
+| Docker stack: Postgres, Caddy, Prometheus, Grafana, Alertmanager, ntfy, exporters | ✅ Postgres is a derived image (`Dockerfile.postgres`) carrying pgbackrest and pgvector |
 | Nightly encrypted restic backup + freshness metric | ✅ |
 | Pool-health textfile collector + systemd timer | ✅ |
 | Alert rules with rule tests (`alerts.yml`, `alerts_test.yml`) | ✅ 39 rules, 7 of them guarding the two drills |
@@ -231,7 +231,7 @@ the clever parts are switched off. **Met.**
 | 5 | Hardening pass | ✅ |
 | — | Embedding sidecar reference implementation (`deploy/embed-sidecar`) | ✅ |
 | — | Per-user API rate limiting | ✅ `8c7f792` — cost classes in `ratelimit_user.go`, applied in `requireAuth` |
-| — | pgvector / HNSW index | ❌ open item 14 |
+| — | pgvector / HNSW index | ✅ optional accelerator: migration `00026`, `cloudctl embeddings`, HNSW per width |
 
 **Two tiers, one queue — the architecture the hardware forced.** The always-on box
 (7.2 GiB RAM, 4 cores, one spinner) owns state and never loads a model. Two RTX 4090
@@ -250,7 +250,10 @@ schema change. Jobs simply wait when the GPUs are offline.
 |---|---|
 | Job queue | Idempotent **by content, not by job** (the worker re-reads the node's current version and keys results by content hash); a unique-pending index dedups per (kind, node); `attempts` + exponential `run_after` end in a dead letter rather than a loop pinning the one spare core; a reaper returns a crashed worker's job |
 | Extraction | Shells out to tesseract — no cgo, and a crash in the C library takes the subprocess, not `pcworker`. Results content-addressed in `doc_text`, so a re-uploaded identical file is not re-OCR'd, and they feed the **existing** trigram search |
-| Semantic search | The model runs in a Python sidecar called by both worker and API — an RPC is not a resident model, so rule 1 holds. Packed LE float32 scanned exactly in Go, no pgvector on stock Postgres. Filtered by **model and dimension**, so a model retrained to a new width under the same name degrades to fewer results, never wrong ones. No sidecar → `503 semantic_unavailable`; lexical/OCR search untouched |
+| Semantic search | The model runs in a Python sidecar called by both worker and API — an RPC is not a resident model, so rule 1 holds. Packed LE float32 is the stored form and the fallback ranking. Filtered by **model and dimension**, so a model retrained to a new width under the same name degrades to fewer results, never wrong ones. No sidecar → `503 semantic_unavailable`; lexical/OCR search untouched |
+| pgvector, where it exists | Migration `00026` adds a `vec` column and creates the extension **if it can**, so stock Postgres migrates unchanged and a bare-machine restore still works — the property [runbook-restore.md](runbook-restore.md) depends on. `bytea` stays the source of truth and `vec` is a derived copy written alongside it. The read path ranks in SQL only when that copy is complete, checked against a partial index over the pending set; otherwise it falls back, so a half-backfilled table is slow rather than short of results. `cloudctl embeddings backfill` fills it and `… index` builds one **partial expression HNSW index per vector width**, refusing to build while any row is unconverted — an index over a half-filled column omits rows silently |
+| Why the indexed path is also *more* correct | The exact scan bounds itself with `maxSemanticScan` and an `ORDER BY updated_at DESC` truncation, so past that many candidates it ranks the most **recent** vectors rather than the most **similar** ones — exactly when a corpus has grown enough to need ranking. Ordering by distance has no such cliff |
+| The ACL filter did not move | It stays on the node rows, spliced from the same `Visibility` predicate. An ANN index that took its top-N from the whole corpus and filtered afterwards would hand a grantee an empty page whenever the nearest vectors belonged to someone else; `hnsw.iterative_scan` keeps the index walking until the page is filled from rows the caller may actually see |
 | Auto-tagging | Deliberately the cheap kind — MIME category plus a small curated vocabulary, no classifier. Every tag names its `source`, re-tagging replaces only auto tags, and a removed tag is not re-applied: an auto-tagger that fights the user is worse than none |
 | OIDC | Provisions its own users keyed by `(issuer, subject)` — the only identifier a provider promises stable — and never auto-links a passkey account by email, removing email-reassignment takeover. State, nonce and PKCE verifier ride in one short-lived single-use flow cookie; verification is delegated to `go-oidc`. OIDC users are non-admin; unconfigured → `404 oidc_disabled` |
 
@@ -275,7 +278,7 @@ chunk `PUT`, resumable `PATCH`, WebDAV), previously an OOM lever on a 7 GiB box;
 baseline security headers (`nosniff`, `X-Frame-Options: DENY`,
 `Referrer-Policy: no-referrer`), the download path keeping its stricter
 `Content-Security-Policy: sandbox`; tag input validation.
-**Consciously accepted:** ❌ pgvector, 🟠 one advisory in a
+**Consciously accepted:** 🟠 one advisory in a
 required-but-**uncalled** module (govulncheck confirms no code path reaches it).
 
 ---
@@ -388,7 +391,7 @@ unchanged** when the handlers landed.
 | 3 | Admin users, sessions, audit endpoints | ✅ 8 tests |
 | 4 | Editor writes: owner-charged quota, move and delete semantics | ✅ 7 tests |
 | 5 | Per-user API rate limiting | ✅ `8c7f792` — keyed by user id, so one heavy caller is slowed without touching anybody else |
-| — | Last-admin guard | 🟠 open item 15 |
+| — | Last-admin guard | 🟠 open item 14 |
 
 **In front of the API**
 
@@ -483,7 +486,9 @@ retrieve would answer every question from nothing at all.
 | A cluster is unnamed until a person names it | The system never guesses an identity. Forgetting a cluster keeps the detections (`ON DELETE SET NULL`); reassigning to nothing detaches without deleting; bounding boxes are fractions, not pixels; a photo with **no** faces is still recorded as looked-at, or every faceless photo is re-detected forever |
 
 **Risks carried:** the clustering scan is bounded (`MaxFaceScan`) but not indexed —
-O(faces × clusters), fine at thousands, wanting pgvector at a hundred thousand;
+O(faces × clusters), fine at thousands, and still on the packed-bytes path that
+document embeddings have now left — `faces.vector` and `people.centroid` are the
+obvious next users of migration `00026`'s column;
 greedy clustering is order-dependent, so it is not reproducible; citations make a
 wrong answer *checkable*, not right; and **face detection is the most
 privacy-sensitive thing this server does** — an operator enabling it should know they
@@ -546,6 +551,7 @@ them as bugs invites "fixing" them into a worse system.
 | 🟠 Quota counts logical, deduplicated bytes, not blocks on disk | It is the number a person can predict from what they uploaded; actual disk depends on compression and on content shared with other accounts, and charging someone for a chunk they share with a stranger is not explicable. Consequence: the sum of every account's usage does not equal the pool's used bytes, and should not be expected to |
 | 🟠 Clustering is greedy and order-dependent | A person photographed over years may end up in several clusters; merge and reassign are the correction path, and corrections are permanent (`faces.dismissed_at`, migration `00024`) |
 | 🟠 Rate limiting is in-process | Both limiters — the per-IP auth one and the per-user one — hold their buckets in memory. Correct for a single node. If the API is ever replicated they have to move to shared state; until then an external store adds a dependency to the auth path for a property that does not exist here |
+| 🟠 The pgvector copy doubles what a vector costs on disk | `vec` is a second copy of every embedding, so the table roughly doubles where the extension is in use. Kept rather than dropping the `bytea` because the packed form is the one that survives a restore onto a machine with no pgvector, and it is what the fallback ranks on. Storage is the cheaper thing to spend than portability |
 | 🟠 An unclassified route is limited at `costNormal` | Default-normal is deliberate: forgetting to classify a new route can only ever be too strict, never a hole. Getting it wrong shows up as a client that is being slowed and says so — a failure that reports itself |
 | ✅ Integration test isolation — fixed | They used to share whatever database `PC_TEST_DATABASE_URL` named, which worked exactly once per database: a second run met the first run's rows and the failures looked like regressions. [internal/testdb](../server/internal/testdb/testdb.go) now creates a database per test binary and drops it afterwards, and CI runs the suite twice in a row against one server as the regression test |
 

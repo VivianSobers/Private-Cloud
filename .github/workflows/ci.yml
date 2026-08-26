@@ -104,6 +104,52 @@ jobs:
           go install golang.org/x/vuln/cmd/govulncheck@latest
           govulncheck ./...
 
+  # The `server` job above runs against STOCK Postgres, which is the deployment
+  # migration 00026 has to keep working: no extension, no vec column, exact scan.
+  # This job is the other half. Without it the pgvector tests skip everywhere and
+  # the indexed ranking path ships untested — and it is the path that touches the
+  # seam where the ACL filter meets the vector store, so "untested" is not an
+  # option. Both shapes are supported, so both shapes are run.
+  server-pgvector:
+    name: server (go, pgvector)
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: pgvector/pgvector:pg17
+        env:
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: postgres
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 5s --health-timeout 5s --health-retries 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: ${{ env.GO_VERSION }}
+          cache-dependency-path: server/go.sum
+
+      - name: Test the packages that touch embeddings
+        working-directory: server
+        env:
+          PC_TEST_DATABASE_URL: postgres://postgres:postgres@localhost:5432/postgres?sslmode=disable
+        run: go test ./internal/files/ ./internal/httpapi/ ./internal/db/ -count=1
+
+      # A skip here means the extension did not load and this job proved nothing,
+      # which is exactly the silent pass it exists to prevent.
+      - name: Prove the pgvector tests actually ran
+        working-directory: server
+        env:
+          PC_TEST_DATABASE_URL: postgres://postgres:postgres@localhost:5432/postgres?sslmode=disable
+        run: |
+          out="$(go test ./internal/files/ -run Pgvector -count=1 -v)"
+          echo "$out"
+          if echo "$out" | grep -q -- "--- SKIP"; then
+            echo "pgvector tests skipped on a pgvector image; the extension did not load"
+            exit 1
+          fi
+
   client:
     name: client (pcsync)
     runs-on: ubuntu-latest

@@ -14,6 +14,7 @@ import (
 	"context"
 	"encoding/binary"
 	"math"
+	"strconv"
 	"strings"
 )
 
@@ -46,6 +47,28 @@ func Unpack(b []byte) []float32 {
 		v[i] = math.Float32frombits(binary.LittleEndian.Uint32(b[i*4:]))
 	}
 	return v
+}
+
+// Literal renders a vector in pgvector's text input format, "[1,2,3]".
+//
+// The text form rather than the binary one because it is what a plain parameter
+// cast to ::vector accepts, so nothing here depends on registering a pgx type
+// for an extension that may not be installed. strconv with -1 precision emits
+// the shortest string that round-trips the float32 exactly, so the value stored
+// in `vec` is bit-identical to the one packed into `vector` and the two ranking
+// paths cannot disagree.
+func Literal(v []float32) string {
+	var b strings.Builder
+	b.Grow(len(v)*8 + 2)
+	b.WriteByte('[')
+	for i, f := range v {
+		if i > 0 {
+			b.WriteByte(',')
+		}
+		b.WriteString(strconv.FormatFloat(float64(f), 'g', -1, 32))
+	}
+	b.WriteByte(']')
+	return b.String()
 }
 
 // Cosine is the cosine similarity of two equal-length vectors, in [-1, 1]. A

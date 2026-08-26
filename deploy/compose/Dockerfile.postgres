@@ -24,6 +24,22 @@ FROM postgres:17.5-alpine@sha256:6567bca8d7bc8c82c5922425a0baee57be8402df92bae5e
 RUN apk add --no-cache pgbackrest \
  && pgbackrest version
 
+# pgvector, for the semantic-search index.
+#
+# From the Alpine community repository rather than built from source, for the
+# same reason pgbackrest is: a self-built extension is a second thing that can be
+# subtly wrong. The version has to match the server's major version, which the
+# repository handles by tying the package to the postgres17 series.
+#
+# Nothing REQUIRES this. Migration 00026 creates the extension where it exists
+# and quietly does not where it does not, and the search path falls back to an
+# exact scan in Go — so a database restored onto a bare machine without pgvector
+# still starts, still migrates, and still answers every query correctly. That
+# property is the reason the extension is installed in the image rather than
+# demanded by the schema: runbook-restore.md's "restorable onto a bare machine"
+# has to stay true, and an extension named in a migration would quietly end it.
+RUN apk add --no-cache postgresql17-pgvector
+
 # The repository and the spool live on the ZFS dataset, mounted at runtime.
 # Created here so the directories exist with the right owner even on a first
 # start where the volumes are empty.

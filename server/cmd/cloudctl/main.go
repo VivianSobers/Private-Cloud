@@ -63,6 +63,9 @@ func usage() {
   jobs failed [--limit=N]         list dead-lettered jobs and their errors
   jobs retry [--kind=KIND]        requeue dead-lettered jobs
   jobs reindex [--kind=KIND]      re-enqueue derived work (extract, media, all)
+  embeddings status               which search path each embedding model is on
+  embeddings backfill             fill the pgvector copy of stored vectors
+  embeddings index                build the HNSW index, once the backfill is done
 
 Requires PC_DATABASE_URL in the environment.
 fsck, gc and migrate-blobs also require PC_BLOB_PATH.
@@ -89,7 +92,7 @@ func run() error {
 	// being killed halfway through a scan that reports nothing useful.
 	timeout := 60 * time.Second
 	switch args[0] {
-	case "fsck", "gc", "migrate-blobs":
+	case "fsck", "gc", "migrate-blobs", "embeddings":
 		timeout = 6 * time.Hour
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), timeout)
@@ -139,6 +142,8 @@ func run() error {
 		return migrateCommand(ctx, database, log, args[1:])
 	case "jobs":
 		return jobsCommand(ctx, database, args[1:])
+	case "embeddings":
+		return embeddingsCommand(ctx, database, args[1:])
 	case "help", "-h", "--help":
 		usage()
 		return nil

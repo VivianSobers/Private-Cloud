@@ -18,6 +18,33 @@ import (
 // the work so a pathological corpus cannot turn one query into a full-table sort.
 const maxSemanticScan = 100000
 
+// Whether this database has the pgvector column, resolved once and cached.
+//
+// Probed rather than configured, because it is a property of the database the
+// process is pointed at, not a decision an operator should have to keep in step
+// with it: migration 00026 adds doc_embedding.vec where the extension exists and
+// silently does not where it does not, so asking the catalog is asking the only
+// thing that actually knows. Cached because the answer cannot change under a
+// running process without a migration, and a migration means a restart.
+//
+// The zero value is "not yet probed", so a Store built in a test that never
+// touches semantic search never issues the query.
+func (s *Store) pgvectorReady(ctx context.Context) bool {
+	s.pgvecOnce.Do(func() {
+		var ok bool
+		err := s.pool.QueryRow(ctx, `
+			SELECT EXISTS (
+				SELECT 1 FROM information_schema.columns
+				WHERE table_name = 'doc_embedding' AND column_name = 'vec'
+			)`).Scan(&ok)
+		// A probe that errors is a probe that has not proved the fast path is
+		// available, and the exact scan is always correct — so failure degrades
+		// rather than propagating.
+		s.pgvec = err == nil && ok
+	})
+	return s.pgvec
+}
+
 // DocForNode returns a node's content hash and its extracted text, for the embed
 // worker. ok is false when the node has no extracted text yet — embedding runs
 // after extraction, so that is a "not ready", handled by the job re-running.
@@ -72,6 +99,23 @@ func (s *Store) PutEmbeddings(ctx context.Context, contentHash []byte, model str
 		return err
 	}
 
+	// Write `vec` alongside the packed bytes where the column exists, so the
+	// indexed path never lags the source of truth for anything written after
+	// migration 00026. CopyFrom cannot cast text to vector, so the pgvector path
+	// is an INSERT; it runs at most maxChunks rows per document, which is not
+	// the hot path CopyFrom exists for.
+	if s.pgvectorReady(ctx) {
+		for i, v := range vectors {
+			if _, err := tx.Exec(ctx, `
+				INSERT INTO doc_embedding (content_hash, chunk_seq, model, dim, vector, vec)
+				VALUES ($1, $2, $3, $4, $5, $6::vector)`,
+				contentHash, i, model, dim, embed.Pack(v), embed.Literal(v)); err != nil {
+				return err
+			}
+		}
+		return tx.Commit(ctx)
+	}
+
 	rows := make([][]any, len(vectors))
 	for i, v := range vectors {
 		rows[i] = []any{contentHash, i, model, dim, embed.Pack(v)}
@@ -97,6 +141,18 @@ func (s *Store) PutEmbeddings(ctx context.Context, contentHash []byte, model str
 // through a similarity score.
 func (s *Store) SemanticSearch(ctx context.Context, ownerID uuid.UUID, query []float32, model string, limit int, includeShared bool) ([]*SearchResult, error) {
 	limit = ClampSearchLimit(limit)
+
+	if s.pgvectorReady(ctx) {
+		out, ok, err := s.semanticSearchIndexed(ctx, ownerID, query, model, limit, includeShared)
+		if err != nil {
+			return nil, err
+		}
+		if ok {
+			return out, nil
+		}
+		// Not ok means this model's vec copy is still incomplete; fall through
+		// to the scan, which reads the packed bytes and is never incomplete.
+	}
 
 	// Filter by dimension as well as model. Model identity should already pin the
 	// dimension, but a model re-trained to a new width while keeping its name would
@@ -179,6 +235,143 @@ func (s *Store) SemanticSearch(ctx context.Context, ownerID uuid.UUID, query []f
 		out = out[:limit]
 	}
 	return out, nil
+}
+
+// candidateFanout is how many chunk rows the indexed path pulls per result it
+// intends to return. A document is several chunks and the best one wins, so the
+// top-N chunks collapse to fewer than N documents; asking for a multiple of the
+// limit makes a full page of distinct files overwhelmingly likely without
+// pulling the whole corpus back. A short page is a ranking artefact, never a
+// missing document: everything the caller may see is still reachable, just
+// possibly below the fold.
+const candidateFanout = 8
+
+// semanticSearchIndexed ranks in SQL rather than in Go, ordering by pgvector's
+// cosine distance operator so an HNSW index can serve the ordering.
+//
+// This is not only faster, it is more correct than the scan it replaces. The
+// scan bounds its work with maxSemanticScan and an `ORDER BY updated_at DESC`
+// truncation, so past that many candidates it ranks the most RECENT vectors
+// instead of the most SIMILAR ones — silently, and exactly when a corpus has
+// grown enough to need ranking most. Ordering by distance has no such cliff.
+//
+// It reports ok=false, and no error, when this model's `vec` copy is not yet
+// complete. A NULL vec sorts out of an ORDER BY on distance, so ranking that way
+// mid-backfill would drop real documents from results; the caller falls back to
+// the scan, which reads the packed bytes every row has.
+//
+// The ACL filter stays exactly where it was — on the node rows, spliced from the
+// same Visibility predicate every other query uses. That is the invariant this
+// function had to preserve above all: an ANN index that picked its top-N from
+// the whole corpus and then filtered would hand a caller an empty page whenever
+// the nearest vectors happened to belong to someone else. hnsw.iterative_scan
+// is what lets the index keep walking until it has filled the page from rows the
+// caller may actually see.
+func (s *Store) semanticSearchIndexed(ctx context.Context, ownerID uuid.UUID, query []float32, model string, limit int, includeShared bool) ([]*SearchResult, bool, error) {
+	var pending bool
+	if err := s.pool.QueryRow(ctx,
+		`SELECT EXISTS (SELECT 1 FROM doc_embedding WHERE model = $1 AND dim = $2 AND vec IS NULL)`,
+		model, len(query)).Scan(&pending); err != nil {
+		return nil, false, err
+	}
+	if pending {
+		return nil, false, nil
+	}
+
+	tx, err := s.pool.BeginTx(ctx, pgx.TxOptions{AccessMode: pgx.ReadOnly})
+	if err != nil {
+		return nil, false, err
+	}
+	defer tx.Rollback(ctx) //nolint:errcheck // read-only; rollback is the exit
+
+	// Touch a vector value first. pgvector registers hnsw.iterative_scan from
+	// its _PG_init, which Postgres runs when the library is first loaded into a
+	// backend — and creating the extension does not load it, calling something
+	// from it does. On a connection fresh out of the pool the GUC is therefore
+	// unknown until this line runs, and the SET below would fail with
+	// "unrecognized configuration parameter" on a perfectly good pgvector 0.8.
+	if _, err := tx.Exec(ctx, `SELECT '[1]'::vector`); err != nil {
+		return nil, false, nil
+	}
+
+	// SET LOCAL so the setting dies with this transaction rather than riding a
+	// pooled connection into an unrelated query.
+	if _, err := tx.Exec(ctx, `SET LOCAL hnsw.iterative_scan = relaxed_order`); err != nil {
+		// An older pgvector without iterative scan: the ordering is still
+		// correct, so this is a recall risk under a selective filter rather
+		// than a wrong answer. Falling back to the exact scan is the honest
+		// response, since that is what recall it cannot promise.
+		return nil, false, nil
+	}
+
+	fanout := limit * candidateFanout
+	if fanout > maxSemanticScan {
+		fanout = maxSemanticScan
+	}
+
+	rows, err := tx.Query(ctx, `
+		SELECT `+nodeCols+`, de.vec <=> $2::vector AS distance
+		`+nodeFrom+`
+		JOIN doc_embedding de ON de.content_hash = coalesce(b.sha256, m.content_hash)
+			AND de.model = $3 AND de.dim = $4
+		WHERE `+Visibility(includeShared)+` AND n.parent_id IS NOT NULL AND n.trashed_at IS NULL
+		ORDER BY distance
+		LIMIT $5`,
+		ownerID, embed.Literal(query), model, len(query), fanout)
+	if err != nil {
+		return nil, false, err
+	}
+	defer rows.Close()
+
+	// Rows arrive nearest-first, so the first time a node appears is its best
+	// chunk and every later one can be dropped without comparing scores.
+	seen := map[uuid.UUID]bool{}
+	out := make([]*SearchResult, 0, limit)
+	for rows.Next() {
+		var (
+			n        Node
+			size     *int64
+			mime     *string
+			sha      []byte
+			key      *string
+			distance float64
+		)
+		if err := rows.Scan(
+			&n.ID, &n.OwnerID, &n.ParentID, &n.Kind, &n.Name, &n.Path,
+			&n.HeadVersionID, &n.TrashedAt, &n.TrashedRootID, &n.CreatedAt, &n.UpdatedAt,
+			&size, &mime, &sha, &key, &n.ManifestID, &distance,
+		); err != nil {
+			return nil, false, err
+		}
+		if seen[n.ID] {
+			continue
+		}
+		seen[n.ID] = true
+
+		if size != nil {
+			n.Size = *size
+		}
+		if mime != nil {
+			n.MIME = *mime
+		}
+		n.ContentHash = sha
+		if key != nil {
+			n.BlobKey = *key
+		}
+
+		node := n
+		// pgvector's <=> is cosine DISTANCE; the rest of the system speaks
+		// cosine similarity, and 1 - distance is exactly that, so a score from
+		// this path is directly comparable to one from the scan.
+		out = append(out, &SearchResult{Node: &node, Score: 1 - distance, Semantic: true})
+		if len(out) == limit {
+			break
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return nil, false, err
+	}
+	return out, true, nil
 }
 
 // PruneEmbeddings deletes vectors for content no live version references, bounded.

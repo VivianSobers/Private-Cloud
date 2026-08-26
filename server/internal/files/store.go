@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/google/uuid"
@@ -20,6 +21,11 @@ import (
 // chunk manifests are the natural moment to introduce it.
 type Store struct {
 	pool *pgxpool.Pool
+
+	// Set once by pgvectorReady; see embedding.go for why this is probed from
+	// the catalog rather than configured.
+	pgvecOnce sync.Once
+	pgvec     bool
 }
 
 func NewStore(pool *pgxpool.Pool) *Store { return &Store{pool: pool} }
