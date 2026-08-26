@@ -31,6 +31,7 @@ import (
 	"github.com/guru-bharadwaj20/private-cloud/server/internal/blob"
 	"github.com/guru-bharadwaj20/private-cloud/server/internal/cas"
 	"github.com/guru-bharadwaj20/private-cloud/server/internal/db"
+	"github.com/guru-bharadwaj20/private-cloud/server/internal/embed"
 	"github.com/guru-bharadwaj20/private-cloud/server/internal/extract"
 	"github.com/guru-bharadwaj20/private-cloud/server/internal/files"
 	"github.com/guru-bharadwaj20/private-cloud/server/internal/jobs"
@@ -62,7 +63,8 @@ func usage() {
   jobs stats                      show background job queue depth by state
   jobs failed [--limit=N]         list dead-lettered jobs and their errors
   jobs retry [--kind=KIND]        requeue dead-lettered jobs
-  jobs reindex [--kind=KIND]      re-enqueue derived work (extract, media, all)
+  jobs reindex [--kind=KIND]      re-enqueue derived work (extract, media, all;
+                                  faces and image_embed are opt-in, outside all)
   push keygen                     mint the VAPID keypair for web push
   embeddings status               which search path each embedding model is on
   embeddings backfill             fill the pgvector copy of stored vectors
@@ -682,9 +684,9 @@ func jobsCommand(ctx context.Context, database *db.DB, args []string) error {
 
 		switch kind {
 		case "extract", "all":
-		case "media", "faces":
+		case "media", "faces", "image_embed":
 		default:
-			return fmt.Errorf("unknown kind %q (want extract, media, faces or all)", kind)
+			return fmt.Errorf("unknown kind %q (want extract, media, faces, image_embed or all)", kind)
 		}
 
 		if kind == "extract" || kind == "all" {
@@ -713,6 +715,22 @@ func jobsCommand(ctx context.Context, database *db.DB, args []string) error {
 				return err
 			}
 			fmt.Printf("enqueued %d face-detection job(s)\n", n)
+		}
+		if kind == "image_embed" {
+			// Outside "all" for the identical reason faces is: the image space
+			// needs a GPU sidecar most deployments will not run, and queueing a
+			// job per photo on a server without one fills the dead-letter queue
+			// instead of doing anything. Asking for it by name is the opt-in.
+			//
+			// This is also the ONLY thing that enqueues this kind, again like
+			// faces — nothing chains it off upload. A library therefore gains
+			// image similarity when an operator asks for it, and a photo added
+			// afterwards waits for the next run.
+			n, err := store.EnqueueForAllMediaFiles(ctx, embed.ImageKind)
+			if err != nil {
+				return err
+			}
+			fmt.Printf("enqueued %d image-embedding job(s)\n", n)
 		}
 		return nil
 

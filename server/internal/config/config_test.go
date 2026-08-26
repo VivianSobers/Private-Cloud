@@ -1,8 +1,10 @@
 package config
 
 import (
+	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 // validEnv sets the environment a successful Load needs, so a test about one
@@ -174,5 +176,184 @@ func TestRedactURLWithoutPassword(t *testing.T) {
 	const in = "postgres://user@host:5432/db"
 	if got := redactURL(in); got != in {
 		t.Errorf("redactURL(%q) = %q, want unchanged", in, got)
+	}
+}
+
+// --- video thumbnails (Phase 5) -------------------------------------------
+
+// Absent by default, and deliberately not inferred from PATH: ffmpeg is on a
+// great many machines as somebody else's dependency, and this switch turns on
+// the largest hostile-input surface in the system.
+func TestVideoThumbnailsAreOffByDefault(t *testing.T) {
+	validEnv(t)
+	t.Setenv("PC_FFMPEG_PATH", "")
+
+	c, err := Load()
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if c.Media.VideoThumbnailsEnabled() {
+		t.Error("video thumbnails are enabled with no PC_FFMPEG_PATH set")
+	}
+	if c.Media.FFmpegPath != "" {
+		t.Errorf("FFmpegPath = %q, want empty", c.Media.FFmpegPath)
+	}
+}
+
+func TestLoadAcceptsAnFFmpegPath(t *testing.T) {
+	validEnv(t)
+	// An absolute path and a bare command name are both legitimate: one names a
+	// binary, the other asks PATH for it.
+	for _, val := range []string{filepath.Join(t.TempDir(), "ffmpeg"), "ffmpeg"} {
+		t.Run(val, func(t *testing.T) {
+			t.Setenv("PC_FFMPEG_PATH", val)
+			c, err := Load()
+			if err != nil {
+				t.Fatalf("Load: %v", err)
+			}
+			if !c.Media.VideoThumbnailsEnabled() || c.Media.FFmpegPath != val {
+				t.Errorf("FFmpegPath = %q, enabled = %v", c.Media.FFmpegPath, c.Media.VideoThumbnailsEnabled())
+			}
+		})
+	}
+}
+
+// A relative path to an executable resolves against whatever the working
+// directory happens to be — which is how the wrong binary gets run.
+func TestLoadRejectsARelativeFFmpegPath(t *testing.T) {
+	validEnv(t)
+	t.Setenv("PC_FFMPEG_PATH", "./bin/ffmpeg")
+	if _, err := Load(); err == nil {
+		t.Fatal("expected an error for a relative PC_FFMPEG_PATH, got nil")
+	}
+}
+
+// A missing binary must NOT stop the worker: it degrades to no video
+// thumbnails, which is the state the default is already in, and refusing to
+// start would take OCR, tagging and embedding down with it.
+func TestLoadAcceptsAnFFmpegPathThatDoesNotExist(t *testing.T) {
+	validEnv(t)
+	t.Setenv("PC_FFMPEG_PATH", filepath.Join(t.TempDir(), "definitely-not-here"))
+	if _, err := Load(); err != nil {
+		t.Fatalf("a missing binary should not fail startup: %v", err)
+	}
+}
+
+// The startup log is where "configured but missing" is diagnosed, so the
+// setting has to appear in it.
+func TestRedactedReportsVideoThumbnails(t *testing.T) {
+	validEnv(t)
+	t.Setenv("PC_FFMPEG_PATH", "ffmpeg")
+	c, err := Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	r := c.Redacted()
+	if r["video_thumbnails"] != true {
+		t.Errorf("video_thumbnails = %v, want true", r["video_thumbnails"])
+	}
+	if r["ffmpeg_path"] != "ffmpeg" {
+		t.Errorf("ffmpeg_path = %v, want ffmpeg", r["ffmpeg_path"])
+	}
+}
+
+// --- cold tier ---------------------------------------------------------------
+
+// Off is the default, and off has to be reachable with no cold-tier variables
+// set at all — every existing deployment is in exactly that state.
+func TestColdTierIsOffByDefault(t *testing.T) {
+	validEnv(t)
+	c, err := Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if c.Cold.ColdTierEnabled() {
+		t.Error("the cold tier should be off unless PC_COLD_TIER_ENABLED is set")
+	}
+}
+
+// The refusals that matter. Every one of these decides WHERE content goes, and
+// a cold tier pointed at the wrong bucket is not a condition to discover later:
+// by the time it is visible, the bytes have already moved.
+func TestEnablingTheColdTierRefusesAnIncompleteConfiguration(t *testing.T) {
+	full := map[string]string{
+		"PC_COLD_TIER_ENABLED":  "true",
+		"PC_COLD_S3_ENDPOINT":   "https://s3.example.invalid",
+		"PC_COLD_S3_BUCKET":     "cold",
+		"PC_COLD_S3_ACCESS_KEY": "key",
+		"PC_COLD_S3_SECRET_KEY": "secret",
+	}
+	for _, missing := range []string{
+		"PC_COLD_S3_ENDPOINT", "PC_COLD_S3_BUCKET",
+		"PC_COLD_S3_ACCESS_KEY", "PC_COLD_S3_SECRET_KEY",
+	} {
+		t.Run("without "+missing, func(t *testing.T) {
+			validEnv(t)
+			for k, v := range full {
+				if k == missing {
+					continue
+				}
+				t.Setenv(k, v)
+			}
+			if _, err := Load(); err == nil {
+				t.Fatalf("enabling the cold tier without %s should refuse to start", missing)
+			}
+		})
+	}
+}
+
+// A bucket name with no endpoint, while the tier is off, is half a
+// configuration somebody stopped writing. Naming it now is cheaper than
+// discovering it at the moment the tier is switched on.
+func TestHalfAColdTierConfigurationIsNamedWhileItIsStillInert(t *testing.T) {
+	validEnv(t)
+	t.Setenv("PC_COLD_S3_BUCKET", "cold")
+	if _, err := Load(); err == nil {
+		t.Fatal("a bucket with no endpoint should be reported, not started past")
+	}
+}
+
+// The policy defaults are the conservative ones, and they are the SAME numbers
+// tiering.DefaultPolicy uses rather than a second set that could drift apart.
+func TestColdTierPolicyDefaultsAreConservative(t *testing.T) {
+	validEnv(t)
+	c, err := Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if c.Cold.MinAge != 90*24*time.Hour || c.Cold.MinIdle != 90*24*time.Hour {
+		t.Errorf("MinAge/MinIdle = %v/%v, want 90 days each", c.Cold.MinAge, c.Cold.MinIdle)
+	}
+	if c.Cold.MinSize != 1<<20 {
+		t.Errorf("MinSize = %d, want 1 MiB", c.Cold.MinSize)
+	}
+	if c.Cold.Batch != 100 {
+		t.Errorf("Batch = %d, want 100", c.Cold.Batch)
+	}
+}
+
+// The location belongs in the startup log; the credentials never do.
+func TestRedactedReportsTheColdTierWithoutItsCredentials(t *testing.T) {
+	validEnv(t)
+	t.Setenv("PC_COLD_TIER_ENABLED", "true")
+	t.Setenv("PC_COLD_S3_ENDPOINT", "https://s3.example.invalid")
+	t.Setenv("PC_COLD_S3_BUCKET", "cold")
+	t.Setenv("PC_COLD_S3_ACCESS_KEY", "key")
+	t.Setenv("PC_COLD_S3_SECRET_KEY", "super-secret-value")
+	c, err := Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	r := c.Redacted()
+	if r["cold_tier_enabled"] != true {
+		t.Errorf("cold_tier_enabled = %v, want true", r["cold_tier_enabled"])
+	}
+	if r["cold_tier_bucket"] != "cold" {
+		t.Errorf("cold_tier_bucket = %v, want cold", r["cold_tier_bucket"])
+	}
+	for k, v := range r {
+		if s, ok := v.(string); ok && strings.Contains(s, "super-secret-value") {
+			t.Fatalf("Redacted() leaked the cold tier secret key through %q", k)
+		}
 	}
 }

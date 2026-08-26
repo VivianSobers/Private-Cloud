@@ -315,6 +315,14 @@ func (s *Service) openNode(ctx context.Context, node *Node) (*Node, io.ReadSeekC
 			// cannot read them.
 			return nil, nil, fmt.Errorf("file %q is content-addressed but CAS is not configured", node.Name)
 		}
+		// Ask about the cold tier BEFORE opening the reader. manifestReader
+		// fetches chunks lazily, so a cold chunk discovered mid-file surfaces
+		// after ServeContent has already sent a 200 and part of the body, and
+		// there is no status code left to say "come back". One indexed count
+		// answers it up front; see cas.WarmManifest.
+		if err := s.cas.WarmManifest(ctx, *node.ManifestID); err != nil {
+			return nil, nil, err
+		}
 		rc, err := s.cas.Open(ctx, *node.ManifestID)
 		if err != nil {
 			return nil, nil, err
@@ -598,6 +606,17 @@ func (s *Service) CollectGarbage(ctx context.Context) (GCResult, error) {
 		return res, fmt.Errorf("prune embeddings: %w", err)
 	}
 	res.EmbeddingsPruned = embeddings
+
+	// The image space is swept in the same pass and counted on the same line.
+	// Both are vectors keyed by content hash with no cascade reaching them, they
+	// are reclaimed by identical logic, and an operator reading "embeddings
+	// pruned" wants the number of vector rows that went away — not a second
+	// counter to add to the first.
+	imageEmbeddings, err := s.store.PruneImageEmbeddings(ctx, derivedPruneBatch)
+	if err != nil {
+		return res, fmt.Errorf("prune image embeddings: %w", err)
+	}
+	res.EmbeddingsPruned += imageEmbeddings
 
 	// Variants BEFORE metadata: a variant row is reachable only through the
 	// content hash the metadata row also keys on, and sweeping the metadata first
@@ -924,6 +943,29 @@ type FsckReport struct {
 	// fixes.
 	MissingVariants []string
 
+	// Cold rows whose bytes are legitimately in the object-storage tier and
+	// therefore absent from local disk. NOT a finding — it is the count that
+	// stops the absence being reported as one.
+	Cold      int
+	ColdBytes int64
+
+	// ColdVerified is how many of those were confirmed present in the bucket. It
+	// is separate from Cold because "the row says cold" and "the bytes are
+	// there" are different claims, and the second is the one worth having.
+	ColdVerified int
+
+	// MissingCold is the real data-loss case for tiered content: a row says the
+	// bytes are cold and the cold tier does not have them either. Reported apart
+	// from Missing because the remedy differs — a bucket lifecycle rule or a
+	// wrong prefix is a configuration mistake to check before reaching for a
+	// restore.
+	MissingCold []string
+
+	// ColdOrphans are objects in the bucket that no row references. Reported and
+	// NEVER deleted, not even under --repair; see the note in Fsck.
+	ColdOrphans     []string
+	ColdOrphanBytes int64
+
 	TempFilesRemoved int
 	Checked          int
 	ChunksChecked    int
@@ -942,9 +984,42 @@ type FsckReport struct {
 // only about `blobs` would classify every chunk on disk as an orphan — and
 // `--repair` would then delete all deduplicated content in the system. That is
 // not a hypothetical: it is what this function did before chunks existed.
+//
+// It MUST also account for the THIRD LOCATION. Media variants were the second
+// thing to be added to the blob store that this function did not know about,
+// and cold-tier content is the third — but it is the first one whose bytes are
+// legitimately NOT ON LOCAL DISK AT ALL. That inverts the failure: chunks and
+// variants were wrongly reported as orphans and deleted, while a demoted blob
+// is wrongly reported as MISSING, which sends an operator to a backup to
+// restore a file that was never lost. Both are the same underlying bug — a
+// checker that believes the local filesystem is the whole story — and the
+// guard against it is the same: know every place content may legitimately be
+// before deciding anything is wrong.
+//
+// Two rules follow, and they are the safety property this slice turns on:
+//
+//   - Absence from local disk is NEVER on its own a reason to delete anything.
+//     --repair removes local files no row references, and nothing else.
+//   - If the database says content is cold and this process has no cold store
+//     configured, fsck REFUSES rather than guessing. Running `cloudctl fsck
+//     --repair` from a shell without the cold-tier environment set is the
+//     realistic way an operator would otherwise be handed a report claiming
+//     every demoted file is lost.
 func (s *Service) Fsck(ctx context.Context, repair bool) (*FsckReport, error) {
-	fs, ok := s.blobs.(*blob.FSStore)
-	if !ok {
+	var (
+		fs   *blob.FSStore
+		cold blob.Store
+	)
+	switch st := s.blobs.(type) {
+	case *blob.FSStore:
+		fs = st
+	case *blob.TieredStore:
+		// The LOCAL root is what gets walked for orphans. Walking the bucket for
+		// that purpose would be a category error: a bucket object with no local
+		// row is not evidence of anything.
+		fs = st.Hot()
+		cold = st.Cold()
+	default:
 		return nil, errors.New("fsck requires the filesystem blob store")
 	}
 
@@ -1016,16 +1091,49 @@ func (s *Service) Fsck(ctx context.Context, repair bool) (*FsckReport, error) {
 		return nil, fmt.Errorf("walk blob store: %w", err)
 	}
 
-	for key := range known {
-		if !seen[key] {
-			report.Missing = append(report.Missing, key)
+	// Anything the local walk did not find might be in the cold tier. Refuse to
+	// judge before checking — and refuse to judge AT ALL if the database says
+	// there is cold content and this process cannot see the bucket.
+	var coldRows int
+	for _, ref := range known {
+		if ref.Tier == "cold" {
+			coldRows++
 		}
 	}
-	for key := range chunks {
-		if !seenChunks[key] {
+	for _, ref := range chunks {
+		if ref.Tier == "cold" {
+			coldRows++
+		}
+	}
+	if coldRows > 0 && cold == nil {
+		return nil, fmt.Errorf(
+			"%d row(s) say their bytes are in the cold tier, but no cold tier is configured in this process; "+
+				"set PC_COLD_TIER_ENABLED and the PC_COLD_S3_* settings before running fsck, or it will report live content as lost",
+			coldRows)
+	}
+
+	for key, ref := range known {
+		if seen[key] {
+			continue
+		}
+		switch s.classifyAbsent(ctx, cold, key, ref.Tier, ref.Size, report) {
+		case absentLost:
+			report.Missing = append(report.Missing, key)
+		case absentCold:
+			seen[key] = true
+		}
+	}
+	for key, ref := range chunks {
+		if seenChunks[key] {
+			continue
+		}
+		switch s.classifyAbsent(ctx, cold, key, ref.Tier, int64(ref.StoredSize), report) {
+		case absentLost:
 			// A missing chunk is worse than a missing blob: it is shared, so it
 			// damages every file that references it, potentially across users.
 			report.MissingChunks = append(report.MissingChunks, key)
+		case absentCold:
+			seenChunks[key] = true
 		}
 	}
 	for key := range variantKeys {
@@ -1054,6 +1162,40 @@ func (s *Service) Fsck(ctx context.Context, repair bool) (*FsckReport, error) {
 		}
 	}
 
+	// Objects in the bucket that no row references. Reported so the discrepancy
+	// is visible, and never acted on: an unreferenced cold object is most often
+	// the harmless residue of a demotion whose row update did not land, or of a
+	// promotion that left its cold copy in place on purpose — and unlike a local
+	// orphan, deleting it costs a network round trip against content nobody can
+	// re-derive. The whole reason this slice waited is that --repair has twice
+	// been willing to delete live data on exactly this kind of inference.
+	if cold != nil {
+		if walker, ok := cold.(interface {
+			Walk(context.Context, func(string, int64) error) error
+		}); ok {
+			err := walker.Walk(ctx, func(key string, size int64) error {
+				if _, ok := known[key]; ok {
+					return nil
+				}
+				if _, ok := chunks[key]; ok {
+					return nil
+				}
+				if _, ok := variantKeys[key]; ok {
+					return nil
+				}
+				report.ColdOrphans = append(report.ColdOrphans, key)
+				report.ColdOrphanBytes += size
+				return nil
+			})
+			if err != nil {
+				// Not fatal. Everything above this point is a complete check of
+				// the local pool, and losing the bucket listing must not cost the
+				// operator that.
+				s.log.Warn("could not list the cold tier; its orphan report is incomplete", "error", err)
+			}
+		}
+	}
+
 	if repair {
 		n, err := fs.SweepTempFiles()
 		if err != nil {
@@ -1061,13 +1203,75 @@ func (s *Service) Fsck(ctx context.Context, repair bool) (*FsckReport, error) {
 		}
 		report.TempFilesRemoved = n
 
+		// Orphans are LOCAL files with no row, and that is the only thing repair
+		// ever deletes. Deliberately fs.Delete and not s.blobs.Delete: on a
+		// tiered store the latter deletes from both tiers, which for a local
+		// orphan whose key happens to collide with a cold object would destroy
+		// the cold copy of live content on the strength of a local file nobody
+		// references. One layer down is the correct layer here.
 		for _, key := range report.Orphans {
-			if err := s.blobs.Delete(ctx, key); err != nil {
+			if err := fs.Delete(ctx, key); err != nil {
 				s.log.Warn("could not delete orphan blob", "key", key, "error", err)
 			}
 		}
 	}
 	return report, nil
+}
+
+// absence is what fsck concluded about a row whose bytes are not on local disk.
+type absence int
+
+const (
+	// absentLost — the bytes are in no tier this process can see. Data loss.
+	absentLost absence = iota
+	// absentCold — the bytes are in the cold tier, exactly as intended.
+	absentCold
+	// absentColdGone — the row claims the cold tier and the cold tier disagrees.
+	// Recorded in MissingCold by classifyAbsent itself, since the remedy differs.
+	absentColdGone
+)
+
+// classifyAbsent decides why a known key is not on local disk.
+//
+// The `hot` row whose bytes turn out to be in the bucket is not an anomaly, and
+// is deliberately treated as cold rather than as loss: the demotion job moves
+// the bytes and THEN flips the row, so a crash between the two leaves exactly
+// this state. It is the safe direction of that race — the content is readable
+// either way — and saying so here is what stops fsck reporting a scary finding
+// for a window that the next sweep closes on its own.
+func (s *Service) classifyAbsent(ctx context.Context, cold blob.Store, key, tier string, size int64, report *FsckReport) absence {
+	if cold == nil {
+		return absentLost
+	}
+	_, err := cold.Stat(ctx, key)
+	switch {
+	case err == nil:
+		report.Cold++
+		report.ColdBytes += size
+		report.ColdVerified++
+		if tier != "cold" {
+			s.log.Info("bytes are in the cold tier but the row still says hot; the demotion did not finish its last step",
+				"key", key)
+		}
+		return absentCold
+	case errors.Is(err, blob.ErrNotFound):
+		if tier == "cold" {
+			report.Cold++
+			report.ColdBytes += size
+			report.MissingCold = append(report.MissingCold, key)
+			return absentColdGone
+		}
+		return absentLost
+	default:
+		// The bucket could not be asked. Reporting loss on a network error would
+		// be the worst possible answer — it is the one that sends someone to a
+		// restore — so it is logged and counted as cold-but-unverified.
+		s.log.Warn("could not check the cold tier for a key; reporting it as unverified rather than lost",
+			"key", key, "error", err)
+		report.Cold++
+		report.ColdBytes += size
+		return absentCold
+	}
 }
 
 // --- mime -------------------------------------------------------------------

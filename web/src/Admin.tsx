@@ -9,6 +9,8 @@ import {
   type AdminStorage,
   type AdminUser,
   type AuditEntry,
+  type BillingPlan,
+  type MeteringRecord,
 } from "./api";
 
 // The admin console (Phase 7): manage user accounts and read the audit log. Only
@@ -16,7 +18,7 @@ import {
 // this is convenience, not the security boundary. Degrades gracefully where the
 // server has not implemented the admin surface yet.
 
-type Tab = "users" | "storage" | "audit";
+type Tab = "users" | "storage" | "billing" | "audit";
 
 export function Admin() {
   const [tab, setTab] = useState<Tab>("users");
@@ -29,11 +31,22 @@ export function Admin() {
         <button className="link" aria-current={tab === "storage"} onClick={() => setTab("storage")}>
           Storage
         </button>
+        <button className="link" aria-current={tab === "billing"} onClick={() => setTab("billing")}>
+          Billing
+        </button>
         <button className="link" aria-current={tab === "audit"} onClick={() => setTab("audit")}>
           Audit log
         </button>
       </nav>
-      {tab === "users" ? <Users /> : tab === "storage" ? <Storage /> : <Audit />}
+      {tab === "users" ? (
+        <Users />
+      ) : tab === "storage" ? (
+        <Storage />
+      ) : tab === "billing" ? (
+        <Billing />
+      ) : (
+        <Audit />
+      )}
     </section>
   );
 }
@@ -370,6 +383,38 @@ function Storage() {
       </section>
 
       <section className="card stack">
+        <h2 style={{ margin: 0, fontSize: "1rem" }}>Cold tier</h2>
+        {!data.tiering.enabled ? (
+          // Not a tier holding zero bytes — there is no tier. Rendering zeroes
+          // here would imply the feature is on and merely empty, which is the
+          // more misleading of the two answers.
+          <p className="muted small" style={{ margin: 0 }}>
+            {data.tiering.note ?? "No cold tier is configured; all content is on the local pool."}
+          </p>
+        ) : (
+          <>
+            <p className="muted small" style={{ margin: 0 }}>
+              What the database says it moved to object storage — not what the
+              bucket reports. The difference between the two is the discrepancy{" "}
+              <code>cloudctl fsck</code> exists to find.
+            </p>
+            {data.tiering.cold_bytes == null ? (
+              <p className="muted small" style={{ margin: 0 }}>
+                {data.tiering.note ?? "The tier is configured; its accounting could not be read."}
+              </p>
+            ) : (
+              <div className="stat-row">
+                <Stat label="Cold" value={formatBytes(data.tiering.cold_bytes)} />
+                <Stat label="Objects" value={String(data.tiering.cold_objects ?? 0)} />
+                <Stat label="Blobs" value={String(data.tiering.cold_blobs ?? 0)} />
+                <Stat label="Chunks" value={String(data.tiering.cold_chunks ?? 0)} />
+              </div>
+            )}
+          </>
+        )}
+      </section>
+
+      <section className="card stack">
         <h2 style={{ margin: 0, fontSize: "1rem" }}>Pools</h2>
         {data.pools.length === 0 ? (
           <p className="muted small" style={{ margin: 0 }}>
@@ -487,4 +532,193 @@ function describe(e: unknown): string {
     return `${e.code}: ${e.message}`;
   }
   return e instanceof Error ? e.message : "Unknown error";
+}
+
+// The billing tab (Phase 9 slice 5).
+//
+// Deliberately modest, because the feature is: a plan is a named quota, and
+// assigning one writes through to the quota that has been enforced since Phase 7
+// rather than becoming a second gate beside it. There is no payment provider
+// here and the console does not pretend there is one — the price fields are
+// metadata an external system reads through the webhook.
+//
+// The whole tab degrades to "not available on this server yet" on the 503 a
+// server without the migrations answers with, exactly like every other optional
+// surface in this console.
+function Billing() {
+  const [plans, setPlans] = useState<BillingPlan[] | null>(null);
+  const [records, setRecords] = useState<MeteringRecord[] | null>(null);
+  const [users, setUsers] = useState<AdminUser[]>([]);
+  const [error, setError] = useState<string | null>(null);
+  const [busy, setBusy] = useState(false);
+
+  const load = useCallback(() => {
+    api
+      .adminBillingPlans()
+      .then((r) => setPlans(r.plans))
+      .catch((e) => setError(describe(e)));
+    // Metering and the user list are secondary: a failure in either leaves the
+    // plans readable rather than blanking the tab. The records are what make a
+    // closed period answerable, and nothing recovers last month's figure once
+    // this month has overwritten the live number.
+    api
+      .adminMetering({ limit: 100 })
+      .then((r) => setRecords(r.records))
+      .catch(() => setRecords([]));
+    api
+      .adminUsers()
+      .then((r) => setUsers(r.users))
+      .catch(() => setUsers([]));
+  }, []);
+
+  useEffect(load, [load]);
+
+  async function assign(userId: string, planId: string) {
+    setBusy(true);
+    try {
+      await api.adminSetAccountPlan(userId, planId || null);
+      load();
+    } catch (e) {
+      setError(describe(e));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  if (error && !plans) return <Unavailable detail={error} />;
+  if (!plans) return <p className="muted">Loading…</p>;
+
+  return (
+    <div className="stack">
+      <section className="card stack">
+        <h2 style={{ margin: 0, fontSize: "1rem" }}>Plans</h2>
+        <p className="muted small" style={{ margin: 0 }}>
+          A plan is a named quota. Putting an account on one writes its quota
+          through to the account, so this drives the enforcement that already
+          exists rather than sitting beside it.
+        </p>
+        {plans.length === 0 ? (
+          <p className="muted small" style={{ margin: 0 }}>
+            No plans defined. Every account keeps whatever quota it already has.
+          </p>
+        ) : (
+          <div className="table-scroll">
+            <table className="admin-table">
+              <thead>
+                <tr>
+                  <th>Plan</th>
+                  <th>Quota</th>
+                  <th>Price</th>
+                  <th>Accounts</th>
+                </tr>
+              </thead>
+              <tbody>
+                {plans.map((p) => (
+                  <tr key={p.id}>
+                    <td>
+                      <strong>{p.name}</strong>
+                      {p.description ? <div className="small muted">{p.description}</div> : null}
+                    </td>
+                    {/* null is unlimited and is a real value, not a missing one. */}
+                    <td>{p.quota_bytes == null ? "Unlimited" : formatBytes(p.quota_bytes)}</td>
+                    <td className="small">
+                      {p.price_cents == null
+                        ? "—"
+                        : `${(p.price_cents / 100).toFixed(2)} ${p.currency || ""} / ${p.period}`}
+                    </td>
+                    <td className="small">{p.account_count ?? "—"}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
+      </section>
+
+      {plans.length > 0 && users.length > 0 ? (
+        <section className="card stack">
+          <h2 style={{ margin: 0, fontSize: "1rem" }}>Accounts</h2>
+          <p className="muted small" style={{ margin: 0 }}>
+            Taking an account off a plan leaves its quota where the plan put it.
+            Clearing it would hand unlimited storage to somebody being removed
+            from a paid tier, which is the opposite of what the action means.
+          </p>
+          <div className="table-scroll">
+            <table className="admin-table">
+              <thead>
+                <tr>
+                  <th>Account</th>
+                  <th>Plan</th>
+                </tr>
+              </thead>
+              <tbody>
+                {users.map((u) => (
+                  <tr key={u.id}>
+                    <td>{u.username}</td>
+                    <td>
+                      <select
+                        disabled={busy}
+                        defaultValue=""
+                        onChange={(e) => assign(u.id, e.target.value)}
+                        aria-label={`Plan for ${u.username}`}
+                      >
+                        <option value="">No plan</option>
+                        {plans.map((p) => (
+                          <option key={p.id} value={p.id}>
+                            {p.name}
+                          </option>
+                        ))}
+                      </select>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </section>
+      ) : null}
+
+      <section className="card stack">
+        <h2 style={{ margin: 0, fontSize: "1rem" }}>Metering</h2>
+        <p className="muted small" style={{ margin: 0 }}>
+          Usage snapshots, taken from the same numbers quotas are enforced
+          against. Usage is a live measurement; nothing recovers a closed
+          period's figure once the next one has overwritten it.
+        </p>
+        {!records || records.length === 0 ? (
+          <p className="muted small" style={{ margin: 0 }}>
+            No snapshots recorded yet.
+          </p>
+        ) : (
+          <div className="table-scroll">
+            <table className="admin-table">
+              <thead>
+                <tr>
+                  <th>Account</th>
+                  <th>Period</th>
+                  <th>Total</th>
+                  <th>Peak</th>
+                  <th>Samples</th>
+                </tr>
+              </thead>
+              <tbody>
+                {records.map((rec) => (
+                  <tr key={rec.id}>
+                    <td>{rec.owner}</td>
+                    <td className="small muted">
+                      {formatDate(rec.period_start)} → {formatDate(rec.period_end)}
+                    </td>
+                    <td>{formatBytes(rec.total_bytes)}</td>
+                    <td className="small">{formatBytes(rec.peak_total_bytes)}</td>
+                    {/* Zero samples is "nobody was measuring", not "stored nothing". */}
+                    <td className="small muted">{rec.samples}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
+      </section>
+    </div>
+  );
 }

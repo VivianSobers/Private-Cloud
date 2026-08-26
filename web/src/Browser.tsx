@@ -11,6 +11,7 @@ import {
   type Usage,
 } from "./api";
 import { ownershipLabel, permissionsFor } from "./access";
+import { FeedbackControls } from "./FeedbackControls";
 import { ShareDialog } from "./ShareDialog";
 import { Shares } from "./Shares";
 import { Trash } from "./Trash";
@@ -520,6 +521,17 @@ function SearchResults({
                       the opt-in there is nothing here to print. */}
                   {ownershipLabel(h) && ` · ${ownershipLabel(h)}`}
                 </div>
+                {/* Only on a semantic hit. A lexical match is the trigram index
+                    doing exactly what it was asked; there is no judgement for the
+                    server to act on, and offering a control that quietly does
+                    nothing is the same mistake as a scope field that parses and
+                    is ignored. */}
+                {h.semantic && (
+                  <FeedbackControls
+                    target={{ kind: "search", node_id: h.id, context: query }}
+                    label={`feedback on ${h.name} as a result`}
+                  />
+                )}
               </td>
               <td className="size">{h.kind === "file" ? formatBytes(h.size ?? 0) : "—"}</td>
               <td className="when">{formatDate(h.updated_at)}</td>

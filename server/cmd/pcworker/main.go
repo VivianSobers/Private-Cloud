@@ -43,6 +43,8 @@ import (
 	"github.com/guru-bharadwaj20/private-cloud/server/internal/extract"
 	"github.com/guru-bharadwaj20/private-cloud/server/internal/files"
 	"github.com/guru-bharadwaj20/private-cloud/server/internal/jobs"
+	"github.com/guru-bharadwaj20/private-cloud/server/internal/jobs/billing"
+	"github.com/guru-bharadwaj20/private-cloud/server/internal/jobs/tiering"
 	"github.com/guru-bharadwaj20/private-cloud/server/internal/media"
 	"github.com/guru-bharadwaj20/private-cloud/server/internal/metrics"
 )
@@ -129,6 +131,20 @@ func run() error {
 	}
 	go prune(ctx, store, retention, queuedTTL, log)
 
+	// Metering (Phase 9 slice 5). A periodic task rather than a queue job,
+	// because it is per-OWNER and per-PERIOD work with no node to key on — and
+	// the queue's unique-pending index, its retry budget and its dead letter are
+	// all shaped around a job that belongs to one file.
+	//
+	// It reads the numbers from files.Store.Usage, which is what quota
+	// enforcement and GET /usage already answer from, and writes them into a
+	// metering record. There is no second accounting here, deliberately: two
+	// notions of a number disagree eventually, and a disagreement about how much
+	// somebody stored is one that surfaces on a bill.
+	if err := startMetering(ctx, database, log); err != nil {
+		return fmt.Errorf("billing: %w", err)
+	}
+
 	log.Info("pcworker draining queue")
 	if err := runner.Run(ctx); err != nil && ctx.Err() == nil {
 		return err
@@ -171,7 +187,15 @@ func registerHandlers(ctx context.Context, runner *jobs.Runner, store *jobs.Stor
 		return nil
 	}
 
-	blobs, err := blob.NewFSStore(blobPath)
+	// The cold tier, if one is configured. Built here rather than only in the API
+	// because this process is where demotion runs, and because every handler
+	// below reads content: a worker with a plain local store would fail to open
+	// exactly the files that had already been moved.
+	coldCfg, err := config.LoadCold()
+	if err != nil {
+		return fmt.Errorf("cold tier: %w", err)
+	}
+	_, blobs, err := blob.Open(blobPath, workerColdConfig(coldCfg), log)
 	if err != nil {
 		return fmt.Errorf("blob store: %w", err)
 	}
@@ -217,11 +241,32 @@ func registerHandlers(ctx context.Context, runner *jobs.Runner, store *jobs.Stor
 		files.NewMediaBlobWriter(filesSvc),
 		log,
 	)
+
+	// Video thumbnails, only where an operator named an ffmpeg binary. Off by
+	// default, and off is a supported state: videos still get their duration,
+	// dimensions, rotation and capture time from the container header, so they
+	// still take their place in the timeline — they just have no tile, which is
+	// exactly what happened before this existed.
+	mediaCfg, err := config.LoadMedia()
+	if err != nil {
+		return err
+	}
+	thumbnailer := media.NewThumbnailer(mediaCfg.FFmpegPath)
+	mediaHandler.VideoThumbnails(thumbnailer)
+	if mediaCfg.VideoThumbnailsEnabled() && !thumbnailer.Available() {
+		// The one combination worth shouting about: somebody asked for this and
+		// the binary is not there. Silently behaving like the default would send
+		// them looking for the bug in the job queue.
+		log.Warn("PC_FFMPEG_PATH is set but no such executable was found; video thumbnails stay off",
+			"path", mediaCfg.FFmpegPath)
+	}
+
 	runner.Register(media.Kind, func(ctx context.Context, j jobs.Job) error {
 		return mediaHandler.Handle(ctx, j.NodeID, j.OwnerID)
 	})
 	log.Info("media handler registered",
-		"thumb_max_edge", media.ThumbMaxEdge, "preview_max_edge", media.PreviewMaxEdge)
+		"thumb_max_edge", media.ThumbMaxEdge, "preview_max_edge", media.PreviewMaxEdge,
+		"video_thumbnails", thumbnailer.Available())
 
 	// Faces: its own kind and its own sidecar, so a deployment that wants
 	// thumbnails and search need not run a face model. Registered only where BOTH
@@ -238,7 +283,99 @@ func registerHandlers(ctx context.Context, runner *jobs.Runner, store *jobs.Stor
 			"sidecar", embedCfg.DetectURL, "model", embedCfg.DetectModel, "dim", embedCfg.DetectDim)
 	}
 
+	// Image embedding: the second vector space, and the same narrow requirement
+	// as faces — image bytes AND a model. Registered under the identical
+	// condition and for the identical reason, so a deployment that wants
+	// thumbnails and document search runs neither and loses nothing it had.
+	if embedCfg.ImageEmbeddingEnabled() {
+		imageClient := embed.NewImageClient(embedCfg.ImageURL, embedCfg.ImageModel, embedCfg.ImageDim)
+		if verifyImageSidecar(ctx, imageClient, embedCfg, log) {
+			imageHandler := embed.NewImageHandler(
+				files.NewImageEmbedOpener(filesSvc), files.NewImageVectorStore(fileStore), imageClient, log)
+			runner.Register(embed.ImageKind, func(ctx context.Context, j jobs.Job) error {
+				return imageHandler.Handle(ctx, j.NodeID, j.OwnerID)
+			})
+			log.Info("image embedding handler registered",
+				"sidecar", embedCfg.ImageURL, "model", embedCfg.ImageModel, "dim", embedCfg.ImageDim)
+		}
+	}
+
+	// Tiering: its own kind, so a deployment can run demotion on the box that can
+	// reach the bucket and nothing else. Registered only when a cold tier is
+	// actually configured — a tier job on a server with no bucket would do
+	// nothing but dead-letter, which is the same reason faces is conditional.
+	if tiered, ok := blobs.(*blob.TieredStore); ok && tiered.Enabled() {
+		tierHandler, err := tiering.NewHandler(
+			tiering.NewStore(database.Pool), tiered,
+			tiering.Policy{
+				MinAge:  coldCfg.MinAge,
+				MinIdle: coldCfg.MinIdle,
+				MinSize: coldCfg.MinSize,
+				Batch:   coldCfg.Batch,
+			}, log)
+		if err != nil {
+			return fmt.Errorf("tiering: %w", err)
+		}
+		runner.Register(tiering.Kind, func(ctx context.Context, _ jobs.Job) error {
+			return tierHandler.Handle(ctx)
+		})
+		p := tierHandler.Policy()
+		log.Info("tiering handler registered",
+			"endpoint", coldCfg.Endpoint, "bucket", coldCfg.Bucket,
+			"min_age", p.MinAge, "min_idle", p.MinIdle, "min_size", p.MinSize, "batch", p.Batch)
+	}
+
 	return nil
+}
+
+// workerColdConfig is coldConfig's twin for the worker, which loads the
+// cold-tier settings on their own rather than the API's whole configuration.
+//
+// nil when the tier is off, which is what makes blob.Open return the local
+// store unwrapped — the state every deployment without a cold tier is in.
+func workerColdConfig(c config.ColdSettings) *blob.S3Config {
+	if !c.ColdTierEnabled() {
+		return nil
+	}
+	return &blob.S3Config{
+		Endpoint:  c.Endpoint,
+		Bucket:    c.Bucket,
+		Region:    c.Region,
+		AccessKey: c.AccessKey,
+		SecretKey: c.SecretKey,
+		Prefix:    c.Prefix,
+	}
+}
+
+// verifyImageSidecar is verifyEmbedSidecar's judgement applied to the image
+// space: a DIMENSION mismatch means every vector this worker wrote would be
+// invisible to the ranking filter forever, so the handler is not registered and
+// the jobs stay queued for a correctly configured worker rather than burning
+// their retry budget. Anything else — a sidecar still loading a multi-hundred-
+// megabyte vision model — is transient, so it registers anyway and the first job
+// retries with backoff. A MODEL mismatch is a warning for the reason the text
+// path documents: it is the one failure nothing downstream can detect.
+func verifyImageSidecar(ctx context.Context, c *embed.ImageClient, cfg config.EmbedConfig, log *slog.Logger) bool {
+	probeCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
+	defer cancel()
+
+	info, err := c.Verify(probeCtx)
+	switch {
+	case errors.Is(err, embed.ErrDimMismatch):
+		log.Error("image embedding handler NOT registered: sidecar dimension mismatch",
+			"error", err, "configured_dim", cfg.ImageDim, "sidecar_dim", info.Dim)
+		return false
+	case err != nil:
+		log.Warn("could not verify image embedding sidecar at startup; registering anyway",
+			"error", err, "sidecar", cfg.ImageURL)
+		return true
+	}
+	if !c.SameImageModel(info.Model) {
+		log.Warn("image sidecar serves a DIFFERENT model than PC_IMAGE_EMBED_MODEL names; "+
+			"new vectors will land in the same logical space as another model's",
+			"sidecar_model", info.Model, "configured_model", cfg.ImageModel)
+	}
+	return true
 }
 
 // verifyEmbedSidecar checks the sidecar serves the width and model this worker
@@ -360,4 +497,55 @@ func newLogger() *slog.Logger {
 		return slog.New(slog.NewTextHandler(os.Stdout, opts))
 	}
 	return slog.New(slog.NewJSONHandler(os.Stdout, opts))
+}
+
+// startMetering wires the billing metering sweep and, if configured, the
+// outbound billing webhook.
+//
+// It runs here rather than in the API for the same reason every other periodic
+// and memory-hungry thing does: the always-on box's API process keeps its
+// request path clear of optional outbound work, and stopping this process
+// degrades the system to exactly the one that existed before billing hooks —
+// quotas still enforced, /usage still correct, simply no history being recorded.
+//
+// Zero PC_BILLING_METER_INTERVAL disables it entirely and is a supported state.
+// A deployment that will never bill for anything may reasonably decline to pay a
+// usage query per account per tick, and the plan endpoints keep working; they
+// just have nothing historical to report.
+func startMetering(ctx context.Context, database *db.DB, log *slog.Logger) error {
+	cfg, err := config.LoadBilling()
+	if err != nil {
+		return err
+	}
+	kind, err := billing.ParsePeriodKind(cfg.Period)
+	if err != nil {
+		return err
+	}
+	if !cfg.MeteringEnabled() {
+		log.Info("metering disabled (PC_BILLING_METER_INTERVAL=0); no usage snapshots will be recorded")
+		return nil
+	}
+
+	hook := billing.NewWebhook(billing.Config{
+		URL:      cfg.WebhookURL,
+		Secret:   cfg.WebhookSecret,
+		Timeout:  cfg.WebhookTimeout,
+		Attempts: cfg.WebhookAttempts,
+	}, log)
+	if hook != nil {
+		log.Info("billing webhook enabled", "url", cfg.WebhookURL, "attempts", cfg.WebhookAttempts)
+	}
+
+	meter := billing.NewMeter(
+		billing.NewStore(database.Pool),
+		files.NewStore(database.Pool),
+		hook, kind, log)
+	go func() {
+		meter.Run(ctx, cfg.MeterInterval)
+		// Deliveries already in flight when the context is cancelled are waited
+		// for rather than abandoned. Best effort does not mean careless.
+		hook.Wait()
+	}()
+	log.Info("metering enabled", "interval", cfg.MeterInterval.String(), "period", string(kind))
+	return nil
 }

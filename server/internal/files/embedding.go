@@ -165,13 +165,17 @@ func (s *Store) SemanticSearch(ctx context.Context, ownerID uuid.UUID, query []f
 		JOIN doc_embedding de ON de.content_hash = coalesce(b.sha256, m.content_hash)
 			AND de.model = $2 AND de.dim = $3
 		WHERE `+Visibility(includeShared)+` AND n.parent_id IS NOT NULL AND n.trashed_at IS NULL
+		  -- A hit this caller has already marked wrong does not come back. One
+		  -- definition of the predicate, shared with the indexed path and the
+		  -- retrieval scan, so which path answered cannot change what is shown.
+		  AND `+NotMarkedWrong("$1", "$5")+`
 		-- Ordered so the bound below truncates deterministically. Without it the
 		-- planner decides which vectors get scored once a corpus exceeds the cap,
 		-- and the same query returns different top results run to run. Newest
 		-- first is the useful half to keep when something has to be dropped.
 		ORDER BY n.updated_at DESC, n.id, de.chunk_seq
 		LIMIT $4`,
-		ownerID, model, len(query), maxSemanticScan)
+		ownerID, model, len(query), maxSemanticScan, FeedbackSearch)
 	if err != nil {
 		return nil, err
 	}
@@ -315,9 +319,10 @@ func (s *Store) semanticSearchIndexed(ctx context.Context, ownerID uuid.UUID, qu
 		JOIN doc_embedding de ON de.content_hash = coalesce(b.sha256, m.content_hash)
 			AND de.model = $3 AND de.dim = $4
 		WHERE `+Visibility(includeShared)+` AND n.parent_id IS NOT NULL AND n.trashed_at IS NULL
+		  AND `+NotMarkedWrong("$1", "$6")+`
 		ORDER BY distance
 		LIMIT $5`,
-		ownerID, embed.Literal(query), model, len(query), fanout)
+		ownerID, embed.Literal(query), model, len(query), fanout, FeedbackSearch)
 	if err != nil {
 		return nil, false, err
 	}

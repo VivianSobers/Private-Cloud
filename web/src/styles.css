@@ -800,3 +800,50 @@ dialog::backdrop {
 .share-dest .tag {
   cursor: pointer;
 }
+
+/* --- Feedback on machine output ------------------------------------------ */
+/* Three small buttons wherever the machine produced something: an answer, a
+   citation, a similar-file thumbnail, a semantic search hit. Deliberately quiet
+   — they sit beside a result, not over it, because the result is what somebody
+   came for and a rating widget competing with it for attention is a rating
+   widget people learn to ignore. The chosen one is the only one that gets any
+   colour, and only "wrong" gets the warning one, because it is the only verdict
+   that changes what the server will show next time. */
+.feedback {
+  display: inline-flex;
+  gap: 2px;
+  align-items: center;
+}
+.feedback-btn {
+  padding: 0 0.3rem;
+  border: 1px solid transparent;
+  border-radius: 4px;
+  background: none;
+  color: var(--fg-muted);
+  font-size: 0.8rem;
+  line-height: 1.6;
+  cursor: pointer;
+}
+.feedback-btn:hover:not(:disabled) {
+  border-color: var(--border);
+  color: var(--fg);
+}
+.feedback-btn:disabled {
+  cursor: default;
+  opacity: 0.5;
+}
+.feedback-btn.chosen {
+  border-color: var(--border);
+  background: var(--bg-subtle);
+  color: var(--fg);
+}
+/* The similar strip is a horizontal row of thumbnails; each one now carries its
+   own verdict underneath, so the item is a column rather than the bare button
+   it used to be. */
+.sim-item {
+  display: flex;
+  flex: 0 0 auto;
+  flex-direction: column;
+  align-items: center;
+  gap: 2px;
+}

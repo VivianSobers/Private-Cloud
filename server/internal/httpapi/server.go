@@ -16,9 +16,11 @@ import (
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 
 	"github.com/guru-bharadwaj20/private-cloud/server/internal/auth"
+	"github.com/guru-bharadwaj20/private-cloud/server/internal/blob"
 	"github.com/guru-bharadwaj20/private-cloud/server/internal/db"
 	"github.com/guru-bharadwaj20/private-cloud/server/internal/embed"
 	"github.com/guru-bharadwaj20/private-cloud/server/internal/files"
+	"github.com/guru-bharadwaj20/private-cloud/server/internal/jobs/billing"
 	"github.com/guru-bharadwaj20/private-cloud/server/internal/metrics"
 	"github.com/guru-bharadwaj20/private-cloud/server/internal/push"
 	"github.com/guru-bharadwaj20/private-cloud/server/internal/shares"
@@ -49,6 +51,13 @@ type Server struct {
 	// answer. Retrieval is the trustworthy half of RAG and useful on its own, so
 	// the absence of an optional generator must not take away a working feature.
 	generator embed.Generator
+
+	// imageEmbedder is set when an image-embedding sidecar is configured; nil
+	// otherwise, in which case /similar ranks in the document space exactly as it
+	// did before the image space existed. Held for its MODEL and width only —
+	// ranking reads vectors the worker already stored, so no request path calls
+	// this and it has no timeout anyone waits on.
+	imageEmbedder embed.ImageEmbedder
 
 	// oidc is set when a single sign-on provider is configured; nil otherwise, in
 	// which case the OIDC endpoints report the feature disabled and the passkey
@@ -86,7 +95,28 @@ type Server struct {
 	// GET /push/key then 404s and a client keeps polling GET /changes.
 	push     *push.Sender
 	notifier *push.Notifier
+
+	// billingHook delivers plan-change events to whatever an operator has
+	// pointed it at. nil when unconfigured, which is the default and a fully
+	// supported state — a nil *billing.Webhook is a valid disabled one, so no
+	// call site has to guard and the disabled path cannot be the one somebody
+	// forgets to test.
+	billingHook *billing.Webhook
+
+	// blobs is the tiered store, when this deployment has a cold tier. Held only
+	// so the storage report can say whether one exists and how much is in it —
+	// every actual read goes through files.Service, which has the same store.
+	// Nil is the ordinary case and reads as "no cold tier".
+	blobs *blob.TieredStore
 }
+
+// SetColdTier tells the storage report that a cold tier exists.
+//
+// Separate from the blob store the file service was built with, because this is
+// the only thing in the HTTP layer that needs to KNOW about tiering rather than
+// simply read through it. Left unset, /admin/storage reports the tier as
+// disabled — which is the honest answer for every deployment that has none.
+func (s *Server) SetColdTier(t *blob.TieredStore) { s.blobs = t }
 
 // SetPush enables Web Push delivery. Left unset when no VAPID key is configured.
 //
@@ -106,6 +136,12 @@ func (s *Server) SetEmbedder(e embed.Embedder) { s.embedder = e }
 // SetGenerator enables written answers on /chat. Left unset when no generation
 // sidecar is configured, in which case the endpoint returns retrieval only.
 func (s *Server) SetGenerator(g embed.Generator) { s.generator = g }
+
+// SetImageEmbedder enables image-space similarity by naming the space photos are
+// indexed in. Left unset when no image sidecar is configured, in which case
+// /similar keeps ranking in the document space and a photograph with no text
+// still answers 404 not_indexed — the behaviour that predates the space.
+func (s *Server) SetImageEmbedder(e embed.ImageEmbedder) { s.imageEmbedder = e }
 
 type Options struct {
 	Version      string
@@ -328,6 +364,15 @@ func (s *Server) registerRoutes(mux router) {
 	// authenticated user can ask this deployment to do.
 	mux.HandleFunc("POST /api/v1/chat", s.requireAuth(s.searchLimited(s.handleChat)))
 
+	// Feedback on what the machine produced. NOT rate limited alongside search:
+	// it costs one small write against the caller's own rows and no sidecar at
+	// all, and slowing down the one route whose entire purpose is to hear that
+	// something is wrong would be the wrong thing to ration. It is also the only
+	// Phase 8 route that works with every sidecar switched off, which is why it
+	// carries no availability check.
+	mux.HandleFunc("POST /api/v1/feedback", s.requireAuth(s.handleSubmitFeedback))
+	mux.HandleFunc("GET /api/v1/feedback", s.requireAuth(s.handleListFeedback))
+
 	// People. A cluster is unnamed until somebody names it; merge and reassign
 	// exist because clustering is going to be wrong, and a faces feature with no
 	// correction path is one people stop trusting after the first mistake.
@@ -430,6 +475,17 @@ func (s *Server) registerRoutes(mux router) {
 	// Reads the same textfile collectors the alerts scrape, so the console and
 	// Grafana never disagree about whether the pool is healthy.
 	mux.HandleFunc("GET /api/v1/admin/storage", s.requireAdmin(s.handleAdminStorage))
+
+	// --- billing hooks (Phase 9 slice 5) -------------------------------------
+	// The integration seam, not a billing system: a plan is a named quota, a
+	// metering record makes a closed period answerable, and the outbound webhook
+	// is how something else is told. Admin-only, like every other console route,
+	// because a plan is what an account is allowed to store and a metering record
+	// is how much everybody stored.
+	mux.HandleFunc("GET /api/v1/admin/billing/plans", s.requireAdmin(s.handleAdminListPlans))
+	mux.HandleFunc("POST /api/v1/admin/billing/plans", s.requireAdmin(s.handleAdminUpsertPlan))
+	mux.HandleFunc("PUT /api/v1/admin/billing/accounts/{id}/plan", s.requireAdmin(s.handleAdminSetAccountPlan))
+	mux.HandleFunc("GET /api/v1/admin/billing/metering", s.requireAdmin(s.handleAdminMetering))
 
 	// --- WebDAV --------------------------------------------------------------
 	// Mounted outside /api because it is a different protocol with a different

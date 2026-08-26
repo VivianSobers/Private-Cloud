@@ -573,6 +573,56 @@ event, then `done`.
 - Retrieval only ever reaches content the caller could already open, so chat
   never becomes a way to read around a permission.
 
+**Feedback on machine output.** A person's judgement on something the machine
+produced, recorded durably and read back by them — and, for the two result kinds
+that name a file, consulted by retrieval the next time it answers them.
+
+```
+POST /feedback   {kind, node_id?, person_id?, context?, verdict, note?}
+                 → 201 {feedback}
+GET  /feedback?kind=&limit=&offset=   → {feedback: [feedback], count}
+```
+
+```json
+"feedback": {
+  "id": "uuid", "kind": "similar", "verdict": "wrong",
+  "node_id": "uuid", "path": "/work/report.pdf", "name": "report.pdf",
+  "context": "the question asked, the query typed, or the node /similar started from",
+  "note": "not the same building",
+  "created_at": "…", "updated_at": "…"
+}
+```
+
+- `kind` is one of `answer`, `citation`, `similar`, `search`, `face` — the result
+  shapes this server actually produces. `verdict` is one of `helpful`,
+  `not_helpful`, `wrong`. `note` is at most 500 characters.
+- `answer` carries no target id: an answer is a sentence that existed once, so
+  the question in `context` is what identifies it. `face` carries `person_id`;
+  the other three carry `node_id`.
+- **This is not training data.** Phase 4 put model training out of scope and
+  nothing here retrains anything. What a `wrong` verdict does is *suppress that
+  result for that person*: a `similar` verdict removes the node from their later
+  `/similar` results, a `search` verdict from their semantic search, a `citation`
+  verdict from their chat retrieval. The effect is in the query, not in a model.
+- Suppression is **scoped to the kind that was judged**. "This is not like my
+  file" is a claim about similarity, not a claim that the document is a poor
+  source for an unrelated question.
+- Re-submitting the same target **replaces** the verdict rather than adding a
+  second one, which is what makes the effect reversible — marking something
+  helpful again lifts the suppression, so there is no delete endpoint to get
+  wrong.
+- Per-owner, and **not** content-addressed, for the same reason face data is not:
+  a judgement describes a person's opinion, not the bytes, and one user calling a
+  neighbour wrong must not change what a stranger owning the same file is shown.
+- You may only give feedback on something you could already read, and a node you
+  may not read is answered **exactly as a node that does not exist** (`404
+  not_found`). Anything else would make this endpoint an existence oracle.
+- `GET /feedback` returns the caller's own feedback only. There is no parameter
+  that widens it and no admin view: "what did my users call wrong" is a different
+  feature with a different consent story.
+- The one Phase 8 route that needs **no sidecar at all** — it is a write against
+  the caller's own rows, so it works with everything else switched off.
+
 ### Phase 9 — Scale & resilience 🟠 partly shipped · ✅ consumed
 
 *`GET /admin/storage` is served and read by the admin console's Storage tab. The cold

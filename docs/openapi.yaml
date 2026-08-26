@@ -46,6 +46,71 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/Error"
+  "/api/v1/admin/billing/accounts/{id}/plan":
+    parameters:
+      - name: id
+        in: path
+        required: true
+        schema:
+          type: string
+    put:
+      operationId: putApiV1AdminBillingAccountsIdPlan
+      security:
+        - sessionCookie: []
+        - bearerToken: []
+      responses:
+        "default":
+          description: |
+            See docs/api-contract.md for this endpoint's request and response
+            bodies. Every failure uses the Error schema below.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+  "/api/v1/admin/billing/metering":
+    get:
+      operationId: getApiV1AdminBillingMetering
+      security:
+        - sessionCookie: []
+        - bearerToken: []
+      responses:
+        "default":
+          description: |
+            See docs/api-contract.md for this endpoint's request and response
+            bodies. Every failure uses the Error schema below.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+  "/api/v1/admin/billing/plans":
+    get:
+      operationId: getApiV1AdminBillingPlans
+      security:
+        - sessionCookie: []
+        - bearerToken: []
+      responses:
+        "default":
+          description: |
+            See docs/api-contract.md for this endpoint's request and response
+            bodies. Every failure uses the Error schema below.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+    post:
+      operationId: postApiV1AdminBillingPlans
+      security:
+        - sessionCookie: []
+        - bearerToken: []
+      responses:
+        "default":
+          description: |
+            See docs/api-contract.md for this endpoint's request and response
+            bodies. Every failure uses the Error schema below.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
   "/api/v1/admin/fsck":
     post:
       operationId: postApiV1AdminFsck
@@ -763,6 +828,35 @@ paths:
                 $ref: "#/components/schemas/Error"
     delete:
       operationId: deleteApiV1DevicesIdPush
+      security:
+        - sessionCookie: []
+        - bearerToken: []
+      responses:
+        "default":
+          description: |
+            See docs/api-contract.md for this endpoint's request and response
+            bodies. Every failure uses the Error schema below.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+  "/api/v1/feedback":
+    get:
+      operationId: getApiV1Feedback
+      security:
+        - sessionCookie: []
+        - bearerToken: []
+      responses:
+        "default":
+          description: |
+            See docs/api-contract.md for this endpoint's request and response
+            bodies. Every failure uses the Error schema below.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+    post:
+      operationId: postApiV1Feedback
       security:
         - sessionCookie: []
         - bearerToken: []

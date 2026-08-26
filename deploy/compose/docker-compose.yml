@@ -206,6 +206,13 @@ services:
       PC_EMBED_URL: ${PC_EMBED_URL:-}
       PC_EMBED_MODEL: ${PC_EMBED_MODEL:-bge-small-en-v1.5}
       PC_EMBED_DIM: ${PC_EMBED_DIM:-384}
+      # --- image similarity: the API never CALLS this sidecar — it ranks vectors
+      #     the worker already stored — so what these three give it is the name
+      #     and width of the space. Empty leaves /nodes/{id}/similar ranking in
+      #     the document space, which is what it did before the space existed. ---
+      PC_IMAGE_EMBED_URL: ${PC_IMAGE_EMBED_URL:-}
+      PC_IMAGE_EMBED_MODEL: ${PC_IMAGE_EMBED_MODEL:-clip-vit-base-patch32}
+      PC_IMAGE_EMBED_DIM: ${PC_IMAGE_EMBED_DIM:-512}
       # --- OIDC single sign-on (optional; empty disables it, passkeys unaffected) ---
       PC_OIDC_ISSUER: ${PC_OIDC_ISSUER:-}
       PC_OIDC_CLIENT_ID: ${PC_OIDC_CLIENT_ID:-}
@@ -271,6 +278,21 @@ services:
       PC_ENABLE_SEMANTIC: ${PC_ENABLE_SEMANTIC:-}
       PC_EMBED_MODEL: ${PC_EMBED_MODEL:-bge-small-en-v1.5}
       PC_EMBED_DIM: ${PC_EMBED_DIM:-384}
+      # Point PC_IMAGE_EMBED_URL at the image-embed-sidecar to register the
+      # image_embed handler on THIS worker. It needs both file bytes and a model,
+      # which is the narrowest requirement of any handler here — the same
+      # condition the faces handler registers under. Nothing enqueues this kind
+      # automatically: `cloudctl jobs reindex --kind=image_embed` is the opt-in,
+      # deliberately outside `--kind=all`.
+      PC_IMAGE_EMBED_URL: ${PC_IMAGE_EMBED_URL:-}
+      PC_IMAGE_EMBED_MODEL: ${PC_IMAGE_EMBED_MODEL:-clip-vit-base-patch32}
+      PC_IMAGE_EMBED_DIM: ${PC_IMAGE_EMBED_DIM:-512}
+      # Video thumbnails. Empty (the default) leaves them off, and off is a
+      # supported state: a video's duration, dimensions, rotation and capture
+      # time are read from the container header in-process, so videos still sort
+      # into the timeline correctly — they just have no tile. This image does not
+      # carry ffmpeg; see the note in deploy/secrets/.env.example.
+      PC_FFMPEG_PATH: ${PC_FFMPEG_PATH:-}
       # Serves /metrics (what the handlers actually did — OCR duration, embed
       # failure rate, handler panics) and the /healthz this container's
       # healthcheck probes. Queue DEPTH still comes from the API, which polls
@@ -331,6 +353,51 @@ services:
     healthcheck:
       # The model takes a while to load; start_period covers that so a slow
       # first start is not reported as a failure.
+      test: ["CMD", "python", "-c",
+             "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/healthz')"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 180s
+
+  # ==========================================================================
+  # Image-embedding inference sidecar — photo similarity's model tier.
+  # ==========================================================================
+  # Behind the `photos` profile, so it only runs with
+  #   docker compose --profile photos up
+  # Then set PC_IMAGE_EMBED_URL in .env to
+  #   http://image-embed-sidecar:8000
+  # which registers the image_embed handler on the worker and names the space
+  # for the API. Backfill an existing library with
+  #   cloudctl jobs reindex --kind=image_embed
+  # — deliberately outside --kind=all, because queueing a job per photo on a
+  # server with no sidecar fills the dead-letter queue instead of doing anything.
+  #
+  # PC_IMAGE_EMBED_DIM must equal the `dim` this reports at /healthz. A mismatch
+  # is the quiet failure: the worker refuses every vector and no photo ever
+  # ranks, which looks exactly like a library nobody indexed.
+  image-embed-sidecar:
+    build:
+      context: ../../deploy/image-embed-sidecar
+    image: privatecloud-image-embed:${API_VERSION:-dev}
+    container_name: privatecloud-image-embed
+    profiles: ["photos"]
+    <<: *default-restart
+    logging: *default-logging
+    networks: [data]
+    environment:
+      IMAGE_EMBED_HF_MODEL: ${PC_IMAGE_EMBED_HF_MODEL:-openai/clip-vit-base-patch32}
+      IMAGE_EMBED_MODEL: ${PC_IMAGE_EMBED_MODEL:-clip-vit-base-patch32}
+    # Hardened on the embed sidecar's terms and for its reason: a Python runtime
+    # with torch, reachable unauthenticated from the data network Postgres also
+    # sits on. Not read_only, because transformers writes its model cache on
+    # first load; confined to a tmpfs instead, so nothing it writes survives a
+    # restart and it cannot fill the host.
+    security_opt: [no-new-privileges:true]
+    cap_drop: [ALL]
+    tmpfs: [/tmp:size=256m, /home/app/.cache:size=4g]
+    mem_limit: ${PC_IMAGE_EMBED_MEM_LIMIT:-6g}
+    healthcheck:
       test: ["CMD", "python", "-c",
              "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/healthz')"]
       interval: 30s

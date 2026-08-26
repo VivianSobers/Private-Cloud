@@ -14,6 +14,10 @@ type ChunkRef struct {
 	StorageKey string
 	Size       int
 	StoredSize int
+	// Tier is 'hot' or 'cold' (migration 00028). Populated by AllChunkKeys, for
+	// fsck; the GC paths leave it empty because deleting a chunk deletes it from
+	// both tiers and does not need to know which one held it.
+	Tier string
 }
 
 // AllChunkKeys returns every storage key the chunk table knows about.
@@ -23,7 +27,7 @@ type ChunkRef struct {
 // only knows about `blobs` — and `--repair` would then delete all deduplicated
 // content in the system.
 func (s *Store) AllChunkKeys(ctx context.Context) (map[string]ChunkRef, error) {
-	rows, err := s.pool.Query(ctx, `SELECT hash, storage_key, size, stored_size FROM chunks`)
+	rows, err := s.pool.Query(ctx, `SELECT hash, storage_key, size, stored_size, tier FROM chunks`)
 	if err != nil {
 		return nil, err
 	}
@@ -35,7 +39,7 @@ func (s *Store) AllChunkKeys(ctx context.Context) (map[string]ChunkRef, error) {
 			c    ChunkRef
 			hash []byte
 		)
-		if err := rows.Scan(&hash, &c.StorageKey, &c.Size, &c.StoredSize); err != nil {
+		if err := rows.Scan(&hash, &c.StorageKey, &c.Size, &c.StoredSize, &c.Tier); err != nil {
 			return nil, err
 		}
 		copy(c.Hash[:], hash)

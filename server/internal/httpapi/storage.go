@@ -6,6 +6,7 @@ import (
 
 	"github.com/guru-bharadwaj20/private-cloud/server/internal/files"
 	"github.com/guru-bharadwaj20/private-cloud/server/internal/jobs"
+	"github.com/guru-bharadwaj20/private-cloud/server/internal/jobs/tiering"
 )
 
 // Phase 9: storage and platform health for the admin console.
@@ -89,13 +90,13 @@ func (s *Server) handleAdminStorage(w http.ResponseWriter, r *http.Request) {
 		"pools":  poolsOut,
 		"backup": backupOut,
 		"jobs":   jobStats,
-		// Tiering is not implemented. Reporting a "cold" tier holding zero bytes
-		// would imply the feature exists and is simply empty, which is a more
-		// misleading answer than saying so.
-		"tiering": map[string]any{
-			"enabled": false,
-			"note":    "no cold tier is configured; all content is on the local pool",
-		},
+		// Tiering, read from the database rather than from the bucket, for the
+		// same reason nothing here shells out to zpool: this is what the
+		// application believes it put there, and the difference between that and
+		// what the bucket actually holds is precisely the discrepancy fsck
+		// exists to find. A console that asked the bucket would be a second
+		// notion of the truth, and two notions disagree eventually.
+		"tiering": s.tieringReport(r),
 		"collector": map[string]any{
 			// Reported so an operator whose numbers are missing can see where the
 			// server looked, rather than guessing.
@@ -103,4 +104,40 @@ func (s *Server) handleAdminStorage(w http.ResponseWriter, r *http.Request) {
 			"available": available,
 		},
 	})
+}
+
+// tieringReport describes the cold tier, or says plainly that there is none.
+//
+// The distinction the old hardcoded `false` was protecting is kept exactly:
+// "disabled" is not a cold tier holding zero bytes. A deployment with no bucket
+// reports enabled:false and a note saying so, rather than a set of zeroes that
+// would imply the feature is on and merely empty — a more misleading answer
+// than saying nothing at all.
+//
+// When a tier IS configured, the numbers come from the same rows the demotion
+// job writes and fsck reads, so the console, `cloudctl tier status` and the
+// checker cannot disagree about how much is cold.
+func (s *Server) tieringReport(r *http.Request) map[string]any {
+	if s.blobs == nil || !s.blobs.Enabled() {
+		return map[string]any{
+			"enabled": false,
+			"note":    "no cold tier is configured; all content is on the local pool",
+		}
+	}
+	out := map[string]any{"enabled": true}
+	if s.db == nil {
+		return out
+	}
+	usage, err := tiering.NewStore(s.db.Pool).Usage(r.Context())
+	if err != nil {
+		// One failed query costs the cold numbers, not the whole report — the
+		// pools, the backup and the job queue are what an operator came for.
+		out["note"] = "the cold tier is configured, but its accounting could not be read"
+		return out
+	}
+	out["cold_bytes"] = usage.Bytes()
+	out["cold_objects"] = usage.Objects()
+	out["cold_blobs"] = usage.ColdBlobs
+	out["cold_chunks"] = usage.ColdChunks
+	return out
 }

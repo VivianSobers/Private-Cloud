@@ -62,9 +62,27 @@ func (s *Server) handleAdminListUsers(w http.ResponseWriter, r *http.Request) {
 		s.serverError(w, r, "list users", err)
 		return
 	}
+	// Which plan each account is on, read once for the whole list rather than per
+	// row. Best effort: a billing table that is missing or slow must not take
+	// down the user list, which is the console's primary function and predates
+	// billing by two phases.
+	plans := s.billingAssignments(r.Context())
+
 	out := make([]map[string]any, 0, len(users))
 	for _, u := range users {
 		entry := adminUserJSON(u)
+		// The plan is reported BESIDE quota_bytes, never instead of it. A plan
+		// writes its quota through on assignment and then stops being consulted,
+		// so quota_bytes remains the number enforcement reads — and an admin who
+		// has since edited it directly must be able to see that the two have
+		// parted company rather than being shown only the plan and told a
+		// comfortable story about a limit that is no longer in force.
+		if a := plans[u.ID]; a != nil && a.Plan != nil {
+			entry["plan"] = a.Plan.Name
+			if a.Plan.QuotaBytes != nil {
+				entry["plan_quota_bytes"] = *a.Plan.QuotaBytes
+			}
+		}
 		// Usage per account, so a quota column means something. Best effort: a
 		// failed usage read leaves the numbers absent rather than failing the
 		// whole list.

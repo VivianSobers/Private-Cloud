@@ -52,8 +52,8 @@ func TestSimilarToRanksRelatedDocuments(t *testing.T) {
 		"asteroid.txt": "planets orbit galaxy stars cosmos nebula asteroid comet",
 	})
 
-	results, err := f.store.SimilarTo(context.Background(), f.user, ids["cats.txt"],
-		bow.Model(), 10, false)
+	results, _, err := f.store.SimilarTo(context.Background(), f.user, ids["cats.txt"],
+		files.SimilarSpaces{Text: bow.Model()}, 10, false)
 	if err != nil {
 		t.Fatalf("SimilarTo: %v", err)
 	}
@@ -86,7 +86,8 @@ func TestSimilarToReportsAnUnindexedFile(t *testing.T) {
 	// Uploaded but never extracted or embedded.
 	node := f.upload(f.root, "raw.bin", "\x00\x01\x02")
 
-	_, err := f.store.SimilarTo(context.Background(), f.user, node.ID, bow.Model(), 10, false)
+	_, _, err := f.store.SimilarTo(context.Background(), f.user, node.ID,
+		files.SimilarSpaces{Text: bow.Model()}, 10, false)
 	if !errors.Is(err, files.ErrNoEmbedding) {
 		t.Fatalf("SimilarTo on an unindexed file = %v, want ErrNoEmbedding", err)
 	}
@@ -100,8 +101,8 @@ func TestSimilarToRefusesAnUnreadableSource(t *testing.T) {
 	bow := bowEmbedder{dim: 1024}
 	ids := indexCorpus(t, f, bow, map[string]string{"private.txt": "confidential merger terms"})
 
-	_, err := f.store.SimilarTo(context.Background(), f.other(t), ids["private.txt"],
-		bow.Model(), 10, false)
+	_, _, err := f.store.SimilarTo(context.Background(), f.other(t), ids["private.txt"],
+		files.SimilarSpaces{Text: bow.Model()}, 10, false)
 	if !errors.Is(err, files.ErrNotFound) {
 		t.Fatalf("stranger's SimilarTo = %v, want ErrNotFound", err)
 	}
@@ -119,8 +120,8 @@ func TestSimilarToDoesNotRankAnotherUsersFiles(t *testing.T) {
 
 	// The second user asks about a file they cannot see — refused — and the first
 	// user's results contain only their own files, which is all there are.
-	results, err := f.store.SimilarTo(context.Background(), f.user, ids["mine.txt"],
-		bow.Model(), 10, false)
+	results, _, err := f.store.SimilarTo(context.Background(), f.user, ids["mine.txt"],
+		files.SimilarSpaces{Text: bow.Model()}, 10, false)
 	if err != nil {
 		t.Fatalf("SimilarTo: %v", err)
 	}

@@ -26,6 +26,12 @@ type Store struct {
 	// the catalog rather than configured.
 	pgvecOnce sync.Once
 	pgvec     bool
+
+	// The same probe for the image space's copy, kept separate because the two
+	// columns are added by different migrations and a database can legitimately
+	// have one and not the other. See imageembed.go.
+	imgVecOnce sync.Once
+	imgVec     bool
 }
 
 func NewStore(pool *pgxpool.Pool) *Store { return &Store{pool: pool} }
@@ -677,6 +683,10 @@ type BlobRef struct {
 	StorageKey string
 	Size       int64
 	SHA256     []byte
+	// Tier is 'hot' or 'cold' (migration 00028). fsck needs it to tell apart the
+	// two reasons a key can be absent from the local pool: content deliberately
+	// demoted to object storage, and content that is actually gone.
+	Tier string
 }
 
 // UnreferencedBlobs lists blobs no version points at any more.
@@ -721,7 +731,7 @@ func (s *Store) DeleteBlobRow(ctx context.Context, id uuid.UUID) (bool, error) {
 // AllBlobKeys returns every storage key the database knows about, for fsck's
 // orphan detection.
 func (s *Store) AllBlobKeys(ctx context.Context) (map[string]BlobRef, error) {
-	rows, err := s.pool.Query(ctx, `SELECT id, storage_key, size, sha256 FROM blobs`)
+	rows, err := s.pool.Query(ctx, `SELECT id, storage_key, size, sha256, tier FROM blobs`)
 	if err != nil {
 		return nil, err
 	}
@@ -730,7 +740,7 @@ func (s *Store) AllBlobKeys(ctx context.Context) (map[string]BlobRef, error) {
 	out := make(map[string]BlobRef)
 	for rows.Next() {
 		var b BlobRef
-		if err := rows.Scan(&b.ID, &b.StorageKey, &b.Size, &b.SHA256); err != nil {
+		if err := rows.Scan(&b.ID, &b.StorageKey, &b.Size, &b.SHA256, &b.Tier); err != nil {
 			return nil, err
 		}
 		out[b.StorageKey] = b

@@ -129,6 +129,40 @@ export interface Citation {
   score: number;
 }
 
+/** What a person judged. Each value names a result shape the server actually
+ *  produces; `answer` is the written answer as a whole, `citation` one document
+ *  it cited. */
+export type FeedbackKind = "answer" | "citation" | "similar" | "search" | "face";
+
+/** Three verdicts, not a star rating. `not_helpful` and `wrong` are different
+ *  claims and only `wrong` suppresses the result — something can be perfectly
+ *  correct and still useless for the question that was asked. */
+export type FeedbackVerdict = "helpful" | "not_helpful" | "wrong";
+
+/** What the client sends. `answer` carries no id — an answer is a sentence that
+ *  existed once, so the question in `context` is what identifies it; `face`
+ *  carries `person_id`, and the rest carry `node_id`. */
+export interface FeedbackSubmission {
+  kind: FeedbackKind;
+  verdict: FeedbackVerdict;
+  node_id?: string;
+  person_id?: string;
+  context?: string;
+  note?: string;
+}
+
+/** One standing judgement, as the server stores it. Standing, not historical:
+ *  re-submitting the same target replaces it. */
+export interface Feedback extends FeedbackSubmission {
+  id: string;
+  created_at: string;
+  updated_at: string;
+  /** The target's path and name, when it is a file that still exists — so a
+   *  read-back is legible without a request per row. */
+  path?: string;
+  name?: string;
+}
+
 /** The answer to a question over the library. `answer` is present only when a
  *  generator produced one; otherwise `answer_unavailable` says why, and the
  *  citations are the trustworthy retrieval-only result. */
@@ -210,8 +244,61 @@ export interface AdminStorage {
   backup: { last_success_at?: string; last_failure_at?: string; age_seconds?: number };
   /** Counts keyed by job state (queued/running/done/failed). */
   jobs: Record<string, number>;
-  tiering: { enabled: boolean; note?: string };
+  /** The cold tier. `enabled: false` means there is no bucket at all — which is
+   *  deliberately NOT the same as a cold tier holding zero bytes, so the byte
+   *  fields are absent rather than 0 when the feature is off. A `note` with the
+   *  tier enabled means the accounting query failed, not that it is empty. */
+  tiering: {
+    enabled: boolean;
+    note?: string;
+    cold_bytes?: number;
+    cold_objects?: number;
+    cold_blobs?: number;
+    cold_chunks?: number;
+  };
   collector: { path: string; available: boolean };
+}
+
+/** A named quota an account can be put on. The price fields are metadata this
+ *  server never charges anybody for — billing here is the integration seam, not
+ *  a payment provider. */
+export interface BillingPlan {
+  id: string;
+  name: string;
+  description: string;
+  /** null is a real value meaning unlimited, distinct from absent. */
+  quota_bytes: number | null;
+  price_cents?: number | null;
+  currency?: string;
+  period: string;
+  created_at: string;
+  /** How many accounts are on this plan — the question that decides whether it
+   *  can be retired. Absent if the assignment read failed. */
+  account_count?: number;
+}
+
+/** One period's usage snapshot for one owner. The parts are reported separately
+ *  for the same reason the admin user list reports them separately: a full
+ *  account has to be explicable as "empty the trash", "wait for retention" or
+ *  "buy a disk", and a lone total explains none of the three. */
+export interface MeteringRecord {
+  id: string;
+  owner_id: string;
+  owner: string;
+  period_start: string;
+  period_end: string;
+  live_bytes: number;
+  trash_bytes: number;
+  version_bytes: number;
+  total_bytes: number;
+  peak_total_bytes: number;
+  file_count: number;
+  /** Distinguishes "this account stored nothing" from "nobody was measuring",
+   *  which is the first question anybody asks when a period looks wrong. */
+  samples: number;
+  plan?: string;
+  quota_bytes?: number;
+  recorded_at: string;
 }
 
 /** A user-ordered collection of nodes. NOT a folder: a node can be in many
@@ -856,6 +943,69 @@ export const api = {
     const q = p.toString();
     return request<{ entries: AuditEntry[]; has_more?: boolean }>(`/api/v1/admin/audit${q ? `?${q}` : ""}`);
   },
+
+  // --- billing hooks (Phase 9) ----------------------------------------------
+
+  // Every one of these 503s with `billing_unavailable` on a server whose
+  // migrations predate the feature, which the console renders as an absent tab
+  // rather than an error — the same degradation every optional surface uses.
+
+  adminBillingPlans: () => request<{ plans: BillingPlan[] }>("/api/v1/admin/billing/plans"),
+
+  // Upsert by name, matching the server: re-running the same provisioning step
+  // yields the same plan rather than a 409 somebody has to work around.
+  adminUpsertPlan: (body: {
+    name: string;
+    description?: string;
+    quota_bytes?: number | null;
+    price_cents?: number | null;
+    currency?: string;
+    period?: string;
+  }) =>
+    request<{ plan: BillingPlan }>("/api/v1/admin/billing/plans", {
+      method: "POST",
+      body: JSON.stringify(body),
+    }),
+
+  // A null plan_id detaches and LEAVES the quota where the plan put it — see the
+  // handler for why clearing it would be the opposite of what the action means.
+  adminSetAccountPlan: (userId: string, planId: string | null) =>
+    request<{ user_id: string; plan?: BillingPlan; assigned_at?: string }>(
+      `/api/v1/admin/billing/accounts/${userId}/plan`,
+      { method: "PUT", body: JSON.stringify({ plan_id: planId }) },
+    ),
+
+  adminMetering: (opts: { owner_id?: string; from?: string; to?: string; limit?: number } = {}) => {
+    const p = new URLSearchParams();
+    if (opts.owner_id) p.set("owner_id", opts.owner_id);
+    if (opts.from) p.set("from", opts.from);
+    if (opts.to) p.set("to", opts.to);
+    if (opts.limit != null) p.set("limit", String(opts.limit));
+    const q = p.toString();
+    return request<{ records: MeteringRecord[] }>(
+      `/api/v1/admin/billing/metering${q ? `?${q}` : ""}`,
+    );
+  },
+
+  // --- feedback on machine output (Phase 8) ---------------------------------
+
+  // Tell the server what a result was worth. Not training data — the server does
+  // not retrain anything — but a `wrong` verdict suppresses that result for this
+  // user in later answers of the same kind, and re-submitting a target replaces
+  // the verdict, so marking something helpful again lifts the suppression.
+  submitFeedback: (f: FeedbackSubmission) =>
+    request<{ feedback: Feedback }>("/api/v1/feedback", {
+      method: "POST",
+      body: JSON.stringify(f),
+    }),
+
+  // The caller's own feedback. Also the capability probe: a server too old to
+  // have this route answers 404 to a request that names no target, which is the
+  // one 404 here that cannot mean "no such node". See feedback.ts.
+  feedback: (kind?: FeedbackKind) =>
+    request<{ feedback: Feedback[]; count: number }>(
+      `/api/v1/feedback${kind ? `?kind=${encodeURIComponent(kind)}` : ""}`,
+    ),
 
   // --- people, similar, chat (Phase 8) --------------------------------------
 

@@ -108,6 +108,177 @@ type Config struct {
 	// supported state: a client that cannot subscribe polls GET /changes, which
 	// is what every client did before push existed.
 	Push PushSettings
+
+	// Media configures the optional external tooling the media job may use.
+	// Empty leaves video thumbnails off; photo thumbnails, video metadata and
+	// the timeline are unaffected either way.
+	Media MediaSettings
+
+	// Billing configures metering and the outbound billing webhook. Every field
+	// is off or benign by default: the plan and metering endpoints work with no
+	// configuration at all, and the webhook — the only part that talks to
+	// anything outside this deployment — stays silent until an operator names an
+	// endpoint for it.
+	Billing BillingSettings
+
+	// Cold configures the object-storage tier and the policy that demotes into
+	// it. Off by default, and off means the blob store is exactly the local one
+	// it has always been — no wrapper, no second location for fsck to reason
+	// about, and no change to any read path.
+	Cold ColdSettings
+}
+
+// MediaSettings names the external binaries the media job is allowed to run.
+//
+// One entry, and it is off by default. Video thumbnails are the only thing in
+// this system that genuinely needs a video decoder — duration, dimensions,
+// rotation and capture time are read in-process from the container header — so
+// the decoder is a switch rather than a dependency, on the same terms OCR's
+// tesseract is.
+//
+// One deliberate difference from OCR: tesseract is picked up from PATH, ffmpeg
+// is not. ffmpeg is present on a great many machines as a transitive dependency
+// of something unrelated, and video decoding is the largest hostile-input
+// surface here. Turning it on because a library happened to install it would be
+// an accident wearing the costume of an operator decision.
+type MediaSettings struct {
+	// FFmpegPath is the ffmpeg binary to invoke — an absolute path, or a bare
+	// name resolved on PATH. Empty (the default) disables video thumbnails.
+	FFmpegPath string
+}
+
+// VideoThumbnailsEnabled reports whether an operator asked for video
+// thumbnails. It says nothing about whether the binary is actually there: that
+// is resolved by media.NewThumbnailer and reported in the worker's startup log,
+// because "configured but missing" and "not configured" behave identically and
+// are very different mistakes.
+func (m MediaSettings) VideoThumbnailsEnabled() bool { return m.FFmpegPath != "" }
+
+// LoadMedia reads the media tooling settings on their own, for the worker —
+// which deliberately does not load the API's full configuration, exactly as
+// LoadEmbed exists so it need not.
+func LoadMedia() (MediaSettings, error) {
+	m := MediaSettings{FFmpegPath: env("PC_FFMPEG_PATH", "")}
+	if err := m.validate(); err != nil {
+		return MediaSettings{}, err
+	}
+	return m, nil
+}
+
+func (m MediaSettings) validate() error {
+	if !m.VideoThumbnailsEnabled() {
+		return nil
+	}
+	// A bare name (no separator) is a PATH lookup and is fine. A path WITH
+	// separators must be absolute, for the reason PC_BLOB_PATH must be: a
+	// relative path resolves against whatever the working directory happens to
+	// be, which differs between `make run`, the container and systemd — and a
+	// relative path to an executable is also how the wrong binary gets run.
+	if strings.ContainsAny(m.FFmpegPath, `/\`) && !filepath.IsAbs(m.FFmpegPath) {
+		return fmt.Errorf("PC_FFMPEG_PATH must be an absolute path or a bare command name (got %q)", m.FFmpegPath)
+	}
+	// Existence is deliberately NOT checked here. A missing binary degrades to
+	// "no video thumbnails", which is the same state the default is in and
+	// survivable; refusing to start the worker over it would take OCR, tagging
+	// and embedding down with it.
+	return nil
+}
+
+// BillingSettings configures Phase 9's metering and the outbound billing hook.
+//
+// The webhook is the only outbound capability in this file, and it is off by
+// default for the reason a self-hosted server should be: a deployment with one
+// account has nothing to tell anybody, and an HTTP call it never needed is a
+// capability an attacker would rather it had. Metering is separately switchable
+// because it costs a query per account per tick and a deployment that will never
+// bill for anything may reasonably decline to pay it.
+type BillingSettings struct {
+	// MeterInterval is how often the worker writes a usage snapshot per owner.
+	// Zero disables metering entirely; the plan endpoints keep working, they
+	// simply have nothing historical to report.
+	//
+	// The default is hourly rather than daily because the record's job is to make
+	// a CLOSED period answerable, and the peak within a period is only as
+	// truthful as the sampling that observed it.
+	MeterInterval time.Duration
+
+	// Period is the calendar grain a billing period is cut on: "month" (the
+	// default) or "day". Day exists so the period-closing path can be exercised
+	// without waiting a month for it.
+	Period string
+
+	// WebhookURL is where billing events are POSTed. Empty — the default —
+	// disables delivery, and nothing else changes.
+	WebhookURL string
+	// WebhookSecret keys the HMAC every delivery is signed with. Required when a
+	// URL is set: an unsigned webhook is an endpoint anybody who can reach it can
+	// forge a plan change into, and "we will add signing later" is how that ships.
+	WebhookSecret string
+	// WebhookTimeout bounds one delivery attempt.
+	WebhookTimeout time.Duration
+	// WebhookAttempts is how many times one event is tried before it is dropped
+	// and logged. A 4xx stops the retries immediately regardless — repeating a
+	// request the receiver has already called wrong cannot make it right.
+	WebhookAttempts int
+}
+
+// WebhookEnabled reports whether billing events will be delivered anywhere.
+func (b BillingSettings) WebhookEnabled() bool { return b.WebhookURL != "" }
+
+// MeteringEnabled reports whether the worker should take usage snapshots.
+func (b BillingSettings) MeteringEnabled() bool { return b.MeterInterval > 0 }
+
+// LoadBilling reads the billing settings on their own, for the worker — which
+// deliberately does not load the API's full configuration, exactly as LoadEmbed
+// and LoadMedia exist so it need not.
+func LoadBilling() (BillingSettings, error) {
+	b := BillingSettings{
+		MeterInterval:   envDuration("PC_BILLING_METER_INTERVAL", time.Hour),
+		Period:          env("PC_BILLING_PERIOD", "month"),
+		WebhookURL:      env("PC_BILLING_WEBHOOK_URL", ""),
+		WebhookSecret:   env("PC_BILLING_WEBHOOK_SECRET", ""),
+		WebhookTimeout:  envDuration("PC_BILLING_WEBHOOK_TIMEOUT", 10*time.Second),
+		WebhookAttempts: envInt("PC_BILLING_WEBHOOK_ATTEMPTS", 4),
+	}
+	if err := b.validate(); err != nil {
+		return BillingSettings{}, err
+	}
+	return b, nil
+}
+
+func (b BillingSettings) validate() error {
+	// The grain is validated even when metering is off, because turning metering
+	// on later must not be the moment a typo in an unrelated variable is
+	// discovered.
+	switch b.Period {
+	case "", "month", "day":
+	default:
+		return fmt.Errorf("PC_BILLING_PERIOD must be month or day (got %q)", b.Period)
+	}
+	if !b.WebhookEnabled() {
+		// A secret with no URL is harmless but is almost certainly half of an
+		// intended configuration, so say so rather than starting silently.
+		if b.WebhookSecret != "" {
+			return fmt.Errorf("PC_BILLING_WEBHOOK_SECRET is set but PC_BILLING_WEBHOOK_URL is not: nothing would be delivered")
+		}
+		return nil
+	}
+	if !strings.HasPrefix(b.WebhookURL, "http://") && !strings.HasPrefix(b.WebhookURL, "https://") {
+		return fmt.Errorf("PC_BILLING_WEBHOOK_URL must be an http:// or https:// address (got %q)", b.WebhookURL)
+	}
+	// The refusal that matters. A webhook nobody can authenticate is one anybody
+	// who can reach the receiver can forge a plan change into, and the receiver
+	// has no way to tell the difference.
+	if len(b.WebhookSecret) < 16 {
+		return fmt.Errorf("PC_BILLING_WEBHOOK_SECRET must be at least 16 characters when PC_BILLING_WEBHOOK_URL is set: an unsigned or weakly-signed hook is one anybody who can reach the receiver can forge")
+	}
+	if b.WebhookTimeout <= 0 {
+		return fmt.Errorf("PC_BILLING_WEBHOOK_TIMEOUT must be positive")
+	}
+	if b.WebhookAttempts < 1 {
+		return fmt.Errorf("PC_BILLING_WEBHOOK_ATTEMPTS must be at least 1")
+	}
+	return nil
 }
 
 // PushSettings is the VAPID identity this server signs notifications with.
@@ -174,10 +345,29 @@ type EmbedConfig struct {
 	DetectModel string
 	// DetectDim is the face-vector width the sidecar produces.
 	DetectDim int
+
+	// ImageURL points at the image-embedding sidecar — the fourth service, and
+	// the one that gives a photograph with no text any neighbours at all.
+	// Separate from URL for the reason DetectURL is: a vision encoder is a
+	// different model with a different resource profile, and a deployment may
+	// reasonably want semantic document search without one.
+	//
+	// Empty leaves /nodes/{id}/similar ranking in the document space exactly as
+	// it did before this space existed.
+	ImageURL string
+	// ImageModel is the identity image vectors are stored under. Like the
+	// embedding model it must not change without re-embedding: vectors from two
+	// models compared as if in one space rank noise.
+	ImageModel string
+	// ImageDim is the image-vector width the sidecar produces.
+	ImageDim int
 }
 
 // DetectionEnabled reports whether face detection is configured.
 func (e EmbedConfig) DetectionEnabled() bool { return e.DetectURL != "" }
+
+// ImageEmbeddingEnabled reports whether the image-embedding space is configured.
+func (e EmbedConfig) ImageEmbeddingEnabled() bool { return e.ImageURL != "" }
 
 // GenerationEnabled reports whether written answers are configured.
 func (e EmbedConfig) GenerationEnabled() bool { return e.GenerateURL != "" }
@@ -212,6 +402,9 @@ func LoadEmbed() (EmbedConfig, error) {
 		DetectURL:      env("PC_DETECT_URL", ""),
 		DetectModel:    env("PC_DETECT_MODEL", "facenet"),
 		DetectDim:      envInt("PC_DETECT_DIM", 512),
+		ImageURL:       env("PC_IMAGE_EMBED_URL", ""),
+		ImageModel:     env("PC_IMAGE_EMBED_MODEL", "clip-vit-base-patch32"),
+		ImageDim:       envInt("PC_IMAGE_EMBED_DIM", 512),
 	}
 	if err := e.validate(); err != nil {
 		return EmbedConfig{}, err
@@ -253,6 +446,38 @@ func (e EmbedConfig) validate() error {
 		}
 		if e.DetectDim <= 0 {
 			return fmt.Errorf("PC_DETECT_DIM must be positive (got %d)", e.DetectDim)
+		}
+	}
+
+	// Image embedding is independent of the document embedder too, and
+	// deliberately NOT cross-validated against it the way generation is. A
+	// generator with no embedder can only answer from nothing, which is a broken
+	// feature; an image space with no document space is a coherent deployment —
+	// a photo library where "find files like this one" works on pictures and
+	// simply reports 404 not_indexed for a text file, which is what it would
+	// report anyway.
+	if e.ImageEmbeddingEnabled() {
+		if !strings.HasPrefix(e.ImageURL, "http://") && !strings.HasPrefix(e.ImageURL, "https://") {
+			return fmt.Errorf("PC_IMAGE_EMBED_URL must be an http:// or https:// address (got %q)", e.ImageURL)
+		}
+		if strings.HasSuffix(e.ImageURL, "/") {
+			return fmt.Errorf("PC_IMAGE_EMBED_URL must not end in a slash (got %q)", e.ImageURL)
+		}
+		if e.ImageModel == "" {
+			return fmt.Errorf("PC_IMAGE_EMBED_MODEL must not be empty: it is the identity every image vector is stored under")
+		}
+		if e.ImageDim <= 0 {
+			return fmt.Errorf("PC_IMAGE_EMBED_DIM must be positive (got %d)", e.ImageDim)
+		}
+		// The one combination that is genuinely wrong. Both spaces are keyed by
+		// (content hash, model), so a shared identity would put document vectors
+		// and image vectors in tables that agree on the name of a space they do
+		// not share — and `cloudctl embeddings status` would report one model at
+		// two widths, which is the shape of a corrupted space rather than of two
+		// healthy ones.
+		if e.Enabled() && e.ImageModel == e.Model {
+			return fmt.Errorf("PC_IMAGE_EMBED_MODEL and PC_EMBED_MODEL are both %q: "+
+				"the two spaces are separate and must be named separately, or neither can be told apart in the tooling", e.Model)
 		}
 	}
 
@@ -368,6 +593,24 @@ func Load() (*Config, error) {
 		return nil, err
 	}
 	c.Embed = embed
+
+	media, err := LoadMedia()
+	if err != nil {
+		return nil, err
+	}
+	c.Media = media
+
+	billing, err := LoadBilling()
+	if err != nil {
+		return nil, err
+	}
+	c.Billing = billing
+
+	cold, err := LoadCold()
+	if err != nil {
+		return nil, err
+	}
+	c.Cold = cold
 
 	// Unparseable values first: a validate() message about a setting the operator
 	// never actually set is more confusing than the parse error that caused it.
@@ -507,6 +750,19 @@ func (c *Config) Redacted() map[string]any {
 		"oidc_client_id":       c.OIDC.ClientID,
 		"oidc_redirect_url":    c.OIDC.RedirectURL,
 		"oidc_allowed_domains": c.OIDC.AllowedDomains,
+
+		// Phase 5's one optional binary, for the same reason: a video with no
+		// tile and a log that never mentions why is a bug report waiting to
+		// happen.
+		"video_thumbnails": c.Media.VideoThumbnailsEnabled(),
+		"ffmpeg_path":      c.Media.FFmpegPath,
+
+		// The cold tier's location, never its credentials. Where content went is
+		// the first thing an operator needs from a startup log; the key that
+		// opens it is the thing that must never appear in one.
+		"cold_tier_enabled":  c.Cold.ColdTierEnabled(),
+		"cold_tier_endpoint": c.Cold.Endpoint,
+		"cold_tier_bucket":   c.Cold.Bucket,
 	}
 }
 
@@ -625,4 +881,107 @@ func TakeParseErrors() error {
 	err := errors.Join(parseErrs...)
 	parseErrs = nil
 	return err
+}
+
+// --- cold tier (Phase 9 slice 3) ---------------------------------------------
+
+// ColdSettings is the object-storage tier and the policy that demotes into it.
+//
+// Loaded on its own, like the embed, media and billing settings, because the
+// worker is the process that runs the demotion sweep and it deliberately does
+// not load the API's full configuration.
+type ColdSettings struct {
+	// Enabled is the master switch, separate from the S3 settings being present.
+	// A configuration is a thing an operator edits over days: leaving the bucket
+	// details in place while turning the tier off has to be possible, or the only
+	// way to stop demoting is to delete the credentials.
+	Enabled bool
+
+	Endpoint  string
+	Bucket    string
+	Region    string
+	AccessKey string
+	SecretKey string
+	// Prefix lets one bucket hold the cold tiers of more than one deployment
+	// without their key spaces colliding.
+	Prefix string
+
+	// The policy. All three thresholds must be met before anything moves; see
+	// jobs/tiering.Policy for why each one is there.
+	MinAge  time.Duration
+	MinIdle time.Duration
+	MinSize int64
+	Batch   int
+}
+
+// ColdTierEnabled reports whether this process should build a cold store at all.
+func (c ColdSettings) ColdTierEnabled() bool { return c.Enabled }
+
+// LoadCold reads the cold-tier settings.
+//
+// The defaults are the conservative ones from tiering.DefaultPolicy, and they
+// are deliberately the same numbers rather than a second set that could drift:
+// an operator turning this on for the first time should find that almost
+// nothing qualifies and then loosen it on purpose. The opposite mistake drains
+// the pool onto an uplink nobody has tested at that volume.
+func LoadCold() (ColdSettings, error) {
+	c := ColdSettings{
+		Enabled:   envBool("PC_COLD_TIER_ENABLED", false),
+		Endpoint:  env("PC_COLD_S3_ENDPOINT", ""),
+		Bucket:    env("PC_COLD_S3_BUCKET", ""),
+		Region:    env("PC_COLD_S3_REGION", "us-east-1"),
+		AccessKey: env("PC_COLD_S3_ACCESS_KEY", ""),
+		SecretKey: env("PC_COLD_S3_SECRET_KEY", ""),
+		Prefix:    env("PC_COLD_S3_PREFIX", ""),
+
+		MinAge:  envDuration("PC_COLD_TIER_MIN_AGE", 90*24*time.Hour),
+		MinIdle: envDuration("PC_COLD_TIER_MIN_IDLE", 90*24*time.Hour),
+		MinSize: int64(envInt("PC_COLD_TIER_MIN_SIZE", 1<<20)),
+		Batch:   envInt("PC_COLD_TIER_BATCH", 100),
+	}
+	if err := c.validate(); err != nil {
+		return ColdSettings{}, err
+	}
+	return c, nil
+}
+
+func (c ColdSettings) validate() error {
+	if !c.Enabled {
+		// Half a configuration is worth naming even when it is inert, for the
+		// same reason a webhook secret with no URL is: it is almost always an
+		// intention that did not finish, and discovering it at the moment
+		// somebody turns the tier on is discovering it at the worst moment.
+		if c.Bucket != "" && c.Endpoint == "" {
+			return fmt.Errorf("PC_COLD_S3_BUCKET is set but PC_COLD_S3_ENDPOINT is not, and PC_COLD_TIER_ENABLED is false: nothing would be tiered")
+		}
+		return nil
+	}
+	// Refusals rather than defaults, on every field that decides WHERE content
+	// goes. A cold tier pointed at the wrong bucket is not a condition to
+	// discover later — by the time it is visible, the bytes have already moved.
+	if c.Endpoint == "" {
+		return fmt.Errorf("PC_COLD_TIER_ENABLED is set but PC_COLD_S3_ENDPOINT is empty")
+	}
+	if !strings.HasPrefix(c.Endpoint, "http://") && !strings.HasPrefix(c.Endpoint, "https://") {
+		return fmt.Errorf("PC_COLD_S3_ENDPOINT must be an http:// or https:// address (got %q)", c.Endpoint)
+	}
+	if c.Bucket == "" {
+		return fmt.Errorf("PC_COLD_TIER_ENABLED is set but PC_COLD_S3_BUCKET is empty")
+	}
+	if c.AccessKey == "" || c.SecretKey == "" {
+		return fmt.Errorf("PC_COLD_TIER_ENABLED is set but the PC_COLD_S3 credentials are incomplete")
+	}
+	if c.MinAge <= 0 {
+		return fmt.Errorf("PC_COLD_TIER_MIN_AGE must be positive")
+	}
+	if c.MinIdle <= 0 {
+		return fmt.Errorf("PC_COLD_TIER_MIN_IDLE must be positive")
+	}
+	if c.MinSize < 0 {
+		return fmt.Errorf("PC_COLD_TIER_MIN_SIZE cannot be negative")
+	}
+	if c.Batch <= 0 {
+		return fmt.Errorf("PC_COLD_TIER_BATCH must be positive")
+	}
+	return nil
 }

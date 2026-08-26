@@ -10,6 +10,7 @@ import {
   type Person,
   type SimilarHit,
 } from "./api";
+import { FeedbackControls } from "./FeedbackControls";
 import {
   clusterPlaced,
   fitView,
@@ -924,14 +925,19 @@ function Lightbox({ node, onClose }: { node: Node; onClose: () => void }) {
             <span className="muted small">No similar files found.</span>
           ) : (
             similar.map((n) => (
-              <button
-                key={n.id}
-                className="sim-thumb"
-                title={n.name}
-                onClick={() => setCurrent(n)}
-              >
-                <Thumb id={n.id} alt={n.name} />
-              </button>
+              // The neighbour and its verdict travel together. A "wrong" here is
+              // the one correction this strip can actually take: the server stops
+              // offering that file as a neighbour to this user, so the next time
+              // the strip is opened it is simply not there.
+              <span key={n.id} className="sim-item">
+                <button className="sim-thumb" title={n.name} onClick={() => setCurrent(n)}>
+                  <Thumb id={n.id} alt={n.name} />
+                </button>
+                <FeedbackControls
+                  target={{ kind: "similar", node_id: n.id, context: current.id }}
+                  label={`feedback on ${n.name} as a similar file`}
+                />
+              </span>
             ))
           )}
         </div>

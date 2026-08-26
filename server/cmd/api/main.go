@@ -41,6 +41,7 @@ import (
 	"github.com/guru-bharadwaj20/private-cloud/server/internal/files"
 	"github.com/guru-bharadwaj20/private-cloud/server/internal/httpapi"
 	"github.com/guru-bharadwaj20/private-cloud/server/internal/jobs"
+	"github.com/guru-bharadwaj20/private-cloud/server/internal/jobs/billing"
 	"github.com/guru-bharadwaj20/private-cloud/server/internal/media"
 	"github.com/guru-bharadwaj20/private-cloud/server/internal/metrics"
 	"github.com/guru-bharadwaj20/private-cloud/server/internal/push"
@@ -157,11 +158,11 @@ func run() error {
 
 	// Constructed before the listener starts: an unwritable blob directory must
 	// stop the process here, not surface as a 500 on the first upload.
-	blobs, err := blob.NewFSStore(cfg.BlobPath)
+	hot, blobs, err := blob.Open(cfg.BlobPath, coldConfig(cfg), log)
 	if err != nil {
 		return fmt.Errorf("blob store: %w", err)
 	}
-	log.Info("blob store ready", "path", blobs.Root())
+	log.Info("blob store ready", "path", hot.Root(), "cold_tier", cfg.Cold.ColdTierEnabled())
 
 	filesSvc := files.NewService(files.NewStore(database.Pool), blobs, log)
 	filesSvc.TrashRetention = cfg.TrashRetention
@@ -240,6 +241,29 @@ func run() error {
 		}
 	}
 
+	// Image-space similarity, if an image sidecar is configured. Independent of
+	// the text embedder above and deliberately not nested under it: the two
+	// spaces are separate, and a photo library with no document search is a
+	// coherent deployment.
+	//
+	// No verification probe here, unlike the embedder. This process never calls
+	// the image sidecar — /similar ranks vectors the worker already stored — so
+	// what is being enabled is the NAME of a space, and a sidecar that is down or
+	// still loading changes nothing about the answers this process can give.
+	// The storage report is the one thing in the HTTP layer that needs to know a
+	// cold tier exists rather than simply read through it. Everything else —
+	// downloads, fsck, the GC — gets the same store through files.Service.
+	if tiered, ok := blobs.(*blob.TieredStore); ok {
+		apiServer.SetColdTier(tiered)
+	}
+
+	if cfg.Embed.ImageEmbeddingEnabled() {
+		apiServer.SetImageEmbedder(embed.NewImageClient(
+			cfg.Embed.ImageURL, cfg.Embed.ImageModel, cfg.Embed.ImageDim))
+		log.Info("image similarity enabled",
+			"model", cfg.Embed.ImageModel, "dim", cfg.Embed.ImageDim)
+	}
+
 	// OIDC single sign-on, if configured. A discovery failure disables SSO with a
 	// log line rather than aborting startup — a transient IdP outage must not take
 	// down the file API, and passkey login is unaffected regardless.
@@ -272,6 +296,29 @@ func run() error {
 		}
 		apiServer.SetPush(push.NewSender(keys))
 		log.Info("web push enabled", "subject", cfg.Push.Subject)
+	}
+
+	// The billing webhook, if an endpoint is configured. Off by default and
+	// silent when off: the plan and metering endpoints are unaffected either way,
+	// so a deployment with nothing to bill for makes no outbound calls at all.
+	//
+	// Only plan.changed originates here — the API is where an administrator moves
+	// an account between plans. period.closed and quota.exceeded are observations
+	// of state over time and belong to the worker's metering sweep, which is also
+	// what keeps optional outbound work off the always-on box's request path.
+	if hook := billing.NewWebhook(billing.Config{
+		URL:      cfg.Billing.WebhookURL,
+		Secret:   cfg.Billing.WebhookSecret,
+		Timeout:  cfg.Billing.WebhookTimeout,
+		Attempts: cfg.Billing.WebhookAttempts,
+	}, log); hook != nil {
+		apiServer.SetBillingWebhook(hook)
+		// Waited on at shutdown rather than abandoned. Best effort does not mean
+		// careless: the one delivery worth a moment of a shutdown is the one
+		// already in flight.
+		defer hook.Wait()
+		log.Info("billing webhook enabled", "url", cfg.Billing.WebhookURL,
+			"attempts", cfg.Billing.WebhookAttempts)
 	}
 
 	srv := &http.Server{
@@ -576,4 +623,25 @@ func newLogger(cfg *config.Config) *slog.Logger {
 		h = slog.NewJSONHandler(os.Stdout, opts)
 	}
 	return slog.New(h)
+}
+
+// coldConfig translates the cold-tier settings into what the blob package
+// takes, or nil when no tier is configured.
+//
+// nil rather than a zero-valued struct with a disabled flag, because "there is
+// no cold tier" is a state the store should not have to carry a field about:
+// blob.Open returns the local store unwrapped, and every read path below it is
+// the one it has always been.
+func coldConfig(cfg *config.Config) *blob.S3Config {
+	if !cfg.Cold.ColdTierEnabled() {
+		return nil
+	}
+	return &blob.S3Config{
+		Endpoint:  cfg.Cold.Endpoint,
+		Bucket:    cfg.Cold.Bucket,
+		Region:    cfg.Cold.Region,
+		AccessKey: cfg.Cold.AccessKey,
+		SecretKey: cfg.Cold.SecretKey,
+		Prefix:    cfg.Cold.Prefix,
+	}
 }

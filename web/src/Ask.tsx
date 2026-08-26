@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 
 import { api, ApiError, type ChatResponse, type Citation } from "./api";
+import { FeedbackControls } from "./FeedbackControls";
 
 // "Ask your library": a natural-language question answered over your own
 // documents. Retrieval always returns the source documents (citations); when the
@@ -143,7 +144,15 @@ function Answer({ question, res }: { question: string; res: ChatResponse }) {
       {res.answer ? (
         <div className="chat-answer">
           <p style={{ whiteSpace: "pre-wrap", margin: 0 }}>{res.answer}</p>
-          {res.model && <p className="muted small">answered by {res.model}</p>}
+          <div className="row" style={{ alignItems: "baseline" }}>
+            {res.model && <p className="muted small">answered by {res.model}</p>}
+            <span style={{ flex: 1 }} />
+            {/* An answer is not a row anywhere, so the question identifies it. */}
+            <FeedbackControls
+              target={{ kind: "answer", context: question }}
+              label="feedback on this answer"
+            />
+          </div>
         </div>
       ) : (
         <p className="muted">{note ?? "No answer."}</p>
@@ -177,6 +186,14 @@ function CitationCard({ c }: { c: Citation }) {
         </a>
         <span style={{ flex: 1 }} />
         {typeof c.score === "number" && <Relevance score={c.score} />}
+        {/* Per citation, not only per answer. "The answer was wrong" and "this
+            particular document should not have been cited" are different
+            complaints, and only the second one the server can act on: a citation
+            marked wrong stops being retrieved for this person. */}
+        <FeedbackControls
+          target={{ kind: "citation", node_id: c.node_id }}
+          label={`feedback on ${c.name}`}
+        />
       </div>
       <div className="muted small answer-path">{c.path}</div>
     </li>
