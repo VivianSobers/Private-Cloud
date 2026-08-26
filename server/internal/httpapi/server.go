@@ -20,6 +20,7 @@ import (
 	"github.com/guru-bharadwaj20/private-cloud/server/internal/embed"
 	"github.com/guru-bharadwaj20/private-cloud/server/internal/files"
 	"github.com/guru-bharadwaj20/private-cloud/server/internal/metrics"
+	"github.com/guru-bharadwaj20/private-cloud/server/internal/push"
 	"github.com/guru-bharadwaj20/private-cloud/server/internal/shares"
 )
 
@@ -80,6 +81,22 @@ type Server struct {
 	// The tight per-user budget on the routes that spend GPU time on a shared
 	// sidecar. See ratelimit_user.go.
 	heavyLimiter *rateLimiter
+
+	// Web Push. nil when no VAPID key is configured, which is a supported state:
+	// GET /push/key then 404s and a client keeps polling GET /changes.
+	push     *push.Sender
+	notifier *push.Notifier
+}
+
+// SetPush enables Web Push delivery. Left unset when no VAPID key is configured.
+//
+// Both halves land together on purpose. Publishing a key without a sender would
+// let a browser subscribe to something that never delivers, and a sender with no
+// published key can have no subscriptions to deliver to; either alone is a
+// feature that looks present and is not.
+func (s *Server) SetPush(sender *push.Sender) {
+	s.push = sender
+	s.notifier = push.NewNotifier(sender, pushTargets{store: s.auth.Store()}, s.files.Store(), s.log)
 }
 
 // SetEmbedder enables semantic search by wiring the query embedder. Left unset
@@ -341,6 +358,7 @@ func (s *Server) registerRoutes(mux router) {
 	mux.HandleFunc("GET /api/v1/devices", s.requireAuth(s.handleListDevices))
 	mux.HandleFunc("PATCH /api/v1/devices/{id}", s.requireAuth(s.handlePatchDevice))
 	mux.HandleFunc("DELETE /api/v1/devices/{id}", s.requireAuth(s.handleRevokeDevice))
+	mux.HandleFunc("GET /api/v1/push/key", s.requireAuth(s.handlePushKey))
 	mux.HandleFunc("POST /api/v1/devices/{id}/push", s.requireAuth(s.handleRegisterPush))
 	mux.HandleFunc("DELETE /api/v1/devices/{id}/push", s.requireAuth(s.handleUnregisterPush))
 

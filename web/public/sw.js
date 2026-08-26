@@ -141,3 +141,63 @@ async function receiveShare(req) {
   // explicit costs nothing.
   return Response.redirect(new URL("/?share=inbox", self.location.origin).toString(), 303);
 }
+
+// --- web push (Phase 6) ------------------------------------------------------
+//
+// The payload is deliberately thin: a type and a change cursor, no filename and
+// no preview. The client already knows how to turn a cursor into detail — it
+// calls GET /changes — and a push travels through a browser vendor's
+// infrastructure. The body is encrypted end to end so they cannot read it, but a
+// system whose premise is that your files stay on your hardware should not put
+// their names in a message routed through Google or Mozilla in the first place.
+//
+// So the notification says that something changed, not what.
+self.addEventListener("push", (event) => {
+  let seq = 0;
+  try {
+    const data = event.data ? event.data.json() : {};
+    if (typeof data.seq === "number") seq = data.seq;
+  } catch {
+    // A payload we cannot parse still means "go and look", which is the whole
+    // content of the message. Falling through to the generic notification is
+    // strictly better than showing nothing.
+  }
+
+  // userVisibleOnly was promised at subscribe time, and browsers enforce it: a
+  // push that shows no notification eventually costs the subscription. So this
+  // always shows one.
+  event.waitUntil(
+    self.registration.showNotification("Private Cloud", {
+      body: "Your library has new changes.",
+      icon: "/icon-192.png",
+      badge: "/icon-192.png",
+      // Collapses repeats: several uploads in a row replace one notification
+      // rather than stacking a column of identical ones.
+      tag: "pc-changes",
+      renotify: false,
+      data: { seq },
+    }),
+  );
+});
+
+// Focus an existing tab rather than opening another one. Someone who already has
+// the app open and taps a notification means "show me", not "give me a second
+// copy of the app".
+self.addEventListener("notificationclick", (event) => {
+  event.notification.close();
+  event.waitUntil(
+    (async () => {
+      const clientList = await self.clients.matchAll({
+        type: "window",
+        includeUncontrolled: true,
+      });
+      for (const client of clientList) {
+        if (new URL(client.url).origin === self.location.origin) {
+          await client.focus();
+          return;
+        }
+      }
+      await self.clients.openWindow("/");
+    })(),
+  );
+});

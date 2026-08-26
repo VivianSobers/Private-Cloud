@@ -43,6 +43,7 @@ import (
 	"github.com/guru-bharadwaj20/private-cloud/server/internal/jobs"
 	"github.com/guru-bharadwaj20/private-cloud/server/internal/media"
 	"github.com/guru-bharadwaj20/private-cloud/server/internal/metrics"
+	"github.com/guru-bharadwaj20/private-cloud/server/internal/push"
 	"github.com/guru-bharadwaj20/private-cloud/server/internal/shares"
 )
 
@@ -256,6 +257,21 @@ func run() error {
 			apiServer.SetOIDC(provider)
 			log.Info("oidc single sign-on enabled", "issuer", cfg.OIDC.Issuer)
 		}
+	}
+
+	// Web Push, if a VAPID key is configured. A bad key aborts startup rather
+	// than disabling the feature quietly, unlike the OIDC block above: an
+	// unreachable identity provider is somebody else's outage, but a malformed
+	// key is this deployment's own configuration, and the failure it produces —
+	// every notification rejected by a service that will not say why — is far
+	// harder to diagnose later than a refusal to start now.
+	if cfg.Push.Enabled() {
+		keys, err := push.LoadKeys(cfg.Push.PrivateKey, cfg.Push.Subject)
+		if err != nil {
+			return fmt.Errorf("push: %w (run `cloudctl push keygen` to mint a keypair)", err)
+		}
+		apiServer.SetPush(push.NewSender(keys))
+		log.Info("web push enabled", "subject", cfg.Push.Subject)
 	}
 
 	srv := &http.Server{

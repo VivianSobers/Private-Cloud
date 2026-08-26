@@ -160,6 +160,56 @@ func (s *Store) PutPushSubscription(ctx context.Context, userID, deviceID uuid.U
 	return nil
 }
 
+// PushTarget is one deliverable subscription. SessionID identifies which device
+// it belongs to, so a delivery that comes back "gone" can be unregistered
+// precisely rather than clearing the user's other devices with it.
+type PushTarget struct {
+	SessionID uuid.UUID
+	Endpoint  string
+	P256dh    string
+	Auth      string
+}
+
+// PushTargetsFor lists a user's live push subscriptions.
+//
+// Joined against sessions rather than read from push_subscriptions alone, and
+// that join is the point: revoking a session is a SOFT delete that stamps
+// revoked_at and removes no row, so ON DELETE CASCADE never fires and a revoked
+// device's subscription outlives the device. Reading the table on its own would
+// keep notifying a laptop whose access was withdrawn — about a library it can no
+// longer open. The same bug was found and fixed once already for the delete
+// path; this is the read path having learned it.
+func (s *Store) PushTargetsFor(ctx context.Context, userID uuid.UUID) ([]PushTarget, error) {
+	rows, err := s.pool.Query(ctx, `
+		SELECT p.session_id, p.endpoint, p.p256dh, p.auth_key
+		FROM push_subscriptions p
+		JOIN sessions s ON s.id = p.session_id
+		WHERE p.user_id = $1
+		  AND s.revoked_at IS NULL AND s.expires_at > now()`, userID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var out []PushTarget
+	for rows.Next() {
+		var t PushTarget
+		if err := rows.Scan(&t.SessionID, &t.Endpoint, &t.P256dh, &t.Auth); err != nil {
+			return nil, err
+		}
+		out = append(out, t)
+	}
+	return out, rows.Err()
+}
+
+// DeletePushSubscriptionBySession removes one dead subscription, without
+// requiring the caller to prove ownership again — it is only reached after the
+// push service reported the endpoint gone for a row already scoped to a user.
+func (s *Store) DeletePushSubscriptionBySession(ctx context.Context, sessionID uuid.UUID) error {
+	_, err := s.pool.Exec(ctx, `DELETE FROM push_subscriptions WHERE session_id = $1`, sessionID)
+	return err
+}
+
 // DeletePushSubscription unregisters a device's push endpoint. The device keeps
 // working; it falls back to polling GET /changes.
 func (s *Store) DeletePushSubscription(ctx context.Context, userID, deviceID uuid.UUID) error {

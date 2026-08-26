@@ -548,6 +548,26 @@ export const api = {
   revokeDevice: (id: string) =>
     request<{ status: string }>(`/api/v1/devices/${id}`, { method: "DELETE" }),
 
+  // --- web push (Phase 6) ---------------------------------------------------
+
+  // The VAPID application server key. 404 means this server has no key
+  // configured, which is a supported state and not an error: push is a latency
+  // optimisation over polling GET /changes, so a client that cannot subscribe
+  // simply carries on as every client did before push existed.
+  pushKey: () => request<{ public_key: string }>("/api/v1/push/key"),
+
+  registerPush: (id: string, sub: PushSubscriptionJSON) =>
+    request<{ status: string }>(`/api/v1/devices/${id}/push`, {
+      method: "POST",
+      body: JSON.stringify({
+        endpoint: sub.endpoint,
+        keys: { p256dh: sub.keys?.p256dh, auth: sub.keys?.auth },
+      }),
+    }),
+
+  unregisterPush: (id: string) =>
+    request<{ status: string }>(`/api/v1/devices/${id}/push`, { method: "DELETE" }),
+
   // --- files ----------------------------------------------------------------
 
   root: () => request<{ node: Node }>("/api/v1/nodes/root"),

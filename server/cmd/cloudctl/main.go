@@ -63,6 +63,7 @@ func usage() {
   jobs failed [--limit=N]         list dead-lettered jobs and their errors
   jobs retry [--kind=KIND]        requeue dead-lettered jobs
   jobs reindex [--kind=KIND]      re-enqueue derived work (extract, media, all)
+  push keygen                     mint the VAPID keypair for web push
   embeddings status               which search path each embedding model is on
   embeddings backfill             fill the pgvector copy of stored vectors
   embeddings index                build the HNSW index, once the backfill is done
@@ -142,6 +143,8 @@ func run() error {
 		return migrateCommand(ctx, database, log, args[1:])
 	case "jobs":
 		return jobsCommand(ctx, database, args[1:])
+	case "push":
+		return pushCommand(args[1:])
 	case "embeddings":
 		return embeddingsCommand(ctx, database, args[1:])
 	case "help", "-h", "--help":

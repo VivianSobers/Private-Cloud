@@ -222,13 +222,19 @@ func normalisePath(p string) string {
 var awaitingClient = map[string]string{
 	// The list was thirteen shapes when this test was written: five device routes,
 	// the whole people browser, /similar, /chat, /admin/storage and the admin
-	// session routes. All twelve of those now have a client, and each was deleted
+	// session routes. Every one of them now has a client, and each was deleted
 	// from here as its UI landed — which is the shape a healthy declaration list
-	// has. One remains.
-	"/api/v1/devices/*/push": "Phase 6 Web Push. The PWA cannot subscribe yet: " +
-		"PushManager.subscribe needs a VAPID public key this server does not " +
-		"publish, and nothing would deliver the notification if it did. Both " +
-		"halves are behind the API, so this is not waiting on a UI.",
+	// has, and it is now empty.
+	//
+	// The last to go was /devices/*/push, which sat here longest because it was
+	// not waiting on a UI at all: PushManager.subscribe needs a VAPID public key
+	// the server did not publish, and nothing would have delivered a notification
+	// if it had. Both halves were behind the API. GET /push/key and internal/push
+	// closed them, and web/src/push.ts subscribes.
+	//
+	// An empty map is the desired state, not a sign the test stopped working —
+	// TestEveryRouteIsConsumedOrDeclaredPending still fails on any new route that
+	// ships without a client or a reason.
 }
 
 // invisiblyConsumed are routes a client DOES call, in a way this test cannot

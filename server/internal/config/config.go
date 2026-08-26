@@ -103,7 +103,32 @@ type Config struct {
 	// OIDC configures single sign-on. Empty Issuer leaves SSO off; the passkey
 	// and recovery paths are unaffected either way.
 	OIDC OIDCSettings
+
+	// Push configures Web Push delivery. Empty leaves it off, and off is a
+	// supported state: a client that cannot subscribe polls GET /changes, which
+	// is what every client did before push existed.
+	Push PushSettings
 }
+
+// PushSettings is the VAPID identity this server signs notifications with.
+//
+// The private key is configuration rather than something generated at startup
+// because the PUBLIC half is baked into every subscription a browser has already
+// created — PushManager.subscribe binds a subscription to the applicationServer
+// Key it was handed, and a push signed by a different key is refused. A key
+// regenerated on restart would therefore silently invalidate every subscription
+// on every deploy. `cloudctl push keygen` mints one to paste in.
+type PushSettings struct {
+	// PrivateKey is the base64url P-256 scalar. The public half is derived from
+	// it, so a mismatched pair cannot be configured.
+	PrivateKey string
+	// Subject is a mailto: or https: URL identifying the operator, which push
+	// services require as an abuse contact.
+	Subject string
+}
+
+// Enabled reports whether push delivery is configured.
+func (p PushSettings) Enabled() bool { return p.PrivateKey != "" }
 
 // EmbedConfig points at the embedding inference sidecar.
 //
@@ -330,6 +355,11 @@ func Load() (*Config, error) {
 			ClientSecret:   env("PC_OIDC_CLIENT_SECRET", ""),
 			RedirectURL:    env("PC_OIDC_REDIRECT_URL", ""),
 			AllowedDomains: envList("PC_OIDC_ALLOWED_DOMAINS", nil),
+		},
+
+		Push: PushSettings{
+			PrivateKey: env("PC_VAPID_PRIVATE_KEY", ""),
+			Subject:    env("PC_VAPID_SUBJECT", ""),
 		},
 	}
 

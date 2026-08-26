@@ -38,7 +38,7 @@ stale), the migration and test trees, `web/src`, `client/`, and `deploy/` + `scr
 | 3 | Sync engine: journal, delta protocol, Go client, conflicts | ✅ 4/4 | ✅ `pcsync` | ✅ |
 | 4 | OCR, semantic search, tagging, OIDC, hardening | ✅ 6/6 | ✅ | ✅ |
 | 5 | Photos & media: EXIF, thumbnails, albums, timeline, map | ✅ 8/8 | ✅ gallery, lightbox, albums, drag-reorder, map | 🟠 video thumbnails only |
-| 6 | Native clients: desktop tray, mobile/PWA | ✅ devices; ❌ push sender | 🟠 PWA + share target ✅; tray shell, signed installers ❌ | 🟠 |
+| 6 | Native clients: desktop tray, mobile/PWA | ✅ devices + web push | 🟠 PWA, share target, push ✅; tray shell, signed installers ❌ | 🟠 |
 | 7 | Multi-user, sharing, RBAC, admin, quotas | ✅ 4/4 | 🟠 sharing, admin, quotas ✅; **browsing into a granted folder** ❌ | 🟠 |
 | 8 | Advanced intelligence: faces, similar files, RAG chat | 🟠 4/5 — image similarity ❌ | 🟠 chat, people, find-similar ✅; **SSE not consumed** | 🟠 |
 | 9 | Scale & resilience: cold tier, DR automation, quotas | 🟠 storage health, quota, DR drill ✅; cold tier, billing ❌ | ✅ admin Storage tab | 🟠 |
@@ -58,10 +58,11 @@ deliberate deferrals.
 | PWA share target | `5a557a1` | ✅ manifest + `ShareTarget.tsx` + SW handler |
 | Streaming chat answers | `bd59bf6` | ✅ server-side SSE, citations first; `Ask.tsx` does not consume it yet |
 | DR rehearsal on a schedule | `0fdce2d` | ✅ `scripts/dr-drill.sh`, timer, alert rules |
-| Video metadata from the MP4 header | *this change* | ✅ duration, dimensions, rotation and capture time, read in-process — a timeline no longer sorts a video by upload time |
+| Video metadata from the MP4 header | `dfcf7b5` | ✅ duration, dimensions, rotation and capture time, read in-process — a timeline no longer sorts a video by upload time |
 | Per-user API rate limiting | `8c7f792` | ✅ the item this document had carried longest as "most overdue" — built, wired in `requireAuth`, tested |
 | pgvector / HNSW index | `78ee454` | ✅ optional: stock Postgres keeps the exact scan, pgvector gets SQL ranking and an HNSW index per vector width |
 | Generation + detection sidecars | `fafa1d0` | ✅ both reference images committed — Dockerfile, `app.py`, `requirements.txt` each |
+| Web Push delivery, end to end | *this change* | ✅ VAPID key published, RFC 8291 sender, PWA subscribes — `awaitingClient` is now empty |
 
 ---
 
@@ -72,23 +73,22 @@ deliberate deferrals.
 | 1 | **Browsing into a granted folder** | 7 | ❌ | Sequencing only. The server has supported `?include_shared=true` since Phase 7 slice 2 and `api.ts` can send it; no view opts in, so a grantee reaches shared content through `/shared` and `/chat` but cannot open a shared *folder* inline |
 | 2 | **Streaming consumed in the browser** | 8 | 🟠 | `POST /chat` serves `text/event-stream` with citations before prose; [Ask.tsx](../web/src/Ask.tsx) still awaits the whole body |
 | 3 | **Platform tray icon + menu adapter** | 6 | ❌ | Blocked on an **environment**, not a decision: needs a CGO system-tray library and a machine with a display. Everything it would render and every action it would fire is built and unit-tested in `client/internal/tray` |
-| 4 | **Push delivery (VAPID key + sender)** | 6 | ❌ | Both halves are **behind** the API: a PWA cannot call `PushManager.subscribe` without a public key the server does not publish, and nothing would deliver if it could. A client that registers nothing polls `GET /changes`, so push is latency, never correctness |
-| 5 | **Signed installers + auto-update** | 6 | 🟠 | Cross-built binaries + `SHA256SUMS` ✅, unsigned `.deb`/`.rpm` ✅ (unsigned **by design** — a local install needs no repo signature, only a *repository* does). ❌ A signed apt/dnf repo, Homebrew/Scoop, `.msi`/`.pkg` and an in-place updater need code-signing keys and per-OS tooling outside this repo |
-| 6 | **Image-embedding similarity for photos** | 8 | ❌ | `/similar` works through the text-embedding space, so two photographs with no text have no neighbours. Needs a fourth model and a second vector space; most of the value is already delivered by face clustering and the timeline |
-| 7 | **Object-storage cold tier** | 9 | ❌ | Not started, and honest about it: `GET /admin/storage` reports `tiering.enabled: false` rather than a cold tier holding zero bytes. **By design** until `fsck` can be taught a third location |
-| 8 | **DR recovery automation** | 9 | 🟠 | The **drills** are automated (`scripts/dr-drill.sh` + `scripts/restore-drill.sh`, timers, alerts, run by CI against a real pool). The **recovery procedures** stay manual deliberately: automating a restore means automating something whose failure mode is overwriting good data with old data, under time pressure, with no second chance |
-| 9 | **Video thumbnails, and Matroska metadata** | 5 | 🟠 | MP4/QuickTime duration, dimensions, rotation and capture time are read in-process by `media/mp4.go` — plain `moov` fields, no demuxer. ❌ Still open: a **thumbnail**, which does need a video decoder and so does belong behind the switch OCR sits behind; **Matroska/WebM**, whose EBML tree is a different parser; and an MP4 whose `moov` follows the media data, since this package is handed a bounded prefix |
-| 10 | **Feedback controls that feed labels back** | 8 | ❌ | Unbuilt on both sides and needs a decision first: a face correction is already permanent (`faces.dismissed_at`), so "feedback" here means labels that retrain a model, which Phase 4 put out of scope |
-| 11 | **Billing hooks** | 9 | ❌ | Not started. There is no second tenant; quota exists and is enforced, and the thing billing would attach to is one person's disk |
-| 12 | **Encrypted pool auto-unlock** | 0 | 🟠 | **Decided, deliberately not enabled.** The unit exists and documents what each keyfile location costs; `scripts/zfs-unlock.sh` refuses a key on the root filesystem, because storing the key beside the ciphertext is not a weaker setup, it is no setup. Cost: a remote reboot needs a console |
-| 13 | **`restore-test.sh` against *your* pool** | 0 | 🟠 | Operator gate. CI proves the restore path against a loopback pool on every push; only you can prove *your* disks do |
+| 4 | **Signed installers + auto-update** | 6 | 🟠 | Cross-built binaries + `SHA256SUMS` ✅, unsigned `.deb`/`.rpm` ✅ (unsigned **by design** — a local install needs no repo signature, only a *repository* does). ❌ A signed apt/dnf repo, Homebrew/Scoop, `.msi`/`.pkg` and an in-place updater need code-signing keys and per-OS tooling outside this repo |
+| 5 | **Image-embedding similarity for photos** | 8 | ❌ | `/similar` works through the text-embedding space, so two photographs with no text have no neighbours. Needs a fourth model and a second vector space; most of the value is already delivered by face clustering and the timeline |
+| 6 | **Object-storage cold tier** | 9 | ❌ | Not started, and honest about it: `GET /admin/storage` reports `tiering.enabled: false` rather than a cold tier holding zero bytes. **By design** until `fsck` can be taught a third location |
+| 7 | **DR recovery automation** | 9 | 🟠 | The **drills** are automated (`scripts/dr-drill.sh` + `scripts/restore-drill.sh`, timers, alerts, run by CI against a real pool). The **recovery procedures** stay manual deliberately: automating a restore means automating something whose failure mode is overwriting good data with old data, under time pressure, with no second chance |
+| 8 | **Video thumbnails, and Matroska metadata** | 5 | 🟠 | MP4/QuickTime duration, dimensions, rotation and capture time are read in-process by `media/mp4.go` — plain `moov` fields, no demuxer. ❌ Still open: a **thumbnail**, which does need a video decoder and so does belong behind the switch OCR sits behind; **Matroska/WebM**, whose EBML tree is a different parser; and an MP4 whose `moov` follows the media data, since this package is handed a bounded prefix |
+| 9 | **Feedback controls that feed labels back** | 8 | ❌ | Unbuilt on both sides and needs a decision first: a face correction is already permanent (`faces.dismissed_at`), so "feedback" here means labels that retrain a model, which Phase 4 put out of scope |
+| 10 | **Billing hooks** | 9 | ❌ | Not started. There is no second tenant; quota exists and is enforced, and the thing billing would attach to is one person's disk |
+| 11 | **Encrypted pool auto-unlock** | 0 | 🟠 | **Decided, deliberately not enabled.** The unit exists and documents what each keyfile location costs; `scripts/zfs-unlock.sh` refuses a key on the root filesystem, because storing the key beside the ciphertext is not a weaker setup, it is no setup. Cost: a remote reboot needs a console |
+| 12 | **`restore-test.sh` against *your* pool** | 0 | 🟠 | Operator gate. CI proves the restore path against a loopback pool on every push; only you can prove *your* disks do |
 | 14 | **Last-admin guard refusal test** | 7 | 🟠 | The guard exists and its succeeding path is tested; its **refusal** path has no integration test, because the condition is a global property of the `users` table that every fixture's second admin defeats. Recorded, not papered over |
 
 ### Served, with no client
 
 | Route / parameter | Waiting on |
 |---|---|
-| `POST`/`DELETE /devices/{id}/push` | a VAPID public key the server does not publish, and a sender that does not exist — **both behind the API**, so this is not waiting on a UI |
+| *(none)* | `awaitingClient` is **empty**. The last entry, `/devices/*/push`, was never waiting on a UI — it needed a VAPID key the server did not publish and a sender that did not exist. Both landed; `web/src/push.ts` subscribes |
 | `?include_shared=true` (children, search, tags) | a caller. Not covered by the contract test, because it is a query parameter rather than a route |
 
 ---
@@ -112,13 +112,13 @@ Everything unticked needs `sudo` on the real server — the procedure is
 | Runbooks: [restore](runbook-restore.md) · [disaster recovery](runbook-disaster-recovery.md) · [worker](runbook-worker.md) | ✅ |
 | Restore drill automated (`restore-drill.sh` + monthly timer + 3 alerts) | ✅ CI runs it against a real ZFS pool on loopback vdevs every push |
 | DR runbook rehearsal automated (`dr-drill.sh` + timer + alerts) | ✅ |
-| `scripts/restore-test.sh` executed against **your** pool | 🟠 open item 13 |
+| `scripts/restore-test.sh` executed against **your** pool | 🟠 open item 12 |
 | Grafana dashboards committed and self-provisioning | ✅ five, incl. a Private Cloud overview; CI parses all 360 queries |
 | Images pinned to digests (+ Renovate to move them) | ✅ all ten third-party images; CI fails on an unpinned one |
 | Real TLS via `tailscale cert` instead of `tls internal` | ✅ script + weekly timer; CI validates the Caddyfile in both states |
 | UPS + NUT · unattended security upgrades | ✅ `deploy/host/nut/` · `deploy/host/apt/`, security origins only, ZFS/kernel blacklisted |
 | pgBackRest point-in-time recovery | ✅ RPO 24h → one WAL segment; [runbook-restore.md](runbook-restore.md) §4c |
-| Encrypted pool auto-unlock | 🟠 open item 12 |
+| Encrypted pool auto-unlock | 🟠 open item 11 |
 | Backup-freshness metric · pool-health metric | ✅ both |
 | Host-level install in one command (`scripts/host-setup.sh --all` / `--check`) | ✅ |
 | CI: build, vet, race, govulncheck, contract, dashboards, alert rules, Caddy, compose, shellcheck, drills | ✅ |
@@ -304,7 +304,7 @@ that moves nothing on disk. **Met.**
 | 10 | Add-to-album and pointer-drag reordering | ✅ `614c6e1` |
 | 11 | Map view from EXIF GPS | ✅ `4875cb5` — `web/src/geo.ts`, no tile provider, so nothing phones home |
 | — | Video metadata: duration, dimensions, rotation, capture time | ✅ `media/mp4.go` — `moov` fields, no demuxer, no cgo |
-| — | Video thumbnails · Matroska metadata | 🟠 open item 9 |
+| — | Video thumbnails · Matroska metadata | 🟠 open item 8 |
 | — | `cloudctl jobs reindex --kind=media` backfill | ✅ |
 | — | `fsck`/GC account for variant bytes | ✅ the dangerous one — `--repair` would have deleted every thumbnail |
 
@@ -342,8 +342,8 @@ reachable from `pcsync watch` and the web app rather than an icon.
 | `device_name` column (`00021`); a device *is* a device-kind session | ✅ |
 | `GET /devices`, `PATCH /devices/{id}`, `DELETE /devices/{id}` | ✅ served, ✅ consumed by Settings |
 | Device sessions forbidden from all five device routes (the escalation fix) | ✅ |
-| `POST`/`DELETE /devices/{id}/push` — subscription storage | ✅ served — ❌ the one route in this repo with no client |
-| VAPID public key for `PushManager.subscribe` · push delivery | ❌ open item 4 |
+| `POST`/`DELETE /devices/{id}/push` — subscription storage | ✅ served, ✅ consumed by `web/src/push.ts` |
+| `GET /push/key` · Web Push delivery (`internal/push`) | ✅ RFC 8291 encryption + RFC 8292 VAPID, stdlib only; `cloudctl push keygen` mints the key |
 
 **In front of the API**
 
@@ -359,8 +359,9 @@ reachable from `pcsync watch` and the web app rather than an icon.
 | 6 | Offline file pinning (`pin.ts`, `Offline.tsx`, `pc-pinned` cache bucket) | 🟠 built and unit-tested; runtime SW behaviour wants on-device verification |
 | 7 | Device management UI in Settings (name, platform, last seen, push state, revoke) | ✅ |
 | 8 | Linux packages: `.deb`/`.rpm` for amd64+arm64 via nfpm | ✅ unsigned **by design** |
-| 9 | Signed installers, apt/dnf repo, Homebrew/Scoop, `.msi`/`.pkg`, auto-update | ❌ open item 5 |
+| 9 | Signed installers, apt/dnf repo, Homebrew/Scoop, `.msi`/`.pkg`, auto-update | ❌ open item 4 |
 | 10 | PWA share target | ✅ `5a557a1` — manifest entry, `ShareTarget.tsx`, SW POST handler |
+| 11 | Web Push: subscribe, register, `push` + `notificationclick` in the SW | ✅ `push.ts` — a notification carries a cursor, never a filename |
 
 | Decision | Why |
 |---|---|
@@ -371,6 +372,8 @@ reachable from `pcsync watch` and the web app rather than an icon.
 | A device is a session of kind `device` | A separate table would have to be kept in step with revocation; the reason "I lost my laptop" works is that revoking the session **is** revoking the device. `platform`/`app_version` are parsed at read time, and an unrecognised agent yields empty rather than a guess |
 | The sharp edge, worth keeping | `requireAuth` confined device sessions away from credentials with a prefix test on `/api/v1/auth/`, and `/devices` is not under it — so as first written, one leaked app password could revoke every other device on the account. The check is now about what a path *does* rather than where it lives. Push is confined for the same reason |
 | The revocation bug a test caught | Revoking a session is a soft delete, so `ON DELETE CASCADE` never fired and a revoked device stayed a push delivery target — still notified about a library it could no longer read. Both now happen in one statement |
+| A push carries a cursor, never a filename | The payload is encrypted end to end, so the browser vendor cannot read it — but its size and timing are still theirs. A system whose premise is that files stay on your hardware should not put their names in a message routed through Google or Mozilla. The client turns the cursor into detail by calling `GET /changes`, which it can already do |
+| Push failures are logged and dropped | Push is a latency optimisation, never correctness: a client that registers nothing polls `GET /changes`. The one failure worth acting on is 404/410 from the push service, which means the browser discarded the subscription — that row is deleted rather than retried forever |
 | A shell-cache version bump preserves `pc-pinned` | An app update must never evict a user's offline files. Pinning is network-first for freshness and to revalidate auth, cache on failure |
 
 ---
@@ -393,7 +396,7 @@ unchanged** when the handlers landed.
 | 3 | Admin users, sessions, audit endpoints | ✅ 8 tests |
 | 4 | Editor writes: owner-charged quota, move and delete semantics | ✅ 7 tests |
 | 5 | Per-user API rate limiting | ✅ `8c7f792` — keyed by user id, so one heavy caller is slowed without touching anybody else |
-| — | Last-admin guard | 🟠 open item 14 |
+| — | Last-admin guard | 🟠 open item 13 |
 
 **In front of the API**
 
@@ -445,7 +448,7 @@ gallery, sync and search stay fully functional with all of it switched off.
 | 2 | `POST /chat`: retrieval, generation client, mandatory citations, degraded modes | ✅ 7 tests, ✅ consumed |
 | 3 | Face schema (`00023`–`00025`), detector client, `faces` job, clustering, `/people` | ✅ 8 tests, ✅ consumed |
 | 4 | Streaming answers (`stream: true`, SSE) | ✅ `bd59bf6` — citations first, `done` always sent, buffering defeated; 🟠 no browser consumer (open item 2) |
-| 5 | Image-embedding similarity for photos | ❌ open item 6 |
+| 5 | Image-embedding similarity for photos | ❌ open item 5 |
 | — | `cloudctl jobs reindex --kind=faces` | ✅ opt-in, deliberately outside `--kind=all` |
 
 **In front of the API**
@@ -456,7 +459,7 @@ gallery, sync and search stay fully functional with all of it switched off.
 | People / faces browser, open a cluster, name it ([People.tsx](../web/src/People.tsx)) | ✅ |
 | Face correction in the lightbox — "who's here", reassign, detach | ✅ |
 | "Find similar" strip in the photo viewer | ✅ |
-| Feedback controls that feed labels back | ❌ open item 10 |
+| Feedback controls that feed labels back | ❌ open item 9 |
 
 **Three sidecars, not one** — separate because their resource profiles differ and a
 deployment may want one and not the others; folding detection into the media job
@@ -504,9 +507,9 @@ are building a biometric index of everyone photographed by the people using it.
 |---|---|---|
 | 1 | `GET /admin/storage` from the same collectors the alerts read | ✅ 5 parser tests, ✅ consumed by the admin Storage tab |
 | 2 | Quota enforcement end to end, including owner-charged editor writes | ✅ 6 tests, ✅ surfaced in the UI |
-| 3 | Object-storage cold tier + tiering policy | ❌ open item 7 |
-| 4 | DR automation / drills as code | 🟠 open item 8 — both drills automated; recovery deliberately manual |
-| 5 | Billing hooks | ❌ open item 11 |
+| 3 | Object-storage cold tier + tiering policy | ❌ open item 6 |
+| 4 | DR automation / drills as code | 🟠 open item 7 — both drills automated; recovery deliberately manual |
+| 5 | Billing hooks | ❌ open item 10 |
 
 | Decision | Why |
 |---|---|

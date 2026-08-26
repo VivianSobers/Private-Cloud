@@ -99,7 +99,19 @@ func (s *Server) requireAuth(next http.HandlerFunc) http.HandlerFunc {
 
 		ctx := context.WithValue(r.Context(), userCtxKey, user)
 		ctx = context.WithValue(ctx, sessionCtxKey, sess)
-		next(w, r.WithContext(ctx))
+
+		// Web Push, when configured, needs to know a write succeeded. Wrapping
+		// here — rather than calling from each mutating handler — is what keeps
+		// coverage from depending on a list somebody has to remember to update;
+		// see notifyIfChanged. When push is off, s.notifier is nil and this is a
+		// bare call through.
+		if s.notifier == nil {
+			next(w, r.WithContext(ctx))
+			return
+		}
+		rec := &statusRecorder{ResponseWriter: w, status: http.StatusOK}
+		next(rec, r.WithContext(ctx))
+		s.notifyIfChanged(r, rec.status, user.ID)
 	}
 }
 
