@@ -5,6 +5,8 @@
 // surfacing request_id to the user is what makes "it broke" answerable from
 // the server logs without asking them to reproduce it.
 
+import { parseEventData, readSSEStream } from "./sse";
+
 export interface ApiErrorBody {
   error: { code: string; message: string; request_id?: string };
 }
@@ -358,6 +360,16 @@ export interface Device {
   app_version?: string;
 }
 
+/** What a streaming request turned out to be.
+ *
+ *  A server that does not speak the streaming dialect — an older build, or a
+ *  proxy that collapsed the response — answers the same request with one JSON
+ *  object. That is not an error, it is the non-streaming behaviour this app
+ *  shipped with, so it is reported rather than thrown and the caller renders it
+ *  the way it always did.
+ */
+export type StreamOutcome = { streamed: true } | { streamed: false; body: unknown };
+
 /** Reads a Server-Sent Events response, calling back per event.
  *
  *  fetch rather than EventSource, for two reasons that both matter here:
@@ -367,13 +379,15 @@ export interface Device {
  *
  *  Errors before the stream opens are ordinary ApiErrors, so a caller handles a
  *  503 from a server with no embedder exactly as it does for every other call.
+ *  The framing itself lives in `sse.ts`, which is where the awkward cases — a
+ *  frame split across two reads, a heartbeat comment, CRLF — are unit-tested.
  */
 export async function streamSSE(
   path: string,
   body: unknown,
   onEvent: (event: string, data: Record<string, unknown>) => void,
   signal?: AbortSignal,
-): Promise<void> {
+): Promise<StreamOutcome> {
   const res = await fetch(path, {
     method: "POST",
     credentials: "same-origin",
@@ -397,49 +411,76 @@ export async function streamSSE(
       parsed?.error?.request_id,
     );
   }
-  if (!res.body) throw new ApiError(502, "unexpected_response", "the response carried no stream");
 
-  const reader = res.body.getReader();
-  const decoder = new TextDecoder();
-  // Events are separated by a blank line and can be split across reads, so the
-  // tail of a chunk is carried forward rather than parsed as a whole event.
-  let buffer = "";
-
-  for (;;) {
-    const { value, done } = await reader.read();
-    if (done) break;
-    buffer += decoder.decode(value, { stream: true });
-
-    let split = buffer.indexOf("\n\n");
-    while (split !== -1) {
-      dispatchSSE(buffer.slice(0, split), onEvent);
-      buffer = buffer.slice(split + 2);
-      split = buffer.indexOf("\n\n");
+  // The Content-Type is what says whether this server streamed at all. Reading
+  // a JSON body with an event parser would produce no events and no error,
+  // which is the worst of the three outcomes: a blank pane and nothing to
+  // report. Checked before the body is touched, because the two shapes are read
+  // in completely different ways.
+  const kind = res.headers?.get?.("Content-Type") ?? "";
+  if (!kind.toLowerCase().includes("text/event-stream")) {
+    const text = await res.text();
+    try {
+      return { streamed: false, body: JSON.parse(text) as unknown };
+    } catch {
+      throw new ApiError(res.status, "unexpected_response", text.slice(0, 200));
     }
   }
-  // A final event with no trailing blank line still counts: the server always
-  // sends one, but a connection closed after the last byte should not lose it.
-  if (buffer.trim()) dispatchSSE(buffer, onEvent);
+
+  if (!res.body) throw new ApiError(502, "unexpected_response", "the response carried no stream");
+
+  await readSSEStream(res.body, ({ event, data }) => {
+    const parsed = parseEventData(data);
+    if (parsed) onEvent(event, parsed);
+  });
+  return { streamed: true };
 }
 
-function dispatchSSE(
-  block: string,
-  onEvent: (event: string, data: Record<string, unknown>) => void,
-): void {
-  let event = "message";
-  const data: string[] = [];
-  for (const line of block.split("\n")) {
-    if (line.startsWith("event:")) event = line.slice(6).trim();
-    else if (line.startsWith("data:")) data.push(line.slice(5).trim());
-  }
-  if (data.length === 0) return;
-  try {
-    onEvent(event, JSON.parse(data.join("\n")) as Record<string, unknown>);
-  } catch {
-    // A malformed event is dropped rather than killing the stream: the rest of
-    // the answer is still worth showing, and the `done` event is what tells the
-    // caller how it ended.
-  }
+/** The three things a streamed answer tells its caller, in the order they can
+ *  happen. `onCitations` fires once and always — including on every path where
+ *  no answer follows — because the sources are the half of RAG that is
+ *  trustworthy on its own. */
+export interface ChatStreamHandlers {
+  onCitations: (citations: Citation[]) => void;
+  onDelta: (text: string) => void;
+  onDone: (info: { model?: string; answerUnavailable?: string }) => void;
+}
+
+export interface ChatStreamOptions {
+  under?: string;
+  includeShared?: boolean;
+  limit?: number;
+  /** Cancels the request. A second question, or leaving the view, must not
+   *  leave a first answer still writing itself into the pane. */
+  signal?: AbortSignal;
+}
+
+/** Replays a whole (non-streamed) chat response through the streaming
+ *  handlers, so the view has exactly one rendering path. A complete answer is
+ *  one delta: the reader sees the same thing, it simply arrives at once — the
+ *  same accommodation the server makes for a generator that cannot stream. */
+function emitChatResponse(body: ChatResponse, handlers: ChatStreamHandlers): void {
+  handlers.onCitations(body.citations ?? []);
+  if (body.answer) handlers.onDelta(body.answer);
+  handlers.onDone({ model: body.model, answerUnavailable: body.answer_unavailable });
+}
+
+/** Whether a failed streaming attempt is worth retrying without streaming.
+ *
+ *  The distinction being drawn is "this server does not speak the streaming
+ *  dialect" versus "this server said no". A 503 from a deployment with no
+ *  embedder would answer the plain request identically, so retrying it spends a
+ *  second request to show the same error; a 400 naming the `stream` field, on
+ *  the other hand, is precisely how this repository's strict decoder reports an
+ *  older build meeting a newer client, and the plain request will work.
+ *  Transport failures fall on the retry side: a dropped connection says nothing
+ *  about what the server supports.
+ */
+function streamingUnsupported(e: unknown): boolean {
+  if (!(e instanceof ApiError)) return true;
+  if (e.status === 400 && /stream/i.test(e.message)) return true;
+  if (e.code === "unexpected_response") return true;
+  return e.status === 404 || e.status === 405 || e.status === 406 || e.status === 415;
 }
 
 async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
@@ -874,35 +915,92 @@ export const api = {
   // acceptable here at all: the reader always holds every source before there is
   // an answer to check against them. onCitations therefore fires once, and
   // always, including on the paths where no answer follows.
-  chatStream: (
+  //
+  // Every way this can go wrong ends at the same place the non-streaming view
+  // already was, rather than at a broken pane: a server that answers JSON gets
+  // replayed through the same handlers, and a stream that dies before rendering
+  // anything is re-asked without `stream`. The one case that is NOT retried is a
+  // stream that already put prose on screen — the user can see half a paragraph,
+  // so it is reported as `generation_truncated` (the server's own word for it,
+  // with copy already written for it) instead of being silently replaced by a
+  // second, differently-worded answer that also costs the GPU another run.
+  chatStream: async (
     question: string,
-    handlers: {
-      onCitations: (citations: Citation[]) => void;
-      onDelta: (text: string) => void;
-      onDone: (info: { model?: string; answerUnavailable?: string }) => void;
-    },
-    opts: { under?: string; includeShared?: boolean; limit?: number; signal?: AbortSignal } = {},
-  ) =>
-    streamSSE(
-      "/api/v1/chat",
-      {
-        question,
-        scope: { under: opts.under ?? "" },
-        include_shared: opts.includeShared ?? false,
-        limit: opts.limit,
-        stream: true,
-      },
-      (event, data) => {
-        if (event === "citations") handlers.onCitations((data.citations as Citation[]) ?? []);
-        if (event === "delta") handlers.onDelta((data.text as string) ?? "");
-        if (event === "done")
-          handlers.onDone({
-            model: data.model as string | undefined,
-            answerUnavailable: data.answer_unavailable as string | undefined,
-          });
-      },
-      opts.signal,
-    ),
+    handlers: ChatStreamHandlers,
+    opts: ChatStreamOptions = {},
+  ): Promise<{ streamed: boolean }> => {
+    let sawDelta = false;
+    let sawDone = false;
+
+    const emit = (event: string, data: Record<string, unknown>): void => {
+      if (event === "citations") handlers.onCitations((data.citations as Citation[]) ?? []);
+      else if (event === "delta") {
+        const text = (data.text as string) ?? "";
+        if (text) {
+          sawDelta = true;
+          handlers.onDelta(text);
+        }
+      } else if (event === "done") {
+        sawDone = true;
+        handlers.onDone({
+          model: data.model as string | undefined,
+          answerUnavailable: data.answer_unavailable as string | undefined,
+        });
+      }
+      // Any other event name is ignored rather than treated as an error: the
+      // sequence is allowed to grow, and a client that fails on a name it has
+      // not been taught makes it impossible to add one.
+    };
+
+    const plain = async (): Promise<{ streamed: boolean }> => {
+      emitChatResponse(await api.chat(question, opts), handlers);
+      return { streamed: false };
+    };
+
+    let outcome: StreamOutcome;
+    try {
+      outcome = await streamSSE(
+        "/api/v1/chat",
+        {
+          question,
+          scope: { under: opts.under ?? "" },
+          include_shared: opts.includeShared ?? false,
+          limit: opts.limit,
+          stream: true,
+        },
+        emit,
+        opts.signal,
+      );
+    } catch (e) {
+      // A cancelled request is not a failure, and must never be retried — the
+      // caller asked for it to stop.
+      if (opts.signal?.aborted) throw e;
+      if (sawDone) return { streamed: true };
+      if (sawDelta) {
+        handlers.onDone({ answerUnavailable: "generation_truncated" });
+        return { streamed: true };
+      }
+      if (!streamingUnsupported(e)) throw e;
+      return plain();
+    }
+
+    if (!outcome.streamed) {
+      emitChatResponse(outcome.body as ChatResponse, handlers);
+      return { streamed: false };
+    }
+    if (!sawDone) {
+      // The stream ended without its terminator. `done` is always sent, so this
+      // is a connection that stopped rather than finished — the ambiguity the
+      // terminator exists to remove, resolved here on the same rule as a
+      // mid-flight error.
+      if (sawDelta) {
+        handlers.onDone({ answerUnavailable: "generation_truncated" });
+        return { streamed: true };
+      }
+      return plain();
+    }
+    return { streamed: true };
+  },
 
   // --- versions -------------------------------------------------------------
 

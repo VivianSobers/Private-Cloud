@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 
 import { api, ApiError, type ChatResponse, type Citation } from "./api";
 
@@ -27,28 +27,59 @@ export function Ask() {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
+  // The request in flight, so a second question cancels the first rather than
+  // racing it. Without this, two answers write into one pane in whatever order
+  // the sidecar happens to finish them — and on a box where an answer takes
+  // tens of seconds, asking again before the first finishes is the normal way
+  // to use this view, not an edge case.
+  const inFlight = useRef<AbortController | null>(null);
+
+  // Leaving the view aborts too: an answer still arriving into a component
+  // nobody is looking at is a GPU busy for no one.
+  useEffect(() => () => inFlight.current?.abort(), []);
+
   async function ask() {
     const question = q.trim();
     if (!question) return;
+
+    inFlight.current?.abort();
+    const controller = new AbortController();
+    inFlight.current = controller;
+
     setAsked(question);
     setLoading(true);
     setError(null);
     setRes(null);
+
+    // Every state update is gated on this request still being the current one.
+    // An aborted fetch rejects asynchronously, so a superseded call can still
+    // be holding a delta when its replacement has already painted.
+    const live = () => inFlight.current === controller && !controller.signal.aborted;
 
     try {
       // The citations land first and complete — the server writes them before a
       // single word of prose — so the sources are on screen while the answer is
       // still being written, and the reader is never looking at an unattributed
       // paragraph. Each delta is appended to the answer already rendered.
+      //
+      // A server that cannot stream, or a stream that breaks before rendering
+      // anything, is replayed through these same handlers by `chatStream`, so
+      // this view has one rendering path and degrades to the behaviour it
+      // shipped with rather than to an empty pane.
       await api.chatStream(
         question,
         {
-          onCitations: (citations) => setRes({ question, citations }),
-          onDelta: (text) =>
+          onCitations: (citations) => {
+            if (live()) setRes({ question, citations });
+          },
+          onDelta: (text) => {
+            if (!live()) return;
             setRes((cur) =>
               cur ? { ...cur, answer: (cur.answer ?? "") + text } : { question, citations: [], answer: text },
-            ),
-          onDone: (info) =>
+            );
+          },
+          onDone: (info) => {
+            if (!live()) return;
             setRes((cur) =>
               cur
                 ? {
@@ -57,14 +88,20 @@ export function Ask() {
                     answer_unavailable: info.answerUnavailable as ChatResponse["answer_unavailable"],
                   }
                 : cur,
-            ),
+            );
+          },
         },
-        { limit: LIMIT },
+        { limit: LIMIT, signal: controller.signal },
       );
     } catch (e) {
-      setError(describe(e));
+      // A cancelled request is not a failure to report: the user either asked
+      // something else or left, and both already show what they asked for.
+      if (live()) setError(describe(e));
     } finally {
-      setLoading(false);
+      if (inFlight.current === controller) {
+        inFlight.current = null;
+        setLoading(false);
+      }
     }
   }
 
