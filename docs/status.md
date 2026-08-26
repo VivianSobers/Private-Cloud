@@ -37,17 +37,20 @@ stale), the migration and test trees, `web/src`, `client/`, and `deploy/` + `scr
 | 2 | CAS engine, versioning, dedup, share links | ✅ 4/4 | ✅ | ✅ |
 | 3 | Sync engine: journal, delta protocol, Go client, conflicts | ✅ 4/4 | ✅ `pcsync` | ✅ |
 | 4 | OCR, semantic search, tagging, OIDC, hardening | ✅ 6/6 | ✅ | ✅ |
-| 5 | Photos & media: EXIF, thumbnails, albums, timeline, map | ✅ 8/8 | ✅ gallery, lightbox, albums, drag-reorder, map | 🟠 video thumbnails only |
-| 6 | Native clients: desktop tray, mobile/PWA | ✅ devices + web push | 🟠 PWA, share target, push ✅; tray shell, signed installers ❌ | 🟠 |
-| 7 | Multi-user, sharing, RBAC, admin, quotas | ✅ 4/4 | 🟠 sharing, admin, quotas ✅; **browsing into a granted folder** ❌ | 🟠 |
-| 8 | Advanced intelligence: faces, similar files, RAG chat | 🟠 4/5 — image similarity ❌ | 🟠 chat, people, find-similar ✅; **SSE not consumed** | 🟠 |
-| 9 | Scale & resilience: cold tier, DR automation, quotas | 🟠 storage health, quota, DR drill ✅; cold tier, billing ❌ | ✅ admin Storage tab | 🟠 |
+| 5 | Photos & media: EXIF, thumbnails, albums, timeline, map | ✅ 8/8 + video: MP4, Matroska, thumbnails | ✅ gallery, lightbox, albums, drag-reorder, map | ✅ |
+| 6 | Native clients: desktop tray, mobile/PWA | ✅ devices + web push | ✅ PWA, share target, push, tray adapter, signed release + auto-update | ✅ |
+| 7 | Multi-user, sharing, RBAC, admin, quotas | ✅ 4/4 | ✅ sharing, admin, quotas, browsing into a granted folder | ✅ |
+| 8 | Advanced intelligence: faces, similar files, RAG chat | ✅ 5/5 — image space landed | ✅ chat streamed, people, find-similar, feedback | ✅ |
+| 9 | Scale & resilience: cold tier, DR automation, quotas | ✅ storage health, quota, cold tier, billing, DR | ✅ admin Storage + Billing tabs | ✅ |
 
-Phases 1–4 are finished on both sides. Phases 5–9 are finished behind the API
-except image similarity, the cold tier and billing. **Nothing left is blocked on a
-decision** — the open client items need an environment (a GUI to compile a tray
-against, code-signing keys) or are small and unclaimed; the open server items are
-deliberate deferrals.
+Every phase is now finished on both sides. What that sentence is allowed to
+mean is bounded, and the bounds are worth stating in the same breath: the
+integration tests behind the newest slices are **written and skipped** here,
+because they need `PC_TEST_DATABASE_URL` and CI is where they run; the tray's
+macOS build and the `.msi`/`.pkg` signatures still need a Mac runner and paid
+identities, which is why those are secret-gated steps rather than claims; and
+the cold tier has been exercised against an in-process S3 rather than a real
+bucket. **Nothing is blocked on a decision.**
 
 ### Landed since this document was last derived
 
@@ -62,7 +65,17 @@ deliberate deferrals.
 | Per-user API rate limiting | `8c7f792` | ✅ the item this document had carried longest as "most overdue" — built, wired in `requireAuth`, tested |
 | pgvector / HNSW index | `78ee454` | ✅ optional: stock Postgres keeps the exact scan, pgvector gets SQL ranking and an HNSW index per vector width |
 | Generation + detection sidecars | `fafa1d0` | ✅ both reference images committed — Dockerfile, `app.py`, `requirements.txt` each |
-| Web Push delivery, end to end | *this change* | ✅ VAPID key published, RFC 8291 sender, PWA subscribes — `awaitingClient` is now empty |
+| Web Push delivery, end to end | `44db11d` | ✅ VAPID key published, RFC 8291 sender, PWA subscribes — `awaitingClient` is now empty |
+| Browsing into a granted folder | `af2414a`, `76a6bc2` | ✅ the browser half had **already landed** and this document was carrying it as ❌; the tag browser now opts in too, and `web/src/access.ts` holds every ownership and permission decision in one testable place |
+| Last-admin guard refusal test | `76a6bc2` | ✅ the test **constructs** the single-admin condition rather than dodging it, and drives all three doors — demote, disable, `DELETE` |
+| Streaming consumed in the browser | `8a9490a` | ✅ and the first-cut consumer in `bd59bf6` was worse than absent: it split only on `\n\n`, so a CRLF-rewriting proxy collapsed the whole answer into one frame at the end — the buffering the server defeats, reintroduced a layer up. `sse.ts` is chunk-boundary correct, aborts, and falls back three ways |
+| The platform tray | `8e9ce5c` | ✅ `pcsync tray` behind `-tags tray`. The stated blocker — "needs cgo and a display" — was **half wrong**: systray is Win32 syscalls on Windows and D-Bus on Linux, so both cross-build with `CGO_ENABLED=0`. Only macOS needs cgo |
+| Video thumbnails · Matroska · trailing `moov` | `572073e` | ✅ EBML parser, a seeking MP4 path, and thumbnails behind `PC_FFMPEG_PATH` on the terms OCR sits behind tesseract |
+| Image-embedding similarity | `450e225` | ✅ migration `00027`, a fourth sidecar, and the ACL filter still meeting the vector store in exactly one place |
+| Feedback that changes results | `450e225` | ✅ migration `00030`, per-owner, suppressing in the shared retrieval layer — a record of a judgement, not training data |
+| Object-storage cold tier | `450e225` | ✅ migration `00028`, an S3 store behind the existing interface, promote-on-read, and an `fsck` that refuses to judge rather than call cold content lost |
+| Billing hooks | `450e225` | ✅ migration `00029`, a plan that drives the existing quota, metering from the same numbers, a signed webhook |
+| Signed release + auto-update | `6e86f36` | ✅ keyless cosign — which is what unblocked it, since an OIDC-identity signature needs no key to store |
 
 ---
 
@@ -70,19 +83,12 @@ deliberate deferrals.
 
 | # | Item | Phase | Mark | State, and what it needs |
 |---|---|---|---|---|
-| 1 | **Browsing into a granted folder** | 7 | ❌ | Sequencing only. The server has supported `?include_shared=true` since Phase 7 slice 2 and `api.ts` can send it; no view opts in, so a grantee reaches shared content through `/shared` and `/chat` but cannot open a shared *folder* inline |
-| 2 | **Streaming consumed in the browser** | 8 | 🟠 | `POST /chat` serves `text/event-stream` with citations before prose; [Ask.tsx](../web/src/Ask.tsx) still awaits the whole body |
-| 3 | **Platform tray icon + menu adapter** | 6 | ❌ | Blocked on an **environment**, not a decision: needs a CGO system-tray library and a machine with a display. Everything it would render and every action it would fire is built and unit-tested in `client/internal/tray` |
-| 4 | **Signed installers + auto-update** | 6 | 🟠 | Cross-built binaries + `SHA256SUMS` ✅, unsigned `.deb`/`.rpm` ✅ (unsigned **by design** — a local install needs no repo signature, only a *repository* does). ❌ A signed apt/dnf repo, Homebrew/Scoop, `.msi`/`.pkg` and an in-place updater need code-signing keys and per-OS tooling outside this repo |
-| 5 | **Image-embedding similarity for photos** | 8 | ❌ | `/similar` works through the text-embedding space, so two photographs with no text have no neighbours. Needs a fourth model and a second vector space; most of the value is already delivered by face clustering and the timeline |
-| 6 | **Object-storage cold tier** | 9 | ❌ | Not started, and honest about it: `GET /admin/storage` reports `tiering.enabled: false` rather than a cold tier holding zero bytes. **By design** until `fsck` can be taught a third location |
-| 7 | **DR recovery automation** | 9 | 🟠 | The **drills** are automated (`scripts/dr-drill.sh` + `scripts/restore-drill.sh`, timers, alerts, run by CI against a real pool). The **recovery procedures** stay manual deliberately: automating a restore means automating something whose failure mode is overwriting good data with old data, under time pressure, with no second chance |
-| 8 | **Video thumbnails, and Matroska metadata** | 5 | 🟠 | MP4/QuickTime duration, dimensions, rotation and capture time are read in-process by `media/mp4.go` — plain `moov` fields, no demuxer. ❌ Still open: a **thumbnail**, which does need a video decoder and so does belong behind the switch OCR sits behind; **Matroska/WebM**, whose EBML tree is a different parser; and an MP4 whose `moov` follows the media data, since this package is handed a bounded prefix |
-| 9 | **Feedback controls that feed labels back** | 8 | ❌ | Unbuilt on both sides and needs a decision first: a face correction is already permanent (`faces.dismissed_at`), so "feedback" here means labels that retrain a model, which Phase 4 put out of scope |
-| 10 | **Billing hooks** | 9 | ❌ | Not started. There is no second tenant; quota exists and is enforced, and the thing billing would attach to is one person's disk |
+| 1 | **`?include_shared=true` has a caller, but no contract test can see it** | 7 | 🟠 | `TagBrowser`, the children listing and search all send it now, so the "served with no client" row is retired — but it is a query parameter rather than a route, and `contract_test.go` enumerates routes. The guarantee is a vitest assertion, not a mechanical one |
 | 11 | **Encrypted pool auto-unlock** | 0 | 🟠 | **Decided, deliberately not enabled.** The unit exists and documents what each keyfile location costs; `scripts/zfs-unlock.sh` refuses a key on the root filesystem, because storing the key beside the ciphertext is not a weaker setup, it is no setup. Cost: a remote reboot needs a console |
 | 12 | **`restore-test.sh` against *your* pool** | 0 | 🟠 | Operator gate. CI proves the restore path against a loopback pool on every push; only you can prove *your* disks do |
-| 14 | **Last-admin guard refusal test** | 7 | 🟠 | The guard exists and its succeeding path is tested; its **refusal** path has no integration test, because the condition is a global property of the `users` table that every fixture's second admin defeats. Recorded, not papered over |
+| 13 | **The integration tests behind the newest slices have not been run** | 5–9 | 🟠 | Written, compiled, vetted and **skipped** — `image similarity`, `feedback`, `billing` and the tiering suites all need `PC_TEST_DATABASE_URL`, and the machine this landed on has no Postgres. CI runs them on push; until that push is green this is a claim about code that compiles, not about behaviour that was observed |
+| 14 | **The cold tier has never met a real bucket** | 9 | 🟠 | The S3 store is exercised against an in-process `httptest` server implementing the parts of the API it uses, which proves the request shapes and the SigV4 signing but not MinIO's or Garage's interpretation of them. First contact with a real endpoint is the remaining risk, and it is the one that decides whether `--repair` is safe on a tiered deployment |
+| 15 | **macOS tray, and the two signatures that need a paid identity** | 6 | 🟠 | `-tags tray` cross-builds for Windows and Linux with `CGO_ENABLED=0`; **darwin** needs cgo and a Mac runner. The `.msi` and `.pkg` are built unsigned with their signing steps gated on secrets that are absent here — Authenticode and a Developer ID are purchases, not code |
 
 ### Served, with no client
 
@@ -507,9 +513,9 @@ are building a biometric index of everyone photographed by the people using it.
 |---|---|---|
 | 1 | `GET /admin/storage` from the same collectors the alerts read | ✅ 5 parser tests, ✅ consumed by the admin Storage tab |
 | 2 | Quota enforcement end to end, including owner-charged editor writes | ✅ 6 tests, ✅ surfaced in the UI |
-| 3 | Object-storage cold tier + tiering policy | ❌ open item 6 |
-| 4 | DR automation / drills as code | 🟠 open item 7 — both drills automated; recovery deliberately manual |
-| 5 | Billing hooks | ❌ open item 10 |
+| 3 | Object-storage cold tier + tiering policy | ✅ `00028`, S3 store behind the existing `blob.Store`, demotion job, promote-on-read (202 `restore_in_progress`), and an `fsck` that refuses to judge rather than call cold content lost |
+| 4 | DR automation / drills as code | ✅ both drills automated, and recovery now executed by `scripts/dr-recover.sh` — dry-run by default, a typed token bound to the plan, resumable, transcripted; 3 alert rules with tests, CI runs the dry run and the refusal against a real pool |
+| 5 | Billing hooks | ✅ `00029`, plans that drive the existing quota, metering from the same numbers, a signed outbound webhook, consumed by the admin Billing tab |
 
 | Decision | Why |
 |---|---|

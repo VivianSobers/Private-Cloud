@@ -363,6 +363,35 @@ jobs:
             /var/lib/node_exporter/textfile/privatecloud_restore_drill.prom
           sudo ./scripts/restore-drill.sh --status
 
+      # The recovery driver's dry run, against the same real pool. This is the
+      # only way to exercise a restore path without restoring anything: the dry
+      # run runs every pre-flight check for real and refuses to write, so a
+      # broken check is caught here rather than at 3am with the pool empty.
+      - name: DR recovery driver — dry run, and it must write nothing
+        run: |
+          sudo mkdir -p /var/lib/node_exporter/textfile
+          before="$(sudo zfs list -H -o name,used -r tank | sha256sum)"
+          sudo REPO_DIR="$PWD" TEXTFILE_DIR=/var/lib/node_exporter/textfile \
+               BACKUP_ENV=/etc/private-cloud/backup.env POOL=tank \
+               ./scripts/dr-recover.sh | tee /tmp/dr-recover-dry.log
+          after="$(sudo zfs list -H -o name,used -r tank | sha256sum)"
+          test "$before" = "$after" || { echo "the dry run modified the pool"; exit 1; }
+          grep -q 'DRY RUN' /tmp/dr-recover-dry.log
+
+      # The refusal is the feature. A confirmation token from some other plan
+      # must not confirm this one, and that has to be a test rather than a
+      # comment, because it is the check standing between a tired operator and
+      # an irreversible restore onto the wrong pool.
+      - name: DR recovery driver — a wrong confirmation token is refused
+        run: |
+          set +e
+          sudo REPO_DIR="$PWD" TEXTFILE_DIR=/var/lib/node_exporter/textfile \
+               BACKUP_ENV=/etc/private-cloud/backup.env POOL=tank \
+               ./scripts/dr-recover.sh --confirm RESTORE-somewhere-else-000000
+          status=$?
+          set -e
+          test "$status" -eq 2 || { echo "expected refusal (exit 2), got $status"; exit 1; }
+
       - name: The pool-health collector reports the pool it can see
         run: |
           sudo TEXTFILE_DIR=/var/lib/node_exporter/textfile ./scripts/zpool-metrics.sh

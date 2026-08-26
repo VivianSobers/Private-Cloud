@@ -103,6 +103,34 @@ relationship to the old one, and restic re-encrypts independently.
 
 ## Phase C — Data (1–6 hours, network-bound)
 
+**Run this phase with `scripts/dr-recover.sh`.** The manual steps below remain
+correct and remain the fallback, but the driver is the way to execute them: it
+runs the same commands in the same order, checks each one first, and leaves a
+transcript of what it did.
+
+```bash
+# 1. Plan. This is the default and writes nothing.
+sudo ./scripts/dr-recover.sh
+
+# 2. Read the plan. It ends by printing the token that confirms THIS plan.
+# 3. Execute.
+sudo ./scripts/dr-recover.sh --confirm RESTORE-tank-<digest>
+
+# Interrupted? Continue where it stopped rather than starting again:
+sudo ./scripts/dr-recover.sh --resume --confirm RESTORE-tank-<digest>
+```
+
+Why it is shaped that way, since the shape is the point: a dry run is the
+default, every destructive step is preceded by a check that stops the recovery
+rather than continuing, and the confirmation is a token containing the pool and
+a digest of the plan — so a token copied from a rehearsal against a scratch pool
+cannot confirm a run against the real one. The one refusal worth knowing about
+in advance: **if a target dataset holds data newer than the newest backup, it
+stops.** Restoring there would not be recovery, it would be deleting the only
+copy of whatever was written since. Move it aside with `zfs rename` and re-run.
+
+If you would rather drive it by hand, everything below is what it runs.
+
 ```bash
 sudo mkdir -p /etc/private-cloud
 # Recreate the restic password file from your printed copy:

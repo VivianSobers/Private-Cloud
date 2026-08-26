@@ -341,3 +341,59 @@ tests:
             exp_annotations:
               summary: "The measured DR restore leg now takes over 6 hours"
               description: "The last rehearsal spent 7h 0m 0s restoring, against the 1-6h phase C estimate in docs/runbook-disaster-recovery.md. Either the data has outgrown the link or the offsite target has slowed down; correct the timeline in the runbook rather than finding out during a rebuild."
+
+  # --- a real recovery, not a rehearsal ---------------------------------------
+
+  # The point of this alert is not that it fires; it is that it fires at
+  # severity info, so the pile of criticals arriving at the same moment can be
+  # read as consequences of it.
+  - name: DrRecoveryInProgress fires while a recovery is running
+    interval: 1m
+    input_series:
+      - series: 'privatecloud_dr_recover_in_progress'
+        values: '0x10 1x30'
+    alert_rule_test:
+      - alertname: DrRecoveryInProgress
+        eval_time: 5m
+        exp_alerts: []
+      - alertname: DrRecoveryInProgress
+        eval_time: 20m
+        exp_alerts:
+          - exp_labels: { severity: info }
+            exp_annotations:
+              summary: "A disaster recovery is running on this machine"
+              description: "scripts/dr-recover.sh is restoring runbook phase C. Other alerts firing right now are most likely consequences of it. Follow along: sudo ./scripts/dr-recover.sh --status, and the transcript in /var/log/private-cloud/dr-recover-*.jsonl"
+
+  # A DRY RUN that reports failed checks must not page anybody. Planning a
+  # recovery and discovering the pre-flight refuses is the script working, and
+  # an alert there would train an operator to ignore this one.
+  - name: DrRecoveryFailed ignores a dry run
+    interval: 1m
+    input_series:
+      - series: 'privatecloud_dr_recover_failures'
+        values: '2x60'
+      - series: 'privatecloud_dr_recover_dry_run'
+        values: '1x60'
+    alert_rule_test:
+      - alertname: DrRecoveryFailed
+        eval_time: 30m
+        exp_alerts: []
+
+  - name: DrRecoveryFailed fires when a real recovery reports a failed step
+    interval: 1m
+    input_series:
+      - series: 'privatecloud_dr_recover_failures'
+        values: '0x10 1x50'
+      - series: 'privatecloud_dr_recover_dry_run'
+        values: '0x60'
+    alert_rule_test:
+      - alertname: DrRecoveryFailed
+        eval_time: 5m
+        exp_alerts: []
+      - alertname: DrRecoveryFailed
+        eval_time: 20m
+        exp_alerts:
+          - exp_labels: { severity: critical }
+            exp_annotations:
+              summary: "A real disaster recovery reported 1 failed step(s)"
+              description: "The recovery stopped rather than continuing past a failure. Read the transcript in /var/log/private-cloud/dr-recover-*.jsonl before re-running; resume with sudo ./scripts/dr-recover.sh --resume --confirm <token>. Do NOT run cloudctl fsck --repair against a partially restored tree."

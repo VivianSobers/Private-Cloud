@@ -531,6 +531,49 @@ groups:
           summary: "The measured DR restore leg now takes over 6 hours"
           description: "The last rehearsal spent {{ $value | humanizeDuration }} restoring, against the 1-6h phase C estimate in docs/runbook-disaster-recovery.md. Either the data has outgrown the link or the offsite target has slowed down; correct the timeline in the runbook rather than finding out during a rebuild."
 
+  # A real recovery, as opposed to a rehearsal. These fire during the worst hour
+  # this system will ever have, so each one is written to tell somebody
+  # something they cannot see from where they are standing.
+  - name: dr-recover
+    rules:
+      # A recovery in flight is not a fault, and this is not a warning. It exists
+      # so that everything else paging at the same time — a pool that is empty,
+      # a database that is not answering, backups that are not fresh — can be
+      # read as consequences of a restore somebody is running, rather than as
+      # four independent emergencies.
+      - alert: DrRecoveryInProgress
+        expr: privatecloud_dr_recover_in_progress == 1
+        for: 1m
+        labels:
+          severity: info
+        annotations:
+          summary: "A disaster recovery is running on this machine"
+          description: "scripts/dr-recover.sh is restoring runbook phase C. Other alerts firing right now are most likely consequences of it. Follow along: sudo ./scripts/dr-recover.sh --status, and the transcript in /var/log/private-cloud/dr-recover-*.jsonl"
+
+      # A failed recovery is the one alert in this file that must not wait. The
+      # operator is present by definition, and the thing they need to know is
+      # that the step they are watching did not do what they think it did.
+      - alert: DrRecoveryFailed
+        expr: privatecloud_dr_recover_failures > 0 and privatecloud_dr_recover_dry_run == 0
+        for: 1m
+        labels:
+          severity: critical
+        annotations:
+          summary: "A real disaster recovery reported {{ $value }} failed step(s)"
+          description: "The recovery stopped rather than continuing past a failure. Read the transcript in /var/log/private-cloud/dr-recover-*.jsonl before re-running; resume with sudo ./scripts/dr-recover.sh --resume --confirm <token>. Do NOT run cloudctl fsck --repair against a partially restored tree."
+
+      # Left in progress. A recovery that stopped reporting is either finished
+      # and the metric was never cleared, or the operator walked away from a
+      # half-restored pool — and the second one is the reason this exists.
+      - alert: DrRecoveryStalled
+        expr: privatecloud_dr_recover_in_progress == 1 and (time() - privatecloud_dr_recover_last_run_timestamp) > 21600
+        for: 30m
+        labels:
+          severity: warning
+        annotations:
+          summary: "A disaster recovery has been in progress for over 6 hours with no update"
+          description: "Either it finished without clearing its state, or it was interrupted and the pool is half restored. Check: sudo ./scripts/dr-recover.sh --status"
+
   # ==========================================================================
   # Recording rules that nothing in this file alerts on live beside the
   # dashboards that read them. A derived series consumed by an alert belongs in
