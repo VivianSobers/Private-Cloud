@@ -37,7 +37,7 @@ stale), the migration and test trees, `web/src`, `client/`, and `deploy/` + `scr
 | 2 | CAS engine, versioning, dedup, share links | ✅ 4/4 | ✅ | ✅ |
 | 3 | Sync engine: journal, delta protocol, Go client, conflicts | ✅ 4/4 | ✅ `pcsync` | ✅ |
 | 4 | OCR, semantic search, tagging, OIDC, hardening | ✅ 6/6 | ✅ | ✅ |
-| 5 | Photos & media: EXIF, thumbnails, albums, timeline, map | ✅ 8/8 | ✅ gallery, lightbox, albums, drag-reorder, map | 🟠 video metadata only |
+| 5 | Photos & media: EXIF, thumbnails, albums, timeline, map | ✅ 8/8 | ✅ gallery, lightbox, albums, drag-reorder, map | 🟠 video thumbnails only |
 | 6 | Native clients: desktop tray, mobile/PWA | ✅ devices; ❌ push sender | 🟠 PWA + share target ✅; tray shell, signed installers ❌ | 🟠 |
 | 7 | Multi-user, sharing, RBAC, admin, quotas | ✅ 4/4 | 🟠 sharing, admin, quotas ✅; **browsing into a granted folder** ❌ | 🟠 |
 | 8 | Advanced intelligence: faces, similar files, RAG chat | 🟠 4/5 — image similarity ❌ | 🟠 chat, people, find-similar ✅; **SSE not consumed** | 🟠 |
@@ -58,8 +58,9 @@ deliberate deferrals.
 | PWA share target | `5a557a1` | ✅ manifest + `ShareTarget.tsx` + SW handler |
 | Streaming chat answers | `bd59bf6` | ✅ server-side SSE, citations first; `Ask.tsx` does not consume it yet |
 | DR rehearsal on a schedule | `0fdce2d` | ✅ `scripts/dr-drill.sh`, timer, alert rules |
+| Video metadata from the MP4 header | *this change* | ✅ duration, dimensions, rotation and capture time, read in-process — a timeline no longer sorts a video by upload time |
 | Per-user API rate limiting | `8c7f792` | ✅ the item this document had carried longest as "most overdue" — built, wired in `requireAuth`, tested |
-| pgvector / HNSW index | *this change* | ✅ optional: stock Postgres keeps the exact scan, pgvector gets SQL ranking and an HNSW index per vector width |
+| pgvector / HNSW index | `78ee454` | ✅ optional: stock Postgres keeps the exact scan, pgvector gets SQL ranking and an HNSW index per vector width |
 | Generation + detection sidecars | `fafa1d0` | ✅ both reference images committed — Dockerfile, `app.py`, `requirements.txt` each |
 
 ---
@@ -76,7 +77,7 @@ deliberate deferrals.
 | 6 | **Image-embedding similarity for photos** | 8 | ❌ | `/similar` works through the text-embedding space, so two photographs with no text have no neighbours. Needs a fourth model and a second vector space; most of the value is already delivered by face clustering and the timeline |
 | 7 | **Object-storage cold tier** | 9 | ❌ | Not started, and honest about it: `GET /admin/storage` reports `tiering.enabled: false` rather than a cold tier holding zero bytes. **By design** until `fsck` can be taught a third location |
 | 8 | **DR recovery automation** | 9 | 🟠 | The **drills** are automated (`scripts/dr-drill.sh` + `scripts/restore-drill.sh`, timers, alerts, run by CI against a real pool). The **recovery procedures** stay manual deliberately: automating a restore means automating something whose failure mode is overwriting good data with old data, under time pressure, with no second chance |
-| 9 | **Video metadata beyond "this is a video"** | 5 | ❌ | `analyzeVideo` records the kind and nothing else — no duration, dimensions, rotation or thumbnail. Those live in MP4/MKV boxes needing a real demuxer; both honest options (cgo ffmpeg, or shelling out) belong behind the same opt-in switch OCR sits behind |
+| 9 | **Video thumbnails, and Matroska metadata** | 5 | 🟠 | MP4/QuickTime duration, dimensions, rotation and capture time are read in-process by `media/mp4.go` — plain `moov` fields, no demuxer. ❌ Still open: a **thumbnail**, which does need a video decoder and so does belong behind the switch OCR sits behind; **Matroska/WebM**, whose EBML tree is a different parser; and an MP4 whose `moov` follows the media data, since this package is handed a bounded prefix |
 | 10 | **Feedback controls that feed labels back** | 8 | ❌ | Unbuilt on both sides and needs a decision first: a face correction is already permanent (`faces.dismissed_at`), so "feedback" here means labels that retrain a model, which Phase 4 put out of scope |
 | 11 | **Billing hooks** | 9 | ❌ | Not started. There is no second tenant; quota exists and is enforced, and the thing billing would attach to is one person's disk |
 | 12 | **Encrypted pool auto-unlock** | 0 | 🟠 | **Decided, deliberately not enabled.** The unit exists and documents what each keyfile location costs; `scripts/zfs-unlock.sh` refuses a key on the root filesystem, because storing the key beside the ciphertext is not a weaker setup, it is no setup. Cost: a remote reboot needs a console |
@@ -302,7 +303,8 @@ that moves nothing on disk. **Met.**
 | 9 | Gallery, timeline, lightbox, album views in `web/` | ✅ |
 | 10 | Add-to-album and pointer-drag reordering | ✅ `614c6e1` |
 | 11 | Map view from EXIF GPS | ✅ `4875cb5` — `web/src/geo.ts`, no tile provider, so nothing phones home |
-| — | Video metadata beyond "this is a video" | ❌ open item 9 |
+| — | Video metadata: duration, dimensions, rotation, capture time | ✅ `media/mp4.go` — `moov` fields, no demuxer, no cgo |
+| — | Video thumbnails · Matroska metadata | 🟠 open item 9 |
 | — | `cloudctl jobs reindex --kind=media` backfill | ✅ |
 | — | `fsck`/GC account for variant bytes | ✅ the dangerous one — `--repair` would have deleted every thumbnail |
 

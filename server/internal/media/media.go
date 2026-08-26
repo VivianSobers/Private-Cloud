@@ -143,16 +143,34 @@ func analyzeImage(data []byte) (Metadata, error) {
 	return m, nil
 }
 
-// analyzeVideo records that a file is video without parsing its container.
+// analyzeVideo reads what the container header can tell us, and records the file
+// as video regardless.
 //
-// Duration, dimensions and rotation live in MP4/MKV boxes that need a real
-// demuxer, and the honest options are a cgo dependency on ffmpeg or shelling out
-// to it — both of which belong behind the same "is this deployment set up for
-// it" switch OCR already sits behind, not silently in this package.
+// MP4 and QuickTime keep duration, dimensions, rotation and capture time in the
+// `moov` header as plain fields, ahead of any codec, so mp4.go reads them
+// without a demuxer and without the cgo dependency a THUMBNAIL would need — that
+// one still requires a video decoder, and Render still declines video.
 //
-// Returning a bare record rather than an error is deliberate: it marks the file
-// as media so a timeline includes it, ordered by upload time until something can
-// tell it when the video was actually shot.
-func analyzeVideo([]byte) (Metadata, error) {
+// Two cases legitimately yield nothing but the bare record, and neither is an
+// error:
+//
+//   - A container this parser does not read. Matroska and WebM keep the same
+//     facts in an EBML tree, which is a different parser; until it exists those
+//     files behave as every video did before.
+//   - An MP4 whose `moov` sits after the media data. Writing the header last is
+//     normal for a recording, "faststart" is what moves it to the front, and
+//     this package is handed a bounded PREFIX of the file — so a long recording
+//     can genuinely have its header beyond what was read.
+//
+// Returning a bare record rather than an error is deliberate in both: it marks
+// the file as media so a timeline includes it, ordered by upload time until
+// something can tell it when the video was actually shot. `source` is what a
+// later, better analyser uses to find the rows worth redoing.
+func analyzeVideo(data []byte) (Metadata, error) {
+	if looksLikeMP4(data) {
+		if m, ok := parseMP4(data); ok {
+			return m, nil
+		}
+	}
 	return Metadata{Orientation: 1, Source: "video"}, nil
 }
