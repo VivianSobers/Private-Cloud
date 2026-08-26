@@ -1,120 +1,239 @@
 # Private Cloud
 
-A self-hosted, Dropbox-style personal cloud on a single Ubuntu server.
+**A self-hosted, Dropbox-style personal cloud that runs on one Ubuntu server — and never phones home.**
 
-**Current status: Phases 1–4 are complete on both sides. Phases 5–9 are complete
-behind the API, and the clients have caught up on all but four things** — a map
-view over photo GPS, browsing into a folder somebody shared with you, the platform
-tray icon shell, and signed installers. The foundation, the API, the storage
-engine, the sync engine and the intelligence tier are all built and tested.
+[![CI](https://img.shields.io/badge/CI-8_jobs-2ea44f?logo=githubactions&logoColor=white)](.github/workflows/ci.yml)
+[![Go](https://img.shields.io/badge/Go-1.25-00ADD8?logo=go&logoColor=white)](server/go.mod)
+[![React](https://img.shields.io/badge/React-19-61DAFB?logo=react&logoColor=black)](web/package.json)
+[![Postgres](https://img.shields.io/badge/Postgres-16-4169E1?logo=postgresql&logoColor=white)](deploy/compose/docker-compose.yml)
+[![ZFS](https://img.shields.io/badge/storage-ZFS_mirror-CC0000)](scripts/zfs-setup.sh)
+[![License](https://img.shields.io/badge/license-AGPL--3.0-blue)](LICENSE)
 
-Work happens on two parallel tracks either side of the HTTP API — see
-[the ownership split in docs/status.md](docs/status.md#the-seam-who-owns-what) — which is why the roadmap below
-tracks the two halves of a phase separately: a phase is only *complete* when both
-the endpoint and the thing that consumes it exist.
-
-> **[docs/status.md](docs/status.md) is the one status document** — every phase,
-> every slice, every deliberate omission and every design decision worth keeping,
-> marked ✅/🟠/❌. The roadmap below is the summary of it.
-
-**Legend, used in every document in this repo:** ✅ done · 🟠 partial (the row says
-which half) · ❌ not built (deliberately deferred ones are in
-[docs/status.md](docs/status.md#what-is-not-done--the-whole-open-list)).
+Files, photos, search and sync — the things you would otherwise rent — running on
+hardware you own, reachable only from devices you have authorised. No forwarded
+router ports, no third-party storage, and no content that leaves your
+infrastructure, including the machine-learning tier.
 
 ---
 
-## What Phase 0 provided
+## Contents
 
-- **Storage** — encrypted, compressed ZFS mirror with a tuned dataset layout
-- **Snapshots** — automatic, every 15 min → 6 months, read-only, ransomware-resistant
-- **Network** — Tailscale-only private plane; zero forwarded router ports
-- **Services** — Postgres, Caddy, Prometheus, Grafana, Alertmanager, ntfy, exporters
-- **Backups** — nightly encrypted restic to an offsite target, with push alerts
-- **Recovery** — tested runbooks and a script that proves the backups are real
+| Section | |
+|---|---|
+| [What it does](#what-it-does) | The feature surface, by area |
+| [Architecture](#architecture) | How the pieces fit |
+| [How a file travels](#how-a-file-travels) | Upload, dedup, index, sync |
+| [Quick start](#quick-start) | Six steps to a running stack |
+| [Project status](#project-status) | Every phase, and the three open items |
+| [Design decisions](#design-decisions) | The tradeoffs, and why |
+| [Repository layout](#repository-layout) | Where things live |
+| [Documentation](#documentation) | Which file answers which question |
+| [Team](#team) | Who built it |
 
-Everything is defined as code in this repo. A rebuilt server is a `git clone`,
-a `.env`, and a restore away.
+---
+
+## What it does
+
+| Area | Capabilities |
+|---|---|
+| **Files** | Upload/download, resumable transfers, WebDAV, trash, full version history with restore |
+| **Storage engine** | Content-addressed chunking (FastCDC + BLAKE3 + zstd) with cross-user deduplication |
+| **Sync** | `pcsync` headless daemon, block-level deltas, conflict copies that never overwrite |
+| **Sharing** | Public links with password, expiry and download caps; folder grants that inherit |
+| **Photos & media** | EXIF, thumbnails, previews, timeline, albums, map view, MP4 + Matroska video metadata |
+| **Intelligence** | OCR, semantic search, auto-tagging, face clustering, RAG chat with mandatory citations |
+| **Multi-user** | Passkeys + OIDC SSO, RBAC, quotas, admin console, audit log |
+| **Operations** | ZFS snapshots, nightly offsite backups, point-in-time recovery, 38 tested alerts |
+
+---
+
+## Architecture
+
+Two tiers, one queue. The always-on box owns the API, the database and the blob
+store; anything expensive runs in a separate worker that can live on a different
+machine over the tailnet.
+
+```mermaid
+graph TB
+    subgraph clients["Clients"]
+        WEB["Web app / PWA<br/>React 19"]
+        SYNC["pcsync daemon<br/>Go, CGO-free"]
+        DAV["WebDAV clients"]
+    end
+
+    subgraph tailnet["Tailscale private plane — zero open ports"]
+        CADDY["Caddy<br/>TLS + routing"]
+    end
+
+    subgraph always["Always-on server"]
+        API["Go API<br/>modular monolith"]
+        PG[("Postgres 16<br/>metadata + journal")]
+        BLOB[("ZFS mirror<br/>encrypted, snapshotted")]
+    end
+
+    subgraph worker["Worker tier — separate box, optional"]
+        PCW["pcworker<br/>SKIP LOCKED queue"]
+        SIDE["Sidecars<br/>embed · generate · detect · image-embed"]
+    end
+
+    subgraph offsite["Offsite"]
+        RESTIC[("restic repository<br/>encrypted")]
+    end
+
+    WEB --> CADDY
+    SYNC --> CADDY
+    DAV --> CADDY
+    CADDY --> API
+    API <--> PG
+    API <--> BLOB
+    PCW -->|"pulls bytes over the API"| API
+    PCW <--> SIDE
+    PG -.->|"job queue"| PCW
+    BLOB -->|"nightly"| RESTIC
+```
+
+The worker pulls file bytes **over the API** rather than through a mounted store.
+That is what lets a GPU box join the tailnet and do inference without ever being
+given filesystem access to your data.
+
+---
+
+## How a file travels
+
+```mermaid
+sequenceDiagram
+    participant C as Client
+    participant A as API
+    participant S as CAS store
+    participant Q as Job queue
+    participant W as Worker
+
+    C->>A: chunk manifest (BLAKE3 hashes)
+    A->>S: which chunks are missing?
+    S-->>A: only the changed ones
+    A-->>C: negotiated chunk list
+    C->>A: upload missing chunks
+    A->>S: verify hash, compress, store
+    A->>A: commit manifest, bump version
+    A->>Q: enqueue OCR / media / embed
+    A-->>C: 201 Created
+    Q-->>W: SKIP LOCKED claim
+    W->>A: fetch bytes
+    W->>A: write text, EXIF, vectors, tags
+    Note over A,C: GET /changes — other devices pull the delta
+```
+
+A file that already exists anywhere on the system uploads **zero bytes**. A file
+that changed by one paragraph moves only that paragraph's chunks.
 
 ---
 
 ## Quick start
 
-> **Read [docs/phase-0-checklist.md](docs/phase-0-checklist.md) instead of this
-> section if you're actually building it.** The checklist is the real procedure;
-> this is only the shape of it.
+> Building it for real? Follow [docs/phase-0-checklist.md](docs/phase-0-checklist.md)
+> — that is the actual procedure. This is only its shape.
 
 ```bash
+# 1 — host packages
 sudo apt install -y zfsutils-linux sanoid restic git curl jq
 curl -fsSL https://get.docker.com | sudo sh
 curl -fsSL https://tailscale.com/install.sh | sh
 
+# 2 — the repo
 sudo git clone <this-repo> /opt/private-cloud && cd /opt/private-cloud
 chmod +x scripts/*.sh
 
-lsblk -o NAME,SIZE,MODEL,SERIAL       # identify your two data disks
+# 3 — storage (destructive — dry-run first)
+lsblk -o NAME,SIZE,MODEL,SERIAL
 sudo ./scripts/zfs-setup.sh --dry-run /dev/disk/by-id/D1 /dev/disk/by-id/D2
 sudo ./scripts/zfs-setup.sh           /dev/disk/by-id/D1 /dev/disk/by-id/D2
 sudo ./scripts/sanoid-setup.sh
+
+# 4 — private network
 sudo tailscale up --hostname=cloud --ssh
 
+# 5 — the stack
 cp deploy/secrets/.env.example deploy/compose/.env && chmod 600 deploy/compose/.env
-$EDITOR deploy/compose/.env           # TAILSCALE_IP is mandatory
+$EDITOR deploy/compose/.env            # TAILSCALE_IP is mandatory
 cd deploy/compose && docker compose up -d
 
-sudo ./scripts/restore-test.sh        # the step that makes it real
+# 6 — the step that makes it real
+sudo ./scripts/restore-test.sh
 ```
 
 ---
 
-## Layout
+## Project status
 
+All ten phases are complete on both sides of the API — every endpoint has a
+client that consumes it, and `awaitingClient` in the contract test is empty.
+
+```mermaid
+gantt
+    title Delivery — all phases complete on both sides
+    dateFormat X
+    axisFormat %s
+    section Foundation
+    Phase 0 · storage, network, monitoring, backups   :done, 0, 1
+    Phase 1 · MVP auth, files, web UI, search         :done, 1, 2
+    section Engine
+    Phase 2 · CAS, versioning, dedup, share links     :done, 2, 3
+    Phase 3 · sync journal, deltas, conflicts         :done, 3, 4
+    section Intelligence
+    Phase 4 · OCR, semantic search, OIDC, hardening   :done, 4, 5
+    Phase 5 · photos, media, timeline, albums, map    :done, 5, 6
+    section Product
+    Phase 6 · native clients, PWA, tray, push         :done, 6, 7
+    Phase 7 · multi-user, RBAC, admin, quotas         :done, 7, 8
+    section Scale
+    Phase 8 · faces, similarity, RAG chat             :done, 8, 9
+    Phase 9 · cold tier, DR automation, billing       :done, 9, 10
 ```
-.
-├── deploy/
-│   ├── compose/docker-compose.yml    infrastructure stack
-│   ├── caddy/Caddyfile               TLS + routing (tailnet-only)
-│   ├── monitoring/                   prometheus, alerts, alertmanager, grafana
-│   ├── sanoid/sanoid.conf            snapshot retention policy
-│   ├── host/                         UPS + unattended-upgrades (see host/README.md)
-│   ├── systemd/                      backup, drill, cert and PITR timers
-│   └── secrets/.env.example          template; real .env is gitignored
-├── server/                           Go API, worker and CLI — see server/README.md
-├── client/                           pcsync, the headless sync daemon (separate Go module)
-├── web/                              React web app / installable PWA
-├── scripts/
-│   ├── zfs-setup.sh                  pool + datasets (destructive; --dry-run first)
-│   ├── sanoid-setup.sh               snapshots
-│   ├── restic-backup.sh              nightly offsite backup + freshness metric
-│   ├── zpool-metrics.sh              pool-health textfile collector (systemd timer)
-│   ├── restore-test.sh               proves backups restore
-│   ├── restore-drill.sh              runs the above monthly and makes it a metric
-│   ├── pgbackrest.sh                 point-in-time recovery for the database
-│   ├── tailscale-cert.sh             real TLS certs, issued and renewed
-│   ├── zfs-unlock.sh                 opt-in pool unlock from a keyfile
-│   └── host-setup.sh                 UPS, unattended upgrades, timers
-└── docs/
-    ├── status.md                     the one document: every phase and slice
-    │                                 ✅/🟠/❌, what is left and what blocks it,
-    │                                 every deliberate omission with its reason,
-    │                                 and why each phase looks the way it does
-    ├── phase-0-checklist.md          ← start here if you're building it
-    ├── api-contract.md               the seam: shipped surface + proposed surface
-    ├── openapi.yaml                  generated from the routes; what actually responds
-    ├── tailscale-setup.md
-    ├── custom-metrics.md             backup/pool metrics + failure-sim validation
-    ├── runbook-restore.md            something is lost
-    ├── runbook-disaster-recovery.md  everything is lost
-    └── runbook-worker.md             OCR, search and embeddings ops
-```
+
+| Phase | Scope | Behind the API | In front of it |
+|---|---|:---:|:---:|
+| 0 | Storage, network, monitoring, backups, runbooks | ✅ | — |
+| 1 | MVP: auth, files, resumable upload, WebDAV, search | ✅ 7/7 | ✅ |
+| 2 | CAS engine, versioning, dedup, share links | ✅ 4/4 | ✅ |
+| 3 | Sync engine: journal, delta protocol, Go client, conflicts | ✅ 4/4 | ✅ `pcsync` |
+| 4 | OCR, semantic search, tagging, OIDC, hardening | ✅ 6/6 | ✅ |
+| 5 | Photos & media: EXIF, thumbnails, albums, timeline, map | ✅ 8/8 | ✅ |
+| 6 | Native clients: desktop tray, mobile/PWA | ✅ | ✅ |
+| 7 | Multi-user, sharing, RBAC, admin, quotas | ✅ 4/4 | ✅ |
+| 8 | Advanced intelligence: faces, similar files, RAG chat | ✅ 5/5 | ✅ |
+| 9 | Scale & resilience: cold tier, DR automation, billing | ✅ 5/5 | ✅ |
+
+**Three things remain open, and none of them is code:**
+
+| # | Item | Why it is not closed |
+|---|---|---|
+| 1 | `restore-test.sh` against *your* pool | An operator gate. CI proves the restore path against a loopback pool on every push; no repository can prove *your* disks do |
+| 2 | Encrypted pool auto-unlock | A decision, taken deliberately. Storing the key beside the ciphertext is not a weaker setup — it is no setup. Cost: a remote reboot needs a console |
+| 3 | macOS tray, Authenticode, Developer ID | Purchases, not code. Signing steps are written and gated on secrets this account does not hold |
+
+[docs/status.md](docs/status.md) is the authority — every phase, every slice,
+and every deliberate omission with its reason.
+
+### What CI proves on every push
+
+| Job | Proves |
+|---|---|
+| `server` · `server-pgvector` | Full Go suite against a real Postgres, with and without pgvector |
+| `client` | `pcsync` builds pure-Go, including the tagged tray, for Linux and Windows |
+| `web` | Vitest suite and a strict TypeScript typecheck |
+| `contract` | `openapi.yaml` matches the route table; no route is served without a client |
+| `monitoring` | Alert rules pass `promtool` unit tests; every dashboard query is valid PromQL |
+| `shell` | Every script through `shellcheck` |
+| `restore-drill` | A ZFS pool is built, backed up with restic and **restored** — the build fails if the bytes do not come back |
 
 ---
 
-## Design decisions worth knowing
+## Design decisions
 
-**Modular monolith, not microservices.** One developer, one machine. Every
-network boundary costs serialization and distributed failure modes and buys
-nothing until there's a second machine. Module boundaries are enforced in code
-so extraction stays cheap later.
+**Modular monolith, not microservices.** One machine. Every network boundary
+costs serialization and distributed failure modes and buys nothing until there
+is a second machine. Module boundaries are enforced in code, so extraction
+stays cheap later.
 
 **ZFS, not ext4 or btrfs.** End-to-end checksums with self-healing are the only
 real defence against silent bit rot, and snapshots make versioning and recovery
@@ -122,65 +241,78 @@ nearly free. For a system whose entire job is "never lose my files," a
 filesystem without integrity checking is disqualifying.
 
 **Tailscale, not port forwarding.** Zero open ports means the internet-facing
-attack surface in Phase 0 is literally nothing. A public plane for share links
-arrives in Phase 2, as a separate and deliberately minimal surface.
+attack surface is literally nothing. Share links get a separate, deliberately
+minimal public plane.
 
 **Snapshots are not backups.** They share the disks. `restic` to a machine that
 is not this one is what survives fire, theft, and both disks failing.
 
-**No high availability.** One server can't have it. This design optimises
+**No high availability.** One server cannot have it. This design optimises
 durability and bounded recovery time instead — the correct tradeoff at this
 scale. Chasing HA across two home machines buys complexity, not uptime.
 
-**Two containers run privileged**: cadvisor (read-only `docker.sock` —
-per-container metrics are impossible otherwise) and smartctl_exporter (raw
-device access — SMART is the earliest warning a mirror member is dying). Both
-are documented, deliberate exceptions to the isolation rules, not oversights.
+**Intelligence degrades, never fails.** Every sidecar is optional and returns a
+stable code rather than a 500. With none of them running, every file endpoint
+works and search still matches filenames.
 
 ---
 
-## Roadmap
+## Repository layout
 
-| Phase | Scope | Status |
-|---|---|---|
-| 0 | Storage, network, monitoring, backups, runbooks | ✅ **complete** — storage, snapshots, tailnet-only ingress with real TLS certificates, monitoring with five self-provisioning dashboards and 38 rule-tested alerts, nightly offsite backups, point-in-time recovery for the database, UPS shutdown, unattended security updates, and every image pinned to a digest. The restore drill runs monthly and is re-run by CI against a real ZFS pool on every push, so the restore path cannot break silently. 🟠 Running the drill against **your** pool stays yours — see [docs/phase-0-checklist.md](docs/phase-0-checklist.md) §10 |
-| 1 | MVP: auth (passkeys), upload/download, resumable uploads, web UI, WebDAV, search | ✅ **complete** — all 7 slices |
-| **2** | CAS storage engine, versioning, dedup, share links | ✅ **complete** — all 4 slices: FastCDC+BLAKE3+zstd chunking with cross-user dedup, background migration of Phase 1 blobs, real version history (list/restore/retention), and public share links (file & folder, password/expiry/download-cap, instant revocation) on a separate Caddy plane |
-| **3** | Sync engine: change journal, Go client, conflict resolution | ✅ **complete** — all 4 slices: a per-owner change journal with a gap-free cursor (`GET /changes`); a block-level delta protocol (fetch manifest, negotiate missing chunks, BLAKE3-verified chunk upload, manifest commit) so a changed file moves only its changed chunks; a headless Go sync client (`client/`, `pcsync`) — a separate pure-Go module with a SQLite state DB, initial tree reconcile, incremental journal replay, fsnotify + poll + rescan loops, and an app-password-to-device-token exchange; and lineage-based conflict resolution that never overwrites or merges — a both-sides edit or a delete-vs-edit becomes a visible `name (conflict from HOST DATE).ext` copy |
-| 4 | ML: OCR, semantic search, tagging; OIDC; hardening | ✅ **complete** — see [docs/status.md § Phase 4](docs/status.md#phase-4--intelligence-identity-hardening). Two tiers, one queue: the always-on box owns the API, database and blob store; intelligence runs in a separate `pcworker` that drains the job queue via `SKIP LOCKED`, so GPU workers on separate boxes over the tailnet (or a CPU fallback) do the heavy inference, pulling file bytes over the API rather than a mounted store. Content never leaves your infrastructure. All slices done: job queue + worker; OCR/text extraction folded into search (a scanned receipt is findable by a word printed on it); semantic search (a Python embedding sidecar on a GPU box, content-addressed vectors, cosine KNN, off cleanly with no sidecar); cheap explainable auto-tagging; OIDC single sign-on alongside passkeys (authorization-code + PKCE, opt-in, provisions its own non-admin users); and a [hardening pass](docs/status.md#the-hardening-pass-slice-5--what-was-reviewed-fixed-and-accepted) that cleared a real pgx SQL-injection CVE, added body-size caps, security headers and a written abuse review |
-| **5** | Photos & media: EXIF, thumbnails, albums, timeline | 🟠 **server complete (8/8); two front-of-API slices open** — see [docs/status.md § Phase 5](docs/status.md#phase-5--photos--media). A `media` job kind renders thumbnails and previews and reads EXIF into a content-addressed store, so a photo that arrives twice is decoded once; `?variant=thumb\|preview` serves renditions from the existing content route, keeping ranges, ETags and the share plane; `GET /media/timeline` sorts by when the shutter fired rather than by upload date; and `/albums` gives hand-ordered collections that never move a file. `cloudctl jobs reindex --kind=media` backfills a library that predates the job. The gallery, lightbox and album views in `web/` light up against it unchanged. ❌ **Still open in front of the API:** a map view from the EXIF GPS that is already served, and pointer-drag reordering (ordering today is move-up/move-down buttons). ❌ Video metadata beyond "this is a video" needs a demuxer |
-| 6 | Native clients: desktop tray, mobile/PWA | 🟠 **server side complete; the clients are production-shaped, two packaging items ❌ open** — see [docs/status.md § Phase 6](docs/status.md#phase-6--native-clients). Behind the API: `/devices` list/rename/revoke, where a device *is* a device-kind session so revoking one is revoking the token, plus a Web Push subscription hook the server stores and never delivers. In front: the daemon's local control socket, selective sync, the platform-free tray package + `pcsync watch`, an installable PWA with an offline app shell, offline file pinning, a device-management UI in Settings, cross-platform release builds and unsigned Linux `.deb`/`.rpm` packages are done ✅. ❌ Open: the platform tray **icon shell** (needs a CGO tray library and a display), signed installers + an in-place updater (needs code-signing keys), a PWA share target, and push **delivery** — `POST /devices/{id}/push` stores a subscription no client can create, because the server publishes no VAPID key |
-| 7 | Multi-user, sharing, RBAC, admin, quotas | 🟠 **server complete (4/4); one client gap** — see [docs/status.md § Phase 7](docs/status.md#phase-7--multi-user-sharing-rbac-admin-quotas). Grants inherit down a folder from the materialised path, so a share covers files that do not exist yet; shared content stays out of every existing endpoint unless a client opts in with `?include_shared=true`, which keeps pre-Phase-7 clients correct; an editor's writes land in the owner's tree and on the owner's quota; semantic search filters node rows rather than the content-addressed vectors; and an admin console provisions, quotas and disables accounts — disabling, never deleting — against an audit log of authorisation-relevant events. ❌ Still open in front of the API: browsing *into* a granted folder — nothing in `web/` sends `?include_shared=true`, so a grantee reaches shared content through the "Shared" view but cannot open a shared folder inline. ❌ Per-user API rate limiting (slice 5) remains deferred |
-| 8 | Advanced intelligence: faces, similar files, RAG chat | 🟠 **both sides shipped; 2/5 server slices and two sidecars open** — see [docs/status.md § Phase 8](docs/status.md#phase-8--advanced-intelligence). `POST /chat` retrieves then answers with **mandatory citations**, and degrades to citations alone when no generator is configured — retrieval is the trustworthy half and is useful on its own; `/nodes/{id}/similar` reuses the same scan, so there is exactly one place the ACL meets the vector store; and a `faces` job clusters photos into unnamed `/people` that a person names, merges and corrects. Three optional sidecars, every one of which degrades with a stable code rather than a 500 — though only the embedding one has a reference implementation in `deploy/`; ❌ the generation and detection sidecars are a Go client and a config var each, so on a stock install Ask returns citations without prose and the people browser is correctly empty. ✅ In front of the API: Ask now calls `/chat` for an answer with citations, a People view names face clusters, the lightbox draws detected faces and lets you reassign one, and "find similar" runs from the viewer. ❌ Streaming answers and image-embedding similarity are slices 4 and 5, unstarted |
-| 9 | Scale & resilience: cold tier, DR automation, quotas | 🟠 **partial (2/5 slices)** — see [docs/status.md § Phase 9](docs/status.md#phase-9--scale--resilience). `GET /admin/storage` reports pool health, backup freshness and queue depth by reading the **same textfile collectors the alerts scrape**, so the console and Grafana cannot disagree; quota enforcement is proven end to end, including that an editor's write into a shared folder spends the *owner's* quota. **The object-storage cold tier is not built**, and the endpoint says `tiering.enabled: false` rather than reporting an empty cold tier that would imply it exists — the Phase 9 section records what it would take and why half-building it is the worst option for a storage system. ✅ The admin console now has a Storage tab reading that endpoint. ❌ DR automation (slice 4) and billing hooks (slice 5) are unstarted |
+```
+.
+├── deploy/          docker compose, Caddy, monitoring, snapshots, systemd timers, sidecars
+├── server/          Go API, worker and CLI — 30 migrations, ~99 test files
+├── client/          pcsync, the headless sync daemon (separate pure-Go module)
+├── web/             React 19 web app / installable PWA
+├── scripts/         ZFS, snapshots, backups, restore drills, PITR, TLS, DR
+└── docs/            status, contracts, checklist and runbooks
+```
 
-Search moved into Phase 1 (slice 7) rather than waiting for Phase 2 — trigram
-indexes needed nothing the storage engine had to provide first.
+---
 
-**How to read 🟠 partial.** Phases 5–9 are split across the API seam and the two
-tracks move independently, so a phase can have a finished UI and no endpoint
-behind it — or, as is now the case everywhere, finished endpoints and no UI. The
-authority on what actually responds is [docs/openapi.yaml](docs/openapi.yaml),
-which is generated from the server's own route table and verified against it by a
-contract test — not [docs/api-contract.md](docs/api-contract.md), which also
-describes endpoints that are only *proposed*.
+## Documentation
 
-The authority on what is **consumed** is `awaitingClient` in
-[server/internal/httpapi/contract_test.go](server/internal/httpapi/contract_test.go).
-It listed thirteen route shapes when it was written; twelve have since shipped a
-client and were deleted from it — the test forces that, failing both on an
-undeclared unconsumed route and on a stale declaration. **One shape remains:** the
-Web Push subscription hook, which waits on a VAPID key and a sender rather than on
-a UI. [docs/status.md](docs/status.md) carries that plus the front-of-API gaps a
-route table cannot see.
+| Question | File |
+|---|---|
+| *Is the feature done?* | [docs/status.md](docs/status.md) — every phase and slice |
+| *How do I build this server?* | [docs/phase-0-checklist.md](docs/phase-0-checklist.md) |
+| *Does this endpoint exist?* | [docs/openapi.yaml](docs/openapi.yaml) — generated from the route table |
+| *What does this endpoint mean?* | [docs/api-contract.md](docs/api-contract.md) |
+| *Something is lost* | [docs/runbook-restore.md](docs/runbook-restore.md) |
+| *Everything is lost* | [docs/runbook-disaster-recovery.md](docs/runbook-disaster-recovery.md) |
+| *OCR / search / embeddings ops* | [docs/runbook-worker.md](docs/runbook-worker.md) |
+| *Networking* | [docs/tailscale-setup.md](docs/tailscale-setup.md) |
+| *Metrics and alerts* | [docs/custom-metrics.md](docs/custom-metrics.md) |
 
 ---
 
 ## The two things that can permanently destroy everything
 
-1. Losing the **ZFS pool passphrase** — every byte on the disks becomes noise.
-2. Losing the **restic repository password** — every backup ever taken becomes noise.
+> [!CAUTION]
+> **1. The ZFS pool passphrase** — lose it and every byte on the disks becomes noise.
+>
+> **2. The restic repository password** — lose it and every backup ever taken becomes noise.
+>
+> Neither has a recovery mechanism. Not "hard to recover" — impossible. Store both
+> in a password manager **and printed on paper somewhere physical**, and do it
+> before you put anything you care about on this system.
 
-Neither has a recovery mechanism. Not "hard to recover" — impossible. Store
-both in a password manager **and printed on paper somewhere physical**, and do
-it before you put anything you care about on this system.
+---
+
+## Team
+
+| Member | Focus |
+|---|---|
+| **Guru R Bharadwaj** | Storage engine, sync, API, infrastructure |
+| **Vivian Sobers** | Web client, media pipeline, intelligence tier |
+
+Work happens on two parallel tracks either side of the HTTP API — see
+[the ownership split](docs/status.md#the-seam-who-owns-what). Neither track owns
+the other; a feature is only finished when both halves exist.
+
+---
+
+## License
+
+[GNU Affero General Public License v3.0](LICENSE).
