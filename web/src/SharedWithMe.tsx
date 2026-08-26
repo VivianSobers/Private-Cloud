@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 
 import { api, ApiError, type Node } from "./api";
+import { ownershipLabel } from "./access";
 
 // "Shared with me": the roots other users have granted me access to. Reads the
 // Phase 7 `GET /shared` surface. Each item carries an `access` object naming the
@@ -54,7 +55,11 @@ export function SharedWithMe({ onOpenFolder }: { onOpenFolder?: (id: string) => 
                 {n.access && <span className="role-badge">{n.access.role}</span>}
               </span>
               <span className="muted small">
-                {n.access ? `shared by ${n.access.owner}` : ""} · {n.path}
+                {/* Same marker the browser puts on a row, from the same
+                    function, so an item does not change description when it is
+                    opened. A missing owner left a dangling separator here. */}
+                {ownershipLabel(n) ? `${ownershipLabel(n)} · ` : ""}
+                {n.path}
               </span>
             </span>
             {n.kind === "file" && (

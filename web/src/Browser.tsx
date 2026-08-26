@@ -10,6 +10,7 @@ import {
   type SearchHit,
   type Usage,
 } from "./api";
+import { ownershipLabel, permissionsFor } from "./access";
 import { ShareDialog } from "./ShareDialog";
 import { Shares } from "./Shares";
 import { Trash } from "./Trash";
@@ -217,6 +218,9 @@ export function Browser({ initialFolderId }: { initialFolderId?: string } = {}) 
   if (showTags) {
     return (
       <TagBrowser
+        // Carry the opt-in in: browsing by tag from inside somebody's shared
+        // folder should find the files that are actually in front of you.
+        includeShared={sharedBrowse}
         onClose={() => setShowTags(false)}
         onOpenFolder={(id) => {
           setShowTags(false);
@@ -420,6 +424,7 @@ export function Browser({ initialFolderId }: { initialFolderId?: string } = {}) 
                 // no access object of its own inside a shared folder is still
                 // somebody else's file.
                 inheritedRole={folder?.access?.role}
+                inheritedOwner={folder?.access?.owner}
                 onOpen={() => void load(n.id)}
                 onRename={() =>
                   void guard(async () => {
@@ -509,6 +514,11 @@ function SearchResults({
                   {h.semantic &&
                     typeof h.score === "number" &&
                     ` · semantic match (${Math.round(h.score * 100)}%)`}
+                  {/* A search inside a shared tree mixes owners in one list, so
+                      the owner belongs on the hit rather than in a banner over
+                      it. Absent on your own files, and on a server that ignores
+                      the opt-in there is nothing here to print. */}
+                  {ownershipLabel(h) && ` · ${ownershipLabel(h)}`}
                 </div>
               </td>
               <td className="size">{h.kind === "file" ? formatBytes(h.size ?? 0) : "—"}</td>
@@ -524,6 +534,7 @@ function SearchResults({
 function Row({
   node,
   inheritedRole,
+  inheritedOwner,
   onOpen,
   onRename,
   onMove,
@@ -534,6 +545,7 @@ function Row({
 }: {
   node: Node;
   inheritedRole?: Role;
+  inheritedOwner?: string;
   onOpen: () => void;
   onRename: () => void;
   onMove: () => void;
@@ -542,11 +554,15 @@ function Row({
   onShare: () => void;
   onTags: () => void;
 }) {
-  const role = node.access?.role ?? inheritedRole;
-  const mine = role === undefined;
-  // Only the owner may grant: an editor re-sharing would spread access beyond
-  // what the owner can see or revoke, so the button is not offered.
-  const canWrite = mine || role === "editor" || role === "owner";
+  // One place decides all of this — see access.ts. A row inside a granted
+  // folder carries no access object of its own, so the enclosing folder's role
+  // and owner stand in; on a server that ignores the opt-in there is neither,
+  // and every row reads as the caller's own — which on such a server it is.
+  const { mine, role, canWrite, canShare, canMove } = permissionsFor(
+    node,
+    inheritedRole,
+    inheritedOwner,
+  );
 
   return (
     <tr>
@@ -560,6 +576,12 @@ function Row({
           <a href={api.downloadUrl(node.id)} target="_blank" rel="noreferrer">
             📄 {node.name}
           </a>
+        )}
+        {/* Whose file this is, on the row itself. The banner above names the
+            folder's owner, but a row that looks identical to one of your own is
+            how somebody deletes a file believing it was theirs. */}
+        {!mine && (
+          <div className="muted small">{ownershipLabel(node, inheritedRole, inheritedOwner)}</div>
         )}
       </td>
       <td className="size">{node.kind === "file" ? formatBytes(node.size ?? 0) : "—"}</td>
@@ -575,7 +597,7 @@ function Row({
             History
           </button>
         )}
-        {mine && (
+        {canShare && (
           <button className="link" onClick={onShare}>
             Share
           </button>
@@ -593,7 +615,7 @@ function Row({
         {/* Move is owner-only even for an editor: both ends of a move resolve
             against the same owner, so moving a shared file into your own tree is
             refused server-side rather than silently copying it onto your quota. */}
-        {mine && (
+        {canMove && (
           <button className="link" onClick={onMove}>
             Move
           </button>

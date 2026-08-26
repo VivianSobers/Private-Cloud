@@ -1,8 +1,13 @@
 package httpapi_test
 
 import (
+	"context"
+	"io"
 	"net/http"
 	"testing"
+	"time"
+
+	"github.com/google/uuid"
 )
 
 // The admin console.
@@ -165,12 +170,6 @@ func TestDisablingAUserKeepsTheirFiles(t *testing.T) {
 
 // Demotion works while another admin exists, and it bites immediately: the
 // demoted account loses the admin plane on its very next request.
-//
-// The refusal side of this rule — that the LAST enabled admin cannot be demoted
-// or disabled — is a global condition over the users table, and these tests
-// share a database in which every fixture creates another admin. It is covered
-// in the auth package, which can construct the condition; asserting it here
-// would either never fire or require disabling accounts other tests are using.
 func TestDemotingAnAdminTakesEffectAtOnce(t *testing.T) {
 	f := newAPIFixture(t)
 
@@ -227,5 +226,119 @@ func TestAuditLogRecordsGrants(t *testing.T) {
 	}
 	if !found {
 		t.Error("no grant.create entry by the granting user")
+	}
+}
+
+// The refusal side of the last-admin guard, over the real router.
+//
+// "Exactly one enabled administrator" is a global property of the users table,
+// not of a fixture, and every fixture mints a second admin — which is why this
+// case went untested for a phase. The condition is CONSTRUCTED here instead:
+// every other enabled admin is disabled directly in the database for the length
+// of the test, leaving the fixture's own admin as the only one, and restored
+// afterwards. That is safe because testdb gives this test binary a database of
+// its own and Go runs these tests one at a time (none of them calls t.Parallel),
+// so no other test is looking at the users table while this one holds it.
+//
+// The guard itself is untouched: what is asserted is the shipped 409 and the
+// shipped error code, through the same handlers a console would call. Anything
+// weaker — a hook, a flag, a test-only bypass — would be testing the scaffolding
+// rather than the rule that keeps an operator from locking themselves out.
+func TestLastAdminCannotBeDemotedOrDisabled(t *testing.T) {
+	f := newAPIFixture(t)
+
+	var adminID uuid.UUID
+	if err := f.pool.QueryRow(f.ctx,
+		`SELECT id FROM users WHERE username = $1`, f.adminUsername).Scan(&adminID); err != nil {
+		t.Fatalf("look up the fixture admin: %v", err)
+	}
+
+	// Stand every other enabled admin down, and put them back afterwards. Rows
+	// are collected before the update so the restore names exactly the accounts
+	// this test changed, rather than re-enabling something another test disabled
+	// on purpose.
+	rows, err := f.pool.Query(f.ctx,
+		`UPDATE users SET disabled_at = now()
+		 WHERE is_admin AND disabled_at IS NULL AND id <> $1
+		 RETURNING id`, adminID)
+	if err != nil {
+		t.Fatalf("stand down the other admins: %v", err)
+	}
+	var stoodDown []uuid.UUID
+	for rows.Next() {
+		var id uuid.UUID
+		if err := rows.Scan(&id); err != nil {
+			rows.Close()
+			t.Fatalf("scan: %v", err)
+		}
+		stoodDown = append(stoodDown, id)
+	}
+	rows.Close()
+	if err := rows.Err(); err != nil {
+		t.Fatalf("stand down the other admins: %v", err)
+	}
+	t.Cleanup(func() {
+		if len(stoodDown) == 0 {
+			return
+		}
+		if _, err := f.pool.Exec(context.Background(),
+			`UPDATE users SET disabled_at = NULL WHERE id = ANY($1)`, stoodDown); err != nil {
+			t.Errorf("restore the other admins: %v", err)
+		}
+	})
+
+	// The precondition, asserted rather than assumed: if this is not 1 the test
+	// below would pass for the wrong reason.
+	var enabled int
+	if err := f.pool.QueryRow(f.ctx,
+		`SELECT count(*) FROM users WHERE is_admin AND disabled_at IS NULL`).Scan(&enabled); err != nil {
+		t.Fatalf("count admins: %v", err)
+	}
+	if enabled != 1 {
+		t.Fatalf("%d enabled admins, want exactly 1 — the guard would not fire", enabled)
+	}
+
+	path := "/api/v1/admin/users/" + adminID.String()
+	for _, c := range []struct {
+		what   string
+		method string
+		body   map[string]any
+	}{
+		{"demote", http.MethodPatch, map[string]any{"is_admin": false}},
+		{"disable", http.MethodPatch, map[string]any{"disabled": true}},
+		// DELETE is the same refusal by a different door: it disables.
+		{"delete", http.MethodDelete, nil},
+	} {
+		var body io.Reader
+		if c.body != nil {
+			body = jsonBody(t, c.body)
+		}
+		rec := f.do(c.method, path, body, f.admin)
+		// 409, not 403: the caller may do this in general, and the server is
+		// refusing this instance of it because of the current state.
+		if rec.Code != http.StatusConflict {
+			t.Errorf("%s the last admin = %d, want 409: %s", c.what, rec.Code, rec.Body)
+			continue
+		}
+		if code := decode(t, rec)["error"].(map[string]any)["code"]; code != "last_admin" {
+			t.Errorf("%s the last admin returned code %v, want last_admin", c.what, code)
+		}
+	}
+
+	// And the refusal happened BEFORE the write: a guard that answers 409 after
+	// demoting the account has locked the operator out anyway.
+	var isAdmin bool
+	var disabledAt *time.Time
+	if err := f.pool.QueryRow(f.ctx,
+		`SELECT is_admin, disabled_at FROM users WHERE id = $1`, adminID).Scan(&isAdmin, &disabledAt); err != nil {
+		t.Fatalf("re-read the admin: %v", err)
+	}
+	if !isAdmin || disabledAt != nil {
+		t.Errorf("the last admin was changed despite the refusal: is_admin=%v disabled_at=%v", isAdmin, disabledAt)
+	}
+
+	// The account still works, which is the whole point of the guard.
+	if rec := f.do(http.MethodGet, "/api/v1/admin/users", nil, f.admin); rec.Code != http.StatusOK {
+		t.Errorf("the last admin lost the admin plane: %d", rec.Code)
 	}
 }

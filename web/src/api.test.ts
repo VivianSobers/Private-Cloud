@@ -156,6 +156,29 @@ describe("the shared-content opt-in", () => {
     await api.tagNodes("receipts", { includeShared: true });
     expect(seen.calls[0]).toContain("include_shared=true");
   });
+
+  it("omits include_shared from a tag listing by default", async () => {
+    const seen = captureUrl();
+    await api.tagNodes("receipts");
+    expect(seen.calls[0]).toBe("/api/v1/tags/receipts");
+  });
+
+  it("keeps the opt-in when a tag listing pages", async () => {
+    // Page two of a shared tag listing must be as wide as page one, or the
+    // second page silently drops back to owner-only halfway down the list.
+    const seen = captureUrl();
+    await api.tagNodes("receipts", { limit: 50, offset: 50, includeShared: true });
+    expect(seen.calls[0]).toContain("offset=50");
+    expect(seen.calls[0]).toContain("include_shared=true");
+  });
+
+  it("sends nothing but the query when a search is neither scoped nor widened", async () => {
+    // The compatibility property in one assertion: a default search is the
+    // request a pre-Phase-7 client made, character for character.
+    const seen = captureUrl();
+    await api.search("invoices");
+    expect(seen.calls[0]).toBe("/api/v1/search?q=invoices");
+  });
 });
 
 describe("contentUrl", () => {

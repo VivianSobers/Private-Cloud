@@ -1,11 +1,27 @@
 import { useCallback, useEffect, useState } from "react";
 
 import { ApiError, api, formatBytes, formatDate, type Node } from "./api";
+import { ownershipLabel } from "./access";
 
 // Browse the whole library by tag: a cloud of every tag with its file count, and
 // the files under whichever tag is selected. The tags themselves come from the
 // worker (MIME + OCR) and from what users add by hand.
-export function TagBrowser({ onClose, onOpenFolder }: { onClose: () => void; onOpenFolder: (id: string) => void }) {
+// includeShared carries the Phase 7 opt-in in from the browser. It is a
+// parameter rather than a setting for the reason the whole opt-in exists: the
+// default listing has to keep meaning "my files", so a tag browsed from your own
+// root asks for nothing and gets exactly what it got before grants existed. An
+// older server ignores the parameter and answers owner-only — the view then
+// renders the same rows without ownership markers, which is the truth on that
+// server, so nothing needs to detect the version.
+export function TagBrowser({
+  onClose,
+  onOpenFolder,
+  includeShared = false,
+}: {
+  onClose: () => void;
+  onOpenFolder: (id: string) => void;
+  includeShared?: boolean;
+}) {
   const PAGE = 50;
   const [tags, setTags] = useState<{ tag: string; count: number }[]>([]);
   const [selected, setSelected] = useState<string | null>(null);
@@ -33,7 +49,7 @@ export function TagBrowser({ onClose, onOpenFolder }: { onClose: () => void; onO
     setHasMore(false);
     setLoadingNodes(true);
     try {
-      const res = await api.tagNodes(tag, { limit: PAGE });
+      const res = await api.tagNodes(tag, { limit: PAGE, includeShared });
       setNodes(res.nodes);
       setHasMore(res.has_more);
     } catch (err) {
@@ -41,7 +57,7 @@ export function TagBrowser({ onClose, onOpenFolder }: { onClose: () => void; onO
     } finally {
       setLoadingNodes(false);
     }
-  }, []);
+  }, [includeShared]);
 
   // The API has always reported has_more here; nothing ever asked for the next
   // page, so a tag with more than a page of files silently showed only the first.
@@ -49,7 +65,7 @@ export function TagBrowser({ onClose, onOpenFolder }: { onClose: () => void; onO
     if (!selected) return;
     setLoadingNodes(true);
     try {
-      const res = await api.tagNodes(selected, { limit: PAGE, offset: nodes.length });
+      const res = await api.tagNodes(selected, { limit: PAGE, offset: nodes.length, includeShared });
       setNodes((ns) => [...ns, ...res.nodes]);
       setHasMore(res.has_more);
     } catch (err) {
@@ -57,7 +73,7 @@ export function TagBrowser({ onClose, onOpenFolder }: { onClose: () => void; onO
     } finally {
       setLoadingNodes(false);
     }
-  }, [selected, nodes.length]);
+  }, [selected, nodes.length, includeShared]);
 
   return (
     <div className="stack">
@@ -119,7 +135,12 @@ export function TagBrowser({ onClose, onOpenFolder }: { onClose: () => void; onO
                           📄 {n.name}
                         </a>
                       )}
-                      <div className="muted small">{n.path}</div>
+                      <div className="muted small">
+                        {n.path}
+                        {/* A tag listing spans folders by construction, so it can
+                            mix owners in a way no single banner could describe. */}
+                        {ownershipLabel(n) && ` · ${ownershipLabel(n)}`}
+                      </div>
                     </td>
                     <td className="size">{n.kind === "file" ? formatBytes(n.size ?? 0) : "—"}</td>
                     <td className="when">{formatDate(n.updated_at)}</td>
