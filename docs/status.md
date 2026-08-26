@@ -107,12 +107,12 @@ Everything unticked needs `sudo` on the real server — the procedure is
 | Docker stack: Postgres, Caddy, Prometheus, Grafana, Alertmanager, ntfy, exporters | ✅ |
 | Nightly encrypted restic backup + freshness metric | ✅ |
 | Pool-health textfile collector + systemd timer | ✅ |
-| Alert rules with rule tests (`alerts.yml`, `alerts_test.yml`) | ✅ 38 rules + the DR-drill rules |
+| Alert rules with rule tests (`alerts.yml`, `alerts_test.yml`) | ✅ 39 rules, 7 of them guarding the two drills |
 | Runbooks: [restore](runbook-restore.md) · [disaster recovery](runbook-disaster-recovery.md) · [worker](runbook-worker.md) | ✅ |
 | Restore drill automated (`restore-drill.sh` + monthly timer + 3 alerts) | ✅ CI runs it against a real ZFS pool on loopback vdevs every push |
 | DR runbook rehearsal automated (`dr-drill.sh` + timer + alerts) | ✅ |
 | `scripts/restore-test.sh` executed against **your** pool | 🟠 open item 13 |
-| Grafana dashboards committed and self-provisioning | ✅ five, incl. a Private Cloud overview; CI parses all 350 queries |
+| Grafana dashboards committed and self-provisioning | ✅ five, incl. a Private Cloud overview; CI parses all 360 queries |
 | Images pinned to digests (+ Renovate to move them) | ✅ all ten third-party images; CI fails on an unpinned one |
 | Real TLS via `tailscale cert` instead of `tls internal` | ✅ script + weekly timer; CI validates the Caddyfile in both states |
 | UPS + NUT · unattended security upgrades | ✅ `deploy/host/nut/` · `deploy/host/apt/`, security origins only, ZFS/kernel blacklisted |
