@@ -1,12 +1,12 @@
 # Runbook — Background intelligence (worker, OCR, search, embeddings)
 
-**Status: ✅ current for the embedding sidecar and every job kind that ships.** Two
-gaps to know about: ❌ the **generation** sidecar (`POST /generate`, for `POST /chat`
-answers) and ❌ the **detection** sidecar (`POST /detect`, for the `faces` job) have a
-Go client and a config variable each and **no reference image in `deploy/`** — only
-the embedder does. `POST /chat` therefore returns citations without prose, and
-`--kind=faces` does nothing, until an operator stands up a service at those URLs.
-See [status.md](status.md#what-is-not-done--the-whole-open-list).
+**Status: ✅ current for every sidecar and every job kind that ships.** All four
+sidecars now have a reference image in `deploy/` — `embed-sidecar`,
+`generate-sidecar`, `detect-sidecar` and `image-embed-sidecar`, each a Dockerfile,
+an `app.py` and a `requirements.txt`. Every one of them stays **optional**: a
+sidecar that is not configured degrades with a stable code rather than a 500, so
+`POST /chat` returns citations without prose and `--kind=faces` does nothing until
+you point the worker at a running service. See [status.md](status.md).
 
 **Read this to turn on, monitor, or fix the Phase 4 intelligence layer.** All of
 it is optional and additive: with none of it running, every file endpoint works

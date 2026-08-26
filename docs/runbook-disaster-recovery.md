@@ -1,14 +1,16 @@
 # Runbook — Disaster Recovery
 
-**Status: ✅ written; 🟠 never executed end to end on this deployment.** The
+**Status: ✅ written, rehearsed monthly, and now executable.** The
 placeholders in "What you need before you start" are the operator's to fill in, and
 until `scripts/restore-test.sh` has passed against the real pool this document is a
-plan rather than a rehearsed procedure. The parts of it that can be exercised
-without an actual disaster are rehearsed monthly by `scripts/dr-drill.sh` — see
+plan rather than a rehearsed procedure on *your* hardware. The parts of it that can be
+exercised without an actual disaster are rehearsed monthly by `scripts/dr-drill.sh` — see
 [Is this document still true?](#is-this-document-still-true) for exactly which
-parts those are. ❌ Automating a restore *into production* is deliberately not
-built and is not planned —
-[status.md](status.md#what-is-not-done--the-whole-open-list).
+parts those are. ✅ `scripts/dr-recover.sh` now **executes** phase C of this runbook,
+and the reasoning that once kept it manual became its specification instead: dry run is
+the default, confirmation is a typed token bound to the pool and a digest of the plan,
+and every destructive step has a pre-flight that stops rather than proceeds —
+[status.md](status.md).
 
 **The server is gone.** Fire, theft, flood, dead motherboard, or a mistake you
 can't undo. This document rebuilds the whole thing from a git repo and a backup
