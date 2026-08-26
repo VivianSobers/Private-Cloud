@@ -1,0 +1,10 @@
+# Pinned loosely on purpose, the same way the embed sidecar is: this is an
+# inference sidecar the operator builds for their own hardware, and torch's right
+# wheel depends on whether that is CPU or a specific CUDA version. facenet-pytorch
+# pulls torch and torchvision in; install a matching torch wheel first if you want
+# a particular CUDA build rather than the default.
+fastapi>=0.110
+uvicorn[standard]>=0.29
+facenet-pytorch>=2.6
+pillow>=10.3
+numpy>=1.24
