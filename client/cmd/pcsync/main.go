@@ -142,7 +142,28 @@ func run(log *slog.Logger, configPath string, once bool) error {
 		_ = ctl.Shutdown(sctx)
 	}()
 
-	if err := eng.Run(ctx, cfg.PollInterval(), cfg.RescanInterval()); err != nil && ctx.Err() == nil {
+	// Automatic updates, only when the config asked for them. The sync loop gets
+	// its own cancellable context so a successful update can stop it the same way
+	// a signal would — cleanly, between steps, never mid-write.
+	runCtx, stopRun := context.WithCancel(ctx)
+	defer stopRun()
+	updated := make(chan struct{})
+	if cfg.Update.Enabled {
+		go func() {
+			if errors.Is(autoUpdate(runCtx, log, cfg), errUpdated) {
+				close(updated)
+				stopRun()
+			}
+		}()
+	}
+
+	err = eng.Run(runCtx, cfg.PollInterval(), cfg.RescanInterval())
+	select {
+	case <-updated:
+		return errUpdated
+	default:
+	}
+	if err != nil && ctx.Err() == nil {
 		return err
 	}
 	log.Info("pcsync stopped")

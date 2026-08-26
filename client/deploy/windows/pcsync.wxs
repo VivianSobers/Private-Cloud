@@ -1,0 +1,56 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  WiX v4/v5 source for the pcsync Windows installer.
+
+  It installs one file. pcsync is a single static binary with no runtime, no
+  service registration and no per-machine state, so the installer's whole job is
+  to put it somewhere and add that somewhere to PATH — an installer that did more
+  would be inventing work for itself.
+
+  Deliberately per-machine (Scope="perMachine"), into Program Files, with a
+  system PATH entry: pcsync is usually run from a shell and, on a shared machine,
+  from a scheduled task. A per-user install would put it on one account's PATH
+  and surprise the next one.
+
+  The .msi built from this is UNSIGNED unless an Authenticode certificate is
+  available — see scripts/release/build-msi.ps1, which signs it when the secret
+  exists and says so plainly when it does not.
+
+  UpgradeCode must never change: it is the identity that lets 1.3.0 replace 1.2.0
+  instead of installing beside it.
+-->
+<Wix xmlns="http://wixtoolset.org/schemas/v4/wxs">
+  <Package
+      Name="pcsync"
+      Manufacturer="Private Cloud"
+      Version="$(var.Version)"
+      UpgradeCode="8f1d6c4a-3b52-4a0f-9d77-2c6f0a51b8e3"
+      Scope="perMachine"
+      Compressed="yes">
+
+    <SummaryInformation Description="Private Cloud sync client" />
+
+    <!-- Replace an older install rather than sitting next to it; refuse to be
+         installed over a newer one, which would be a silent downgrade. -->
+    <MajorUpgrade DowngradeErrorMessage="A newer version of pcsync is already installed." />
+    <MediaTemplate EmbedCab="yes" />
+
+    <StandardDirectory Id="ProgramFiles64Folder">
+      <Directory Id="INSTALLFOLDER" Name="pcsync" />
+    </StandardDirectory>
+
+    <ComponentGroup Id="Binary" Directory="INSTALLFOLDER">
+      <Component Id="PcsyncExe" Guid="6c2a9e57-14bd-4f31-8a0e-7d4b9f2c1a06">
+        <File Id="PcsyncExeFile" Source="$(var.BinaryPath)" Name="pcsync.exe" KeyPath="yes" />
+        <!-- Part="last" appends rather than replacing; Permanent="no" means an
+             uninstall takes the entry back out again. -->
+        <Environment Id="PcsyncPath" Name="PATH" Value="[INSTALLFOLDER]"
+                     Action="set" Part="last" System="yes" Permanent="no" />
+      </Component>
+    </ComponentGroup>
+
+    <Feature Id="Main" Title="pcsync" Level="1">
+      <ComponentGroupRef Id="Binary" />
+    </Feature>
+  </Package>
+</Wix>
