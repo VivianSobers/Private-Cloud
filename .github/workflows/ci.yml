@@ -51,6 +51,21 @@ jobs:
         options: >-
           --health-cmd "pg_isready -U postgres"
           --health-interval 5s --health-timeout 5s --health-retries 20
+      # A real S3 implementation, because the in-process fake was written by
+      # whoever wrote the signer and therefore shares its assumptions about
+      # canonicalisation. Every SigV4 disagreement produces the same opaque 403,
+      # and the caller least able to survive one is fsck: content moved to cold
+      # by code that cannot read it back is content that is gone.
+      minio:
+        image: bitnami/minio:2025.4.22
+        env:
+          MINIO_ROOT_USER: pcminio
+          MINIO_ROOT_PASSWORD: pcminio12345
+          MINIO_DEFAULT_BUCKETS: coldtier
+        ports: ["9000:9000"]
+        options: >-
+          --health-cmd "curl -fsS http://localhost:9000/minio/health/live || exit 1"
+          --health-interval 5s --health-timeout 5s --health-retries 30
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v5
@@ -81,6 +96,10 @@ jobs:
         working-directory: server
         env:
           PC_TEST_DATABASE_URL: postgres://postgres:postgres@localhost:5432/postgres?sslmode=disable
+          PC_TEST_S3_ENDPOINT: http://localhost:9000
+          PC_TEST_S3_BUCKET: coldtier
+          PC_TEST_S3_ACCESS_KEY: pcminio
+          PC_TEST_S3_SECRET_KEY: pcminio12345
         run: go test ./... -count=1
 
       # Run it a second time against the same server. This is the regression
@@ -97,6 +116,25 @@ jobs:
         env:
           PC_TEST_DATABASE_URL: postgres://postgres:postgres@localhost:5432/postgres?sslmode=disable
         run: go test ./... -count=1 -race
+
+      # A skip here means the bucket was never reachable and the cold tier
+      # shipped tested only against a fake that agrees with it by construction.
+      # Exactly the silent pass the pgvector job below exists to prevent, applied
+      # to the subsystem where a wrong answer gets live data deleted.
+      - name: Prove the live S3 tests actually ran
+        working-directory: server
+        env:
+          PC_TEST_S3_ENDPOINT: http://localhost:9000
+          PC_TEST_S3_BUCKET: coldtier
+          PC_TEST_S3_ACCESS_KEY: pcminio
+          PC_TEST_S3_SECRET_KEY: pcminio12345
+        run: |
+          out="$(go test ./internal/blob/ -run TestLiveS3 -count=1 -v)"
+          echo "$out"
+          if echo "$out" | grep -q -- "--- SKIP"; then
+            echo "the live S3 tests skipped against a running MinIO; the bucket was not reachable"
+            exit 1
+          fi
 
       - name: Vulnerability scan
         working-directory: server
@@ -166,6 +204,24 @@ jobs:
           go build ./...
           go vet ./...
           go test ./... -count=1
+
+      # The tray is behind a build tag, so the DEFAULT build above never
+      # compiles it — which means without this step the only file in the client
+      # that imports a GUI library could rot untouched for a phase. It is built
+      # with CGO off for both targets that support it, because that is the claim:
+      # systray is Win32 syscalls on Windows and D-Bus on Linux, and only macOS
+      # needs a C toolchain.
+      - name: Build the tray, for the two platforms that need no C toolchain
+        working-directory: client
+        env:
+          CGO_ENABLED: "0"
+        run: |
+          for target in linux/amd64 windows/amd64; do
+            GOOS="${target%/*}" GOARCH="${target#*/}" go build -tags tray ./...
+            echo "tray build ok: $target"
+          done
+          go vet -tags tray ./...
+          go test -tags tray ./internal/tray/ -count=1
 
       # The client ships to laptops, so "it builds here" is not the claim that
       # matters. CGO stays off: a client that needs a C toolchain is a client

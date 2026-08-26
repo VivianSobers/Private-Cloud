@@ -688,3 +688,100 @@ components:
           format: date-time
           description: Present only on trashed nodes.
 `
+
+// widenedQueryParams are the query parameters that CHANGE WHAT AN ENDPOINT
+// MEANS rather than merely filtering it, together with the client files that
+// have to opt into them.
+//
+// This exists because the route-level test above cannot see them. A parameter
+// is not a route, so `?include_shared=true` sat in this repository for a phase
+// and a half being served, documented, and called by nothing — and status.md
+// carried it as an open item that nothing could ever fail on. The thirteen
+// unconsumed route shapes were caught by a test; this one was caught by a
+// person reading a table, which is exactly the failure mode the route test was
+// written to end.
+//
+// The rule is narrow on purpose. An ordinary filter does not belong here: a
+// `limit` nobody passes costs nothing. These are the parameters whose absence
+// makes a working client silently show LESS than the user is entitled to see.
+var widenedQueryParams = map[string]struct {
+	why      string
+	callers  []string
+	minCalls int
+}{
+	"include_shared": {
+		why: "widens children, search and tags to content the caller was granted " +
+			"but does not own. Every view that lists nodes has to opt in, or a " +
+			"grantee sees a folder in /shared and an empty listing inside it",
+		callers: []string{
+			"../../../web/src/api.ts",
+			"../../../web/src/Browser.tsx",
+			"../../../web/src/TagBrowser.tsx",
+		},
+		// api.ts sends it on children, search and tags: three call sites, and a
+		// count rather than a boolean so that wiring one and forgetting the
+		// other two fails here instead of at somebody's second click.
+		minCalls: 3,
+	},
+}
+
+// TestWidenedQueryParametersHaveCallers is the route test's missing half.
+//
+// It fails in both directions the route test does: a parameter the server
+// accepts that no client sends, and — through minCalls — a parameter wired into
+// one listing and forgotten in the others.
+func TestWidenedQueryParametersHaveCallers(t *testing.T) {
+	for param, spec := range widenedQueryParams {
+		served := false
+		for _, file := range serverSourceFiles(t) {
+			if strings.Contains(file, `"`+param+`"`) {
+				served = true
+				break
+			}
+		}
+		if !served {
+			t.Errorf("widenedQueryParams lists %q but no handler reads it — "+
+				"delete the entry, or the list becomes the graveyard it exists to prevent", param)
+			continue
+		}
+
+		total := 0
+		for _, path := range spec.callers {
+			source, err := os.ReadFile(filepath.FromSlash(path))
+			if err != nil {
+				t.Skipf("%s not present: %v", path, err)
+			}
+			total += strings.Count(string(source), param)
+		}
+		if total < spec.minCalls {
+			t.Errorf("?%s= is served and reached %d client mention(s), want at least %d.\n"+
+				"Why it matters: %s\n"+
+				"A parameter nobody sends is a feature that is finished on one side "+
+				"and invisible on the other — which is how this one went a phase and "+
+				"a half without a caller.",
+				param, total, spec.minCalls, spec.why)
+		}
+	}
+}
+
+// serverSourceFiles reads the handler sources once, so the test above can ask
+// whether the server actually reads a parameter rather than trusting the list.
+func serverSourceFiles(t *testing.T) []string {
+	t.Helper()
+	entries, err := filepath.Glob(filepath.FromSlash("*.go"))
+	if err != nil {
+		t.Fatalf("globbing handler sources: %v", err)
+	}
+	out := make([]string, 0, len(entries))
+	for _, e := range entries {
+		if strings.HasSuffix(e, "_test.go") {
+			continue
+		}
+		b, err := os.ReadFile(e)
+		if err != nil {
+			t.Fatalf("reading %s: %v", e, err)
+		}
+		out = append(out, string(b))
+	}
+	return out
+}

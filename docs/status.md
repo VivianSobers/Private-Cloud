@@ -43,14 +43,18 @@ stale), the migration and test trees, `web/src`, `client/`, and `deploy/` + `scr
 | 8 | Advanced intelligence: faces, similar files, RAG chat | ✅ 5/5 — image space landed | ✅ chat streamed, people, find-similar, feedback | ✅ |
 | 9 | Scale & resilience: cold tier, DR automation, quotas | ✅ storage health, quota, cold tier, billing, DR | ✅ admin Storage + Billing tabs | ✅ |
 
-Every phase is now finished on both sides. What that sentence is allowed to
-mean is bounded, and the bounds are worth stating in the same breath: the
-integration tests behind the newest slices are **written and skipped** here,
-because they need `PC_TEST_DATABASE_URL` and CI is where they run; the tray's
-macOS build and the `.msi`/`.pkg` signatures still need a Mac runner and paid
-identities, which is why those are secret-gated steps rather than claims; and
-the cold tier has been exercised against an in-process S3 rather than a real
-bucket. **Nothing is blocked on a decision.**
+Every phase is now finished on both sides, and every claim above was executed
+rather than read: the whole server suite against a real Postgres, the web
+suite and typecheck, both client builds including the tagged tray, the S3
+store against a real MinIO bucket, the alert rules through `promtool`, and
+every shell script through `shellcheck`.
+
+**Three things remain, and none of them is code.** One is an operator gate on
+hardware this repository cannot reach. One is a decision already taken and
+documented as a tradeoff. One is two signing identities that have to be
+bought. They are listed below rather than quietly dropped, because the rule
+this document lives by is that anything absent on purpose gets a line with its
+reason.
 
 ### Landed since this document was last derived
 
@@ -83,19 +87,15 @@ bucket. **Nothing is blocked on a decision.**
 
 | # | Item | Phase | Mark | State, and what it needs |
 |---|---|---|---|---|
-| 1 | **`?include_shared=true` has a caller, but no contract test can see it** | 7 | 🟠 | `TagBrowser`, the children listing and search all send it now, so the "served with no client" row is retired — but it is a query parameter rather than a route, and `contract_test.go` enumerates routes. The guarantee is a vitest assertion, not a mechanical one |
-| 11 | **Encrypted pool auto-unlock** | 0 | 🟠 | **Decided, deliberately not enabled.** The unit exists and documents what each keyfile location costs; `scripts/zfs-unlock.sh` refuses a key on the root filesystem, because storing the key beside the ciphertext is not a weaker setup, it is no setup. Cost: a remote reboot needs a console |
-| 12 | **`restore-test.sh` against *your* pool** | 0 | 🟠 | Operator gate. CI proves the restore path against a loopback pool on every push; only you can prove *your* disks do |
-| 13 | **The integration tests behind the newest slices have not been run** | 5–9 | 🟠 | Written, compiled, vetted and **skipped** — `image similarity`, `feedback`, `billing` and the tiering suites all need `PC_TEST_DATABASE_URL`, and the machine this landed on has no Postgres. CI runs them on push; until that push is green this is a claim about code that compiles, not about behaviour that was observed |
-| 14 | **The cold tier has never met a real bucket** | 9 | 🟠 | The S3 store is exercised against an in-process `httptest` server implementing the parts of the API it uses, which proves the request shapes and the SigV4 signing but not MinIO's or Garage's interpretation of them. First contact with a real endpoint is the remaining risk, and it is the one that decides whether `--repair` is safe on a tiered deployment |
-| 15 | **macOS tray, and the two signatures that need a paid identity** | 6 | 🟠 | `-tags tray` cross-builds for Windows and Linux with `CGO_ENABLED=0`; **darwin** needs cgo and a Mac runner. The `.msi` and `.pkg` are built unsigned with their signing steps gated on secrets that are absent here — Authenticode and a Developer ID are purchases, not code |
-
+| 1 | **`restore-test.sh` against *your* pool** | 0 | 🟠 | **Operator gate — the only kind of item left.** CI proves the restore path against a loopback pool on every push; nothing in a repository can prove *your* disks do, and pretending otherwise would be the one lie this document is written to avoid |
+| 2 | **Encrypted pool auto-unlock** | 0 | 🟠 | **Decided, deliberately not enabled** — see [By design](#by-design--tradeoffs-not-defects). The unit exists and documents what each keyfile location costs; `scripts/zfs-unlock.sh` refuses a key on the root filesystem, because storing the key beside the ciphertext is not a weaker setup, it is no setup. Cost: a remote reboot needs a console |
+| 3 | **macOS tray, Authenticode, Developer ID** | 6 | 🟠 | **Purchases, not code.** `-tags tray` cross-builds for Linux and Windows with `CGO_ENABLED=0` and CI builds both on every push; darwin needs cgo and a Mac runner. The `.msi` and `.pkg` are built unsigned with their signing steps written and gated on secrets that do not exist in this account. Nothing here is waiting on a decision or an implementation |
 ### Served, with no client
 
 | Route / parameter | Waiting on |
 |---|---|
-| *(none)* | `awaitingClient` is **empty**. The last entry, `/devices/*/push`, was never waiting on a UI — it needed a VAPID key the server did not publish and a sender that did not exist. Both landed; `web/src/push.ts` subscribes |
-| `?include_shared=true` (children, search, tags) | a caller. Not covered by the contract test, because it is a query parameter rather than a route |
+| *(none)* | `awaitingClient` is **empty**, and so is the list below it. The last route entry, `/devices/*/push`, was never waiting on a UI — it needed a VAPID key the server did not publish and a sender that did not exist. Both landed; `web/src/push.ts` subscribes |
+| *(none)* | `?include_shared=true` was the last parameter here, and it is now sent by the children listing, search and the tag browser. It was also the proof that the route test had a blind spot: a parameter is not a route, so it sat served, documented and uncalled for a phase and a half while nothing in the repository could fail. `TestWidenedQueryParametersHaveCallers` closes that seam, and fails in both directions the route test does — including when a parameter is wired into one listing and forgotten in the others |
 
 ---
 
@@ -565,6 +565,7 @@ them as bugs invites "fixing" them into a worse system.
 | 🟠 The pgvector copy doubles what a vector costs on disk | `vec` is a second copy of every embedding, so the table roughly doubles where the extension is in use. Kept rather than dropping the `bytea` because the packed form is the one that survives a restore onto a machine with no pgvector, and it is what the fallback ranks on. Storage is the cheaper thing to spend than portability |
 | 🟠 An unclassified route is limited at `costNormal` | Default-normal is deliberate: forgetting to classify a new route can only ever be too strict, never a hole. Getting it wrong shows up as a client that is being slowed and says so — a failure that reports itself |
 | ✅ Integration test isolation — fixed | They used to share whatever database `PC_TEST_DATABASE_URL` named, which worked exactly once per database: a second run met the first run's rows and the failures looked like regressions. [internal/testdb](../server/internal/testdb/testdb.go) now creates a database per test binary and drops it afterwards, and CI runs the suite twice in a row against one server as the regression test |
+| ✅ The cold tier meets a real bucket | The in-process fake proves this package sends what it thinks it sends; it cannot prove a real server AGREES, and every SigV4 disagreement about canonicalisation returns the same opaque 403 from a fake written by whoever wrote the signer. `s3_live_test.go` runs the round trip, seeking, `PutKeyed` idempotence, `ErrNotFound` classification and 1200-object pagination against MinIO, and CI fails if those tests SKIP against a running one — a silent skip would mean the tier shipped tested only against something that agrees with it by construction |
 
 ---
 
