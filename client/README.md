@@ -1,17 +1,16 @@
 # pcsync — Private Cloud sync client
 
-**Status: ✅ the daemon is complete, steerable and packaged; ❌ there is no GUI.**
-Phase 3 built the sync engine and Phase 6 gave it a control socket, selective sync,
-a conflict list, `.pcsyncignore`, `pcsync doctor`, `pcsync version`, cross-platform
-release builds and unsigned Linux `.deb`/`.rpm` packages, plus a platform-free tray
-presenter rendered live by `pcsync watch`.
+**Status: ✅ the daemon is complete, steerable and packaged, and ✅ there is a system
+tray.** Phase 3 built the sync engine and Phase 6 gave it a control socket, selective
+sync, a conflict list, `.pcsyncignore`, `pcsync doctor`, `pcsync version`,
+cross-platform release builds and unsigned Linux `.deb`/`.rpm` packages, plus a
+platform-free tray presenter rendered live by `pcsync watch` — and now `pcsync tray`,
+which draws that same presenter as a real icon and menu (see
+[The system tray](#the-system-tray)).
 
-Two things are ❌ open, and both are blocked on tooling rather than on a decision:
-the **platform tray icon and menu adapter** (needs a CGO system-tray library and a
-machine with a display — there is no `desktop/` directory) and **signed** installers
-with an in-place updater (needs code-signing keys and per-OS tooling from outside
-this repo). Every decision a tray shell would make is already made and unit-tested
-in `internal/tray` and the control client, so it is genuinely a thin adapter.
+One thing is ❌ open, and it is blocked on tooling rather than on a decision:
+**signed** installers with an in-place updater need code-signing keys and per-OS
+tooling from outside this repo.
 Ledger: [../docs/status.md](../docs/status.md).
 
 A headless daemon that keeps one local folder in step with your Private Cloud
@@ -201,8 +200,43 @@ pcsync resume -config ./config.json     # resume it
 ✓  Up to date — 1284 items · last sync 8s ago
 ```
 
-The same state and summary logic drives a desktop tray shell; the icon is a thin
+The same state and summary logic drives the desktop tray below; the icon is a thin
 adapter over it.
+
+### The system tray
+
+```bash
+pcsync tray -config ./config.json
+```
+
+The tray is the same model `watch` renders, drawn as an icon and a menu: the
+status line, **Sync now**, **Pause/Resume syncing**, a conflict row that appears
+only when there is a conflict (opening the folder holding the copies, or
+dismissing the reminder), **Open sync folder**, **Open web app**, and **Quit
+tray** — which closes the icon and nothing else, because the daemon is a separate
+process and closing a viewer is not a request to stop syncing. The icon has five
+states, distinguished by both colour and shape: idle, syncing, paused, error and
+offline.
+
+**A tray needs a build tag:**
+
+```bash
+go build -tags tray ./cmd/pcsync      # a binary that can draw a tray
+go build ./cmd/pcsync                 # the default: headless, CGO-free
+```
+
+Without the tag the shell is a no-op and `pcsync tray` falls back to the `watch`
+status line, so the default binary — the one the systemd unit runs and the one
+`build-release.sh` cross-compiles to six targets — links no GUI code, needs no C
+compiler and behaves exactly as it did before the tray existed. With the tag, the
+tray is [fyne.io/systray](https://github.com/fyne-io/systray): pure Go on Windows
+(Win32) and Linux (StatusNotifierItem over D-Bus), and cgo plus an Objective-C
+toolchain on macOS — which is the whole reason the tag exists.
+
+The icons are generated, not drawn: `internal/tray/icons/generate.go` is the
+source you edit and `go generate ./internal/tray/...` re-emits the committed PNG
+and `.ico` bytes, which are embedded so a single copied binary can never come up
+with a blank icon.
 
 `status` reports the current state, how many items are tracked, when the last
 sync succeeded, any lingering error, and the list of conflict copies that need

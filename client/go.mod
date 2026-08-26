@@ -9,6 +9,7 @@ module github.com/guru-bharadwaj20/private-cloud/client
 go 1.25.0
 
 require (
+	fyne.io/systray v1.12.2
 	github.com/fsnotify/fsnotify v1.10.1
 	github.com/klauspost/compress v1.19.2
 	github.com/tigerwill90/fastcdc v1.2.2
@@ -18,6 +19,7 @@ require (
 
 require (
 	github.com/dustin/go-humanize v1.0.1 // indirect
+	github.com/godbus/dbus/v5 v5.1.0 // indirect
 	github.com/google/uuid v1.6.0 // indirect
 	github.com/klauspost/cpuid/v2 v2.0.12 // indirect
 	github.com/mattn/go-isatty v0.0.24 // indirect

@@ -13,10 +13,16 @@
 //	pcsync sync    -config <path>   # reconcile now
 //	pcsync pause   -config <path>   # stop automatic syncing
 //	pcsync resume  -config <path>   # resume automatic syncing
+//	pcsync tray    -config <path>   # the same, from a system tray icon
+//
+// `pcsync tray` draws a real icon only in a binary built with `-tags tray`;
+// without it the tray shell is a no-op and the subcommand falls back to the text
+// status line, which is what this binary has always done.
 package main
 
 import (
 	"context"
+	"errors"
 	"flag"
 	"fmt"
 	"log/slog"
@@ -47,8 +53,15 @@ func main() {
 		switch os.Args[1] {
 		case "status", "watch", "sync", "pause", "resume", "exclude", "conflicts":
 			os.Exit(ctlMain(os.Args[1], os.Args[2:]))
+		case "tray":
+			// Deliberately not routed through ctlMain: a tray owns the process's main
+			// goroutine for as long as it runs, and every platform's tray belongs to
+			// the thread that created it.
+			os.Exit(trayMain(os.Args[2:]))
 		case "doctor":
 			os.Exit(doctorMain(os.Args[2:]))
+		case "update":
+			os.Exit(updateMain(os.Args[2:]))
 		case "version":
 			os.Exit(versionMain(os.Args[2:]))
 		}
@@ -65,7 +78,15 @@ func main() {
 	}
 	log := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: level}))
 
-	if err := run(log, *configPath, *once); err != nil {
+	err := run(log, *configPath, *once)
+	switch {
+	case err == nil:
+	case errors.Is(err, errUpdated):
+		// Not a failure: the binary at this path is now a newer build, and the
+		// only way to run it is to stop being this process. See exitUpdated.
+		log.Info("pcsync exiting to restart on the new build")
+		os.Exit(exitUpdated)
+	default:
 		log.Error("pcsync exiting", "error", err)
 		os.Exit(1)
 	}
@@ -187,6 +208,52 @@ func doctorMain(args []string) int {
 	}
 	fmt.Println("\nSome checks failed — fix the ✗ items above, then run doctor again.")
 	return 1
+}
+
+// trayMain runs the system tray against the daemon's control socket. The menu it
+// shows and everything each entry does live in internal/tray, which is shared
+// with `pcsync watch` and unit-tested without a display; this function only
+// decides which shell draws it.
+//
+// A binary built without `-tags tray` has the no-op shell, and rather than fail
+// it falls back to the live status line — the tray and `pcsync watch` render the
+// same model, so the fallback is the same information without the icon.
+func trayMain(args []string) int {
+	fs := flag.NewFlagSet("pcsync tray", flag.ExitOnError)
+	configPath := fs.String("config", "config.json", "path to the JSON config file")
+	verbose := fs.Bool("v", false, "log at debug level")
+	_ = fs.Parse(args)
+
+	cfg, err := config.Load(*configPath)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		return 1
+	}
+
+	level := slog.LevelInfo
+	if *verbose {
+		level = slog.LevelDebug
+	}
+	log := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: level}))
+
+	// Closing the tray from the menu ends this process and nothing else. The
+	// daemon is separate, and a signal here must not reach it.
+	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
+	defer stop()
+
+	client := control.NewClient(filepath.Join(cfg.StateDir(), control.SocketName))
+	model := tray.NewModel(client)
+
+	err = tray.NewShell().Run(ctx, model, tray.Options{Log: log})
+	if errors.Is(err, tray.ErrUnsupported) {
+		fmt.Fprintf(os.Stderr, "%v\n falling back to the text status line — Ctrl-C to stop\n\n", err)
+		return ctlWatch(client)
+	}
+	if err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		return 1
+	}
+	return 0
 }
 
 // ctlMain runs a control subcommand against the daemon's socket and returns a
