@@ -24,6 +24,20 @@ func newLimiterServer(t *testing.T) *Server {
 	return s
 }
 
+// swapLimiter installs a limiter built for one test's budget, closing the one it
+// displaces.
+//
+// The displaced limiter has to be closed here rather than at cleanup, because
+// newLimiterServer's cleanup closes whatever the field points at by the time it
+// runs — which is the replacement. Registering a second cleanup for the
+// replacement instead closes it twice (cleanups run last-registered-first) and
+// panics on a closed channel, while the limiter NewServer built leaks its reaper
+// goroutine for the rest of the binary.
+func swapLimiter(dst **rateLimiter, next *rateLimiter) {
+	(*dst).close()
+	*dst = next
+}
+
 // The cost table names routes by their registered pattern, so an entry that
 // matches nothing is a line that silently stopped doing anything — the same
 // failure mode `awaitingClient` guards against, and the reason both are checked
@@ -88,12 +102,8 @@ func request(pattern, path string) *http.Request {
 func TestUserLimiterExemptsTheDataPlane(t *testing.T) {
 	s := newLimiterServer(t)
 	// A bucket of one, so anything counted is refused on the second request.
-	s.userLimiter = newRateLimiter(60, 1)
-	s.heavyLimiter = newRateLimiter(60, 1)
-	t.Cleanup(func() {
-		s.userLimiter.close()
-		s.heavyLimiter.close()
-	})
+	swapLimiter(&s.userLimiter, newRateLimiter(60, 1))
+	swapLimiter(&s.heavyLimiter, newRateLimiter(60, 1))
 
 	r := request("PUT /api/v1/chunks/{hash}", "/api/v1/chunks/abc")
 	for i := 0; i < 50; i++ {
@@ -105,12 +115,8 @@ func TestUserLimiterExemptsTheDataPlane(t *testing.T) {
 
 func TestHeavyRoutesGetTheTighterBudget(t *testing.T) {
 	s := newLimiterServer(t)
-	s.userLimiter = newRateLimiter(60000, 1000)
-	s.heavyLimiter = newRateLimiter(60, 2)
-	t.Cleanup(func() {
-		s.userLimiter.close()
-		s.heavyLimiter.close()
-	})
+	swapLimiter(&s.userLimiter, newRateLimiter(60000, 1000))
+	swapLimiter(&s.heavyLimiter, newRateLimiter(60, 2))
 
 	chat := request("POST /api/v1/chat", "/api/v1/chat")
 	for i := 0; i < 2; i++ {
@@ -139,8 +145,7 @@ func TestHeavyRoutesGetTheTighterBudget(t *testing.T) {
 
 func TestUserLimitsAreNotShared(t *testing.T) {
 	s := newLimiterServer(t)
-	s.heavyLimiter = newRateLimiter(60, 1)
-	t.Cleanup(s.heavyLimiter.close)
+	swapLimiter(&s.heavyLimiter, newRateLimiter(60, 1))
 
 	chat := request("POST /api/v1/chat", "/api/v1/chat")
 	if !s.userAllowed(httptest.NewRecorder(), chat, "user-1") {
